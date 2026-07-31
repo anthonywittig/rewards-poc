@@ -1,10 +1,11 @@
 # Rewards POC -- see docs/PLAN.md
 #
-# Every target runs against one stack, selected by ENV (default .env). To run a
-# second stack side by side, copy .env.example to .env.beta with a different
-# STACK_NAME and ports, then: make up ENV=.env.beta
+# Every target runs against one stack, selected by ENV. Default is .env when
+# present, otherwise .env.example (so a fresh checkout can `make up` with no
+# copy step). For a second stack side by side, copy .env.example to .env.beta
+# with a different STACK_NAME and ports, then: make up ENV=.env.beta
 
-ENV ?= .env
+ENV ?= $(shell test -f .env && echo .env || echo .env.example)
 COMPOSE := docker compose --env-file $(ENV) -f deploy/docker-compose.yml
 
 # Pull TEMPORAL_* out of the env file so host-side targets can use them.
@@ -32,7 +33,7 @@ help: ## Show this help
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
 $(ENV):
-	@echo "No $(ENV) found. Run: cp .env.example $(ENV)" >&2; exit 1
+	@echo "No $(ENV) found. Defaults live in .env.example; for a local override run: cp .env.example $(ENV)" >&2; exit 1
 
 up: $(ENV) ## Start the stack and bootstrap it
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
