@@ -9,8 +9,9 @@ Query, mutate it via Update, list/filter customers via Visibility search attribu
 reconstruct the audit log by crawling raw Event History.
 
 A second, equally weighted goal: **understand how Temporal actually uses Postgres and
-Elasticsearch underneath.** Running both visibility backends and inspecting each is a
-deliverable, not a side effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
+Elasticsearch underneath** — Postgres for how it stores workflows, Elasticsearch for the
+searchable projection it builds from them. Inspecting both is a deliverable, not a side
+effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
 
 ---
 
@@ -25,6 +26,7 @@ deliverable, not a side effect — see [§8](#8-inspecting-postgres-and-elastics
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
 | Continue-as-new | After **3** successful point-add updates (configurable) |
 | Datastore inspection | An explicit POC goal — tooling and docs for looking inside both stores ([§8](#8-inspecting-postgres-and-elasticsearch)) |
+| Activities | Exactly one, `NotifyCustomer` — a stubbed tier-promotion notification ([§3.7](#37-tier-promotion-notifications)) |
 
 The 20-minute retention is deliberate and is the most interesting choice here — see
 [§6.3](#63-truncation-is-the-feature). It makes the history-truncation trade-off visible
@@ -52,10 +54,12 @@ Five services in Compose plus the Temporal Web UI. `api` and `worker` are separa
 in one Go module so they share the workflow/state types — the API needs the same structs to
 decode history payloads.
 
-**The core demo has zero Activities.** Nothing external needs to be called; all state
-transitions are pure functions of workflow state. That is exactly the "Temporal as a data
-store" argument, and worth stating plainly in the README. We add one trivial Activity in
-Phase 7 only to demonstrate the cancellation-cleanup path.
+**All rewards state transitions are pure functions of workflow state** — no Activity is
+needed to compute a balance or a tier. That is exactly the "Temporal as a data store"
+argument, and worth stating plainly in the README. The single Activity we do have
+(`NotifyCustomer`, [§3.7](#37-tier-promotion-notifications)) exists because talking to the
+outside world is the one thing a workflow cannot do itself, which is a clean illustration of
+where the boundary actually sits.
 
 ### Repo layout
 
@@ -67,6 +71,7 @@ internal/rewards/
   workflow.go                 CustomerRewardsWorkflow
   workflow_test.go            unit tests via testsuite
   searchattr.go               typed search attribute keys
+  activities.go               NotifyCustomer (the only Activity)
 internal/history/
   audit.go                    multi-run history crawl → audit entries
 internal/httpapi/             handlers, DTOs
@@ -110,6 +115,10 @@ type CustomerState struct {
     LifetimeEarnEvents int       // count of all successful adds, ever
     LifetimePoints     int       // sum of all points ever added (≠ Points if we add spending later)
     Generation         int       // how many times we've continued-as-new
+
+    // Levels we've already sent a promotion notification for. Guards against
+    // at-least-once Activity delivery re-notifying after a replay. See §3.7.
+    NotifiedLevels []string
 }
 ```
 
@@ -251,9 +260,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
         return handleLeave(ctx, &state)
     }
 
-    // Let any concurrently-accepted update finish before we roll the run.
+    // Let any concurrently-accepted update AND any in-flight notification
+    // finish before we roll the run. See §3.7 for why the second clause
+    // is not covered by AllHandlersFinished.
     if err := workflow.Await(ctx, func() bool {
-        return workflow.AllHandlersFinished(ctx)
+        return workflow.AllHandlersFinished(ctx) && notifier.Idle()
     }); err != nil {
         return handleLeave(ctx, &state)
     }
@@ -287,6 +298,89 @@ there is no "restore the prior balance" path to build and no dependency on the o
 history (which under a 20-minute retention is usually gone anyway). The UI should say so at
 the point of deactivation, since it makes the action irreversible in a way "deactivate"
 doesn't imply on its own.
+
+### 3.7 Tier promotion notifications
+
+The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Email, Event,
+Level})` logs a line saying what would be sent, and returns. The body is a stub — production
+would call an email or push service here — but everything *around* it is real, and that is
+the part worth building.
+
+Triggered when a point-add crosses a tier boundary. Because tiers are derived (§3.2) this is
+a pure comparison inside the handler: compute `Level(before)` and `Level(after)`, and if they
+differ, a promotion happened.
+
+#### Where it runs, and why not in the handler
+
+The tempting thing is to await the Activity inside the `addPoints` handler, so the Update
+does not return until the customer has been notified. Don't:
+
+- **It couples two operations with different failure semantics.** The points were legitimately
+  earned and are already recorded in history. A notification service being down must not fail
+  the point-add or roll it back — but an awaited Activity error inside the handler does
+  exactly that.
+- **It puts a network call on the UI's critical path.** With a default retry policy an
+  unreachable notifier would retry indefinitely, so the Update hangs until the client times
+  out — with the points still awarded. The worst possible UX for the clearest possible reason.
+
+So the handler stays synchronous and cheap: it applies the points, detects the crossing,
+appends to a pending-notification slice, and returns the new balance immediately. A
+`workflow.Go` goroutine drains that slice and runs the Activity:
+
+```go
+workflow.Go(ctx, func(gctx workflow.Context) {
+    for {
+        if err := workflow.Await(gctx, func() bool { return len(pending) > 0 }); err != nil {
+            return // cancelled
+        }
+        n := pending[0]
+        pending = pending[1:]
+        inFlight = true
+        _ = workflow.ExecuteActivity(actCtx, NotifyCustomer, n).Get(gctx, nil)
+        state.NotifiedLevels = append(state.NotifiedLevels, n.Level)
+        inFlight = false
+    }
+})
+```
+
+#### The trap this creates
+
+**`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
+and Signal handlers only. So the pre-continue-as-new await in §3.5 would happily roll the run
+while a notification is still in flight, silently dropping it — and at `EarnsPerRun = 3`, a
+promotion landing on the third add is exactly when that happens. Hence the extra
+`notifier.Idle()` clause (`len(pending) == 0 && !inFlight`).
+
+This is the most instructive bug in the whole design, and it is worth writing the test that
+catches it before writing the fix.
+
+#### At-least-once, and what that means here
+
+Activities are at-least-once: a worker crash after `NotifyCustomer` runs but before its
+completion is recorded means it runs again on replay. For a real email that is a duplicate in
+someone's inbox.
+
+Two mitigations, both cheap:
+
+- Carry `NotifiedLevels []string` in `CustomerState` (so it survives continue-as-new) and skip
+  any level already in it. This is the workflow-side guard.
+- Pass an idempotency key of `<customerID>:<level>` to the Activity, since a customer reaches
+  gold exactly once. This is the guard a real notification service would honour, and including
+  it in the stub documents the contract even though the stub ignores it.
+
+#### It lands in the audit log for free
+
+`ActivityTaskScheduled` / `ActivityTaskCompleted` are history events, so the §6 crawl picks
+them up with no extra work — the customer detail page gets "Promoted to gold — notification
+sent" rows interleaved with the point-adds. That is a nice demonstration that the audit log
+reflects *everything* the workflow did, not just the parts we explicitly designed it around.
+
+#### Reuse for departure
+
+`handleLeave` (§3.6) sends the same Activity with `Event: "departed"`, which removes the need
+for the separate cleanup Activity the plan previously carried. It runs on a disconnected
+context, since by then `ctx` is already cancelled — a compact demonstration of why
+`workflow.NewDisconnectedContext` exists.
 
 ---
 
@@ -371,6 +465,7 @@ A customer's life spans many Runs sharing one Workflow ID. Newest run first, wal
 | `WorkflowExecutionStarted` (with empty `ContinuedExecutionRunId`) | Enrolled |
 | `WorkflowExecutionUpdateAccepted` | the request: update name, `Amount`, `Reason`, update ID |
 | `WorkflowExecutionUpdateCompleted` | the outcome: new balance and level, or failure message |
+| `ActivityTaskScheduled` / `ActivityTaskCompleted` | Promotion notification sent (§3.7) — free, since Activities are history events |
 | `WorkflowExecutionContinuedAsNew` | generation boundary (render as a subtle divider) |
 | `WorkflowExecutionCancelRequested` | Deactivated |
 
@@ -739,6 +834,10 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
   rejections; handler-side business rejection; continue-as-new fires after exactly 3 adds and
   carries state correctly; cancellation path. Note that the Go test environment needs
   `env.RegisterDelayedCallback` + `env.UpdateWorkflow` to drive updates.
+- **The §3.7 race specifically**: a promotion landing on the third point-add must still be
+  notified, not dropped by the continue-as-new. Mock `NotifyCustomer` with a delay so the
+  Activity is genuinely in flight when the run tries to roll, and assert it was called.
+  Without the `notifier.Idle()` guard this test fails — write it first.
 - **Replay test** against a checked-in history JSON. Especially valuable here: entity
   workflows are long-lived, so they *will* outlive a deploy, and this is the single highest
   operational risk in the design.
@@ -759,12 +858,14 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 | 3 | Go HTTP API + error mapping | |
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
-| 6 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | Best done here — Phases 4–5 have generated data worth looking at, including reaped runs |
-| 7 | React UI, all three screens | |
-| 8 | Replay test, seed script, README, one cleanup Activity | |
+| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix |
+| 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | Best done here — Phases 4–6 have generated data worth looking at, including reaped runs |
+| 8 | React UI, all three screens | Audit timeline now renders notification rows too |
+| 9 | Replay test, seed script, README | |
 
-Phases 1–2 are the substance and Phase 6 is the other headline deliverable; 0, 3–5, and 7 are
-scaffolding around them.
+Phases 1–2 are the substance and Phase 7 is the other headline deliverable; the rest is
+scaffolding around them. Phase 6 slots in after the history crawl so the notification events
+show up in an audit log that already works.
 
 ---
 
@@ -784,29 +885,32 @@ Things not in the original brief that will come up.
 4. Queries fail with a confusing error when no worker is polling. Map it to a clear
    "worker unavailable" — during development the worker will be down often.
 5. `workflow.Now()`, never `time.Now()`. Same for randomness and UUIDs.
+6. **`AllHandlersFinished` covers Update and Signal handlers, not `workflow.Go` goroutines.**
+   Any background work spawned that way needs its own drain condition before continue-as-new
+   or workflow completion, or it is silently dropped ([§3.7](#37-tier-promotion-notifications)).
 
 **Operational**
 
-6. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
+7. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
    changing workflow code under a running execution causes non-determinism errors. In dev,
    terminate stale workflows between changes. Document Worker Versioning / patching as the
    production answer, and add a `make reset` that wipes all customer workflows.
-7. Customer names and emails land in Event History and are readable in plaintext in the
+8. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
-8. No authentication anywhere. State it in the README so nobody mistakes this for a starting
+9. No authentication anywhere. State it in the README so nobody mistakes this for a starting
    point for something exposed.
-9. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
+10. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
    ES 8 needs 1.18+). Pin both images.
-10. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
+11. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
     Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
 
 **Design**
 
-11. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+12. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-12. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+13. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope, but the entity workflow with a durable timer is exactly where they'd go.
     Worth one paragraph as "what this shape buys you next."
 
