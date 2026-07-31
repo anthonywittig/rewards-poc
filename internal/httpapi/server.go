@@ -224,10 +224,30 @@ func hasOrderBy(q string) bool {
 	return strings.Contains(strings.ToLower(b.String()), "order by")
 }
 
-// scopedQuery always constrains the list to our own workflow type, so a stray
-// query cannot surface unrelated executions from a shared namespace.
+// scopedQuery constrains the list to our workflow type, and to one execution
+// per customer.
+//
+// The second half is not an optimisation, it is a correctness fix. **The
+// visibility store holds one document per Run, not per Workflow ID**, so a
+// customer who has continued-as-new twice appears three times — with three
+// different balances, since each closed generation froze its own. Left alone
+// the "customer list" lists executions:
+//
+//	WorkflowId = 'customer-dup-check'                          Total: 3
+//	WorkflowId = 'customer-dup-check' AND status != CAN        Total: 1
+//
+// Excluding ContinuedAsNew leaves exactly the current generation, whatever its
+// final state: Running for an active customer, Canceled for a departed one, and
+// Failed for an enrollment that never validated. `IN ('Running','Canceled')`
+// would look equivalent and silently drop that last group — measured at 45
+// against 47 on the same data.
+//
+// Found by the Phase 7 datastore inspection, which is exactly the sort of thing
+// looking directly at Elasticsearch surfaces and an API test does not: every
+// row was individually correct.
 func scopedQuery(userQuery string) string {
-	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'"
+	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
+		" AND ExecutionStatus != 'ContinuedAsNew'"
 	if userQuery == "" {
 		return scope
 	}
