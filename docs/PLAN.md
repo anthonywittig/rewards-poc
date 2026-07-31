@@ -218,10 +218,14 @@ departure is never recorded by our own code.
 
 Re-enrollment works because the workflow ID is free once the execution closes. Set
 `WorkflowIDConflictPolicy: FAIL` on start so a double-create against a *running* customer
-returns a clean 409 instead of silently attaching to the existing run. **Open business
-question for you:** should re-enrolling reset points to zero, or restore the prior balance?
-Restoring requires reading the old run's history — which under a 20-minute retention will
-usually be gone. I'd default to resetting to zero and note the constraint.
+returns a clean 409 instead of silently attaching to the existing run.
+
+**Re-enrolling starts over at zero points and basic tier** — decided, not a default. A
+returning customer is simply a fresh enrollment that happens to reuse the workflow ID, so
+there is no "restore the prior balance" path to build and no dependency on the old run's
+history (which under a 20-minute retention is usually gone anyway). The UI should say so at
+the point of deactivation, since it makes the action irreversible in a way "deactivate"
+doesn't imply on its own.
 
 ---
 
