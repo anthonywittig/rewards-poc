@@ -148,22 +148,84 @@ program would want an explicitly stored, monotonic "achieved tier."
 
 Requirement: points must be positive and must not exceed 1000 per transaction.
 
-The important subtlety: **an Update rejected by a validator produces no Event History at
-all.** `WorkflowExecutionUpdateAccepted` is never written. So anything rejected in the
-validator is invisible to a history-powered audit log.
+#### The mechanic
 
-That gives us a genuine design lever, and I'd use both sides of it:
+An Update runs in two phases, and **only the second one writes to Event History**:
 
-- **Validator** (no history) — malformed input: `Amount <= 0`, `Amount > MaxPointsPerTxn`,
-  empty reason. These are client bugs or fat-fingers; keeping them out of history is correct
-  and keeps the demo's history clean.
-- **Handler returning an error** (accepted + completed-with-failure, both in history) — one
-  business rule, so the audit log can display a *rejected* entry and prove the distinction.
-  Proposed rule: reject if the add would push `LifetimePoints` past a configured lifetime cap.
+| Outcome | Events written | In the audit log? |
+|---|---|---|
+| Validator returns an error | *none at all* | No |
+| Validator passes, handler succeeds | `WorkflowExecutionUpdateAccepted` + `WorkflowExecutionUpdateCompleted` (success) | Yes |
+| Validator passes, handler returns an error | `WorkflowExecutionUpdateAccepted` + `WorkflowExecutionUpdateCompleted` (failure) | Yes |
 
-Both surface to the UI identically as a failed Update with a message. The split is a demo
-feature, and the README should explain why the two rejection paths behave differently in the
-audit log.
+There is no `WorkflowExecutionUpdateRejected` event type — only those two exist. The docs are
+blunt about what rejection means: the client is told it was rejected, and *"the Workflow will
+have no indication that it was ever requested, similar to a Query handler."*
+
+The caller cannot tell the two failure paths apart. Both come back as a failed Update with a
+message, so the UI renders the same error either way. The only difference is whether a trace
+survives.
+
+The two events are also what make the audit log possible at all: Accepted carries the request
+input and metadata from the invoker (our `Amount` and `Reason`), Completed carries the outcome
+including whether it succeeded or failed. Pairing them by `AcceptedEventId` yields one audit
+row holding both the ask and the answer — see [§6.2](#62-events-we-care-about).
+
+#### The decision this forces
+
+The stated requirement ("show the history of when points were added") is satisfied on the
+happy path no matter where we validate, because successful adds are always recorded. What it
+doesn't answer is whether a **rejected attempt** belongs in the audit log — and for a rewards
+program the honest answer differs by reason:
+
+- *"Amount was −50"* / *"amount was 6000"* — a client bug or a fat-finger. Nobody reviewing a
+  customer's account cares. Recording it is noise.
+- *"This add would push them past their lifetime cap"* — genuinely useful. A support rep
+  asking "why didn't this customer reach platinum?" wants exactly that row.
+
+So we use both phases for what each is good at:
+
+- **Validator** (leaves no history) — `Amount <= 0`, `Amount > MaxPointsPerTxn`, empty reason.
+- **Handler returning an error** (both events recorded) — one business rule: reject if the add
+  would push `LifetimePoints` past a configured lifetime cap.
+
+#### Why this is more than a stylistic choice
+
+Two independent consequences push the same way.
+
+**History bloat and abuse.** We continue-as-new every 3 adds, and history has hard limits
+(50k events / 50 MB). Validator rejections are *free* — a buggy retry loop hammering
+`amount: -1` cannot grow history at all. Handler rejections are recorded, so every rule
+enforced there is a surface for history growth. Keep that set small and meaningful.
+
+**Determinism surface.** Handler code is replayed; validator rejections leave nothing to
+replay. If the lifetime cap lives in the handler and we later change the constant, we have
+changed workflow code that must still reproduce already-recorded outcomes — an update recorded
+as rejected under the old threshold could evaluate differently on replay. Rules in the
+validator carry no such risk, because there is no recorded decision to contradict. This is a
+real constraint on how freely the handler-side rules can be tuned later, and it is worth
+verifying with the replay test in [§10](#10-testing).
+
+Rule of thumb: **the validator is for facts about the request; the handler is for facts about
+the customer.** Input shape, ranges, and required fields go in the validator. Anything that
+depends on accumulated workflow state and that a human would want to see later goes in the
+handler, accepting that it becomes part of the versioning surface.
+
+#### Alternatives, if we change our minds
+
+Both are defensible and cheap to switch to:
+
+- **Everything in the validator** — simplest, cleanest history, audit log shows only
+  successful adds. Right if we decide the audit log records what *happened*, not what was
+  *attempted*.
+- **Everything in the handler** — every attempt auditable, at the cost of history bloat and a
+  larger determinism surface. Right if this were a financial ledger where attempted-and-denied
+  is itself reportable.
+
+The split is chosen partly because it lets the POC demonstrate both behaviours side by side:
+trigger each rejection type and watch one appear in the Temporal UI's history while the other
+leaves no trace. That is hard to internalize from documentation and easy to see once. The
+README should walk through exactly that.
 
 ### 3.5 Continue-as-new after 3 updates
 
