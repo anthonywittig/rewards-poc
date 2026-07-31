@@ -7,6 +7,12 @@ import "time"
 // TaskQueue is the single queue every customer workflow runs on.
 const TaskQueue = "rewards"
 
+// WorkflowTypeName is how the workflow is registered, and therefore how it is
+// addressed in visibility queries. Must match the function name, since that is
+// what RegisterWorkflow uses by default -- pinned here so the list endpoint's
+// scoping clause and the workflow itself cannot drift apart silently.
+const WorkflowTypeName = "CustomerRewardsWorkflow"
+
 // WorkflowIDPrefix makes the workflow ID derivable from the customer ID alone,
 // which is what lets every later operation skip a lookup table. See PLAN.md 3.
 const WorkflowIDPrefix = "customer-"

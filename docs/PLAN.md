@@ -538,7 +538,7 @@ Two notes:
 
 ```
 POST   /api/customers              → ExecuteWorkflow (conflict policy FAIL)     Phase 3
-GET    /api/customers?q=<sql>      → ListWorkflow, projected from search attrs  Phase 4
+GET    /api/customers?q=<sql>      → ListWorkflow + CountWorkflow                Phase 3
 GET    /api/customers/{id}         → QueryWorkflow(getStatus) + Describe        Phase 3
 POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous     Phase 3
 DELETE /api/customers/{id}         → CancelWorkflow                             Phase 3
@@ -1100,7 +1100,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 | 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
 | 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
-| 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
+| 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
 | 5 | History crawl + truncation detection | |
 | 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | Best done here — Phases 4–6 have generated data worth looking at, including reaped runs |

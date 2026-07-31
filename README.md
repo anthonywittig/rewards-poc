@@ -134,6 +134,41 @@ It shares the API's DTOs, so it cannot drift from the real thing without failing
 the list returns a small slice, tells you how many matched, and pushes you to filter — which is
 what the visibility store is actually good at.
 
+## The list is the visibility store, directly
+
+`GET /api/customers` is a `ListWorkflow` plus a `CountWorkflow` and nothing else — no lookup
+table, no local index. The `?q=` parameter is passed to Temporal essentially as typed:
+
+```sh
+curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
+curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
+curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"        # Text, partial
+curl -sG localhost:8081/api/customers --data-urlencode "q=ExecutionStatus = 'Canceled'" # deactivated
+```
+
+**The same query works unchanged in the Temporal UI**, which is the point of registering search
+attributes at all. Verified both ways:
+
+```
+our API                     "total":12
+temporal workflow count     Total: 12
+```
+
+Responses carry `total` and `complete`, so the UI renders *"Showing 5 of 23 — filter to find
+additional results"* and only offers sorting when it has the whole set.
+
+A rejected query comes back as a 400 carrying Temporal's own diagnostics, which are better than
+anything worth paraphrasing:
+
+```
+invalid search attribute: NoSuchAttribute
+invalid value for search attribute RewardsPoints of type Int: "not-an-int"
+```
+
+`ORDER BY` is the one exception — caught before the query is sent, because scoping the caller's
+filter turns Temporal's clear "not supported" into a bare syntax error. You get an explanation
+and what to do instead.
+
 ```sh
 curl -XPOST localhost:8081/api/customers \
   -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'

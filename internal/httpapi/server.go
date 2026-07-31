@@ -13,6 +13,8 @@ import (
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 )
@@ -33,6 +35,7 @@ func New(c client.Client, log *slog.Logger) *Server {
 // so there is no router dependency to justify.
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/customers", s.handle(s.listCustomers))
 	mux.HandleFunc("POST /api/customers", s.handle(s.enroll))
 	mux.HandleFunc("GET /api/customers/{id}", s.handle(s.getCustomer))
 	mux.HandleFunc("POST /api/customers/{id}/points", s.handle(s.addPoints))
@@ -101,6 +104,161 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		RunID:      run.GetRunID(),
 	})
 	return nil
+}
+
+// listCustomers serves the customer list straight out of the visibility store.
+//
+// This is where search attributes earn their keep: no lookup table, no local
+// index, and the same query works unchanged in the Temporal UI -- which is the
+// demonstration PLAN.md 4 is after.
+//
+// Capped at ListLimit with no pagination. That follows from the platform rather
+// than from laziness: ORDER BY is rejected outright (PLAN.md 12.8), so there is
+// no stable ordering, and "page 2" of an unordered set could overlap or skip
+// rows. A small slice plus an exact count plus a nudge to filter is the honest
+// shape. See PLAN.md 5.1.
+func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
+	userQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+
+	// Caught before it reaches the server, purely for the error message.
+	// Temporal rejects ORDER BY with a clear "ORDER BY clause is not supported",
+	// but wrapping the caller's filter in parentheses (see scopedQuery) turns it
+	// into a bare syntax error first -- so the useful diagnostic is destroyed by
+	// our own scoping. Reproduce it, and add the part Temporal cannot know: what
+	// to do instead.
+	if hasOrderBy(userQuery) {
+		return badRequest("ORDER BY is not supported by Temporal's visibility store " +
+			"(PLAN.md 12.8); filter to narrow the result set and sort client-side")
+	}
+
+	query := scopedQuery(userQuery)
+
+	ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
+	defer cancel()
+
+	// Count first: it is the call most likely to reject a malformed user query,
+	// and failing before fetching rows keeps a bad query from looking half-done.
+	total := -1
+	if cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
+		Query: query,
+	}); err != nil {
+		if apiErr := mapListError(err, userQuery); apiErr != nil {
+			return apiErr
+		}
+		// Countable failures that are not the caller's fault degrade to "of
+		// many" rather than failing a list we can still serve. PLAN.md 5.1.
+		s.log.Warn("count failed; falling back to an unknown total",
+			"query", query, "error", err)
+	} else {
+		total = int(cnt.GetCount())
+	}
+
+	resp, err := s.temporal.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
+		PageSize: int32(ListLimit),
+		Query:    query,
+	})
+	if err != nil {
+		if apiErr := mapListError(err, userQuery); apiErr != nil {
+			return apiErr
+		}
+		return mapQueryError(err)
+	}
+
+	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
+	for _, e := range resp.GetExecutions() {
+		v := decodeSearchAttributes(e.GetSearchAttributes())
+
+		// Status is a built-in rather than one of ours: a workflow cannot
+		// record its own closure. PLAN.md 3.6.
+		status := "deactivated"
+		if e.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+			status = "active"
+		}
+
+		// CustomerId is upserted by the workflow, but derive from the workflow
+		// ID if it is somehow absent -- the ID is the real identity and is
+		// always present. PLAN.md 3.1.
+		id := v.CustomerID
+		if id == "" {
+			id = strings.TrimPrefix(e.GetExecution().GetWorkflowId(), rewards.WorkflowIDPrefix)
+		}
+
+		items = append(items, CustomerListItem{
+			CustomerID: id,
+			Name:       v.Name,
+			Email:      v.Email,
+			Points:     v.Points,
+			Level:      v.Level,
+			EnrolledAt: v.EnrolledAt,
+			Generation: v.Generation,
+			Status:     status,
+			RunID:      e.GetExecution().GetRunId(),
+		})
+	}
+
+	writeJSON(w, s.log, http.StatusOK, CustomerListResponse{
+		Items:    items,
+		Limit:    ListLimit,
+		Total:    total,
+		Complete: total >= 0 && total <= ListLimit,
+		Query:    userQuery,
+	})
+	return nil
+}
+
+// hasOrderBy reports whether the query contains an ORDER BY clause, ignoring
+// anything inside single-quoted literals -- so a customer actually named
+// "order by" is searchable rather than mysteriously rejected.
+func hasOrderBy(q string) bool {
+	var b strings.Builder
+	inQuote := false
+	for _, r := range q {
+		if r == '\'' {
+			inQuote = !inQuote
+			continue
+		}
+		if !inQuote {
+			b.WriteRune(r)
+		}
+	}
+	return strings.Contains(strings.ToLower(b.String()), "order by")
+}
+
+// scopedQuery always constrains the list to our own workflow type, so a stray
+// query cannot surface unrelated executions from a shared namespace.
+func scopedQuery(userQuery string) string {
+	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'"
+	if userQuery == "" {
+		return scope
+	}
+	// Parenthesised so an OR in the caller's filter cannot escape the scope --
+	// "a OR b" ANDed bare would bind as "(scope AND a) OR b".
+	return scope + " AND (" + userQuery + ")"
+}
+
+// mapListError turns a rejected visibility query into a 400 carrying the
+// server's own diagnostics, and returns nil for anything else.
+//
+// Passing the message through is deliberate. The query is user input from a
+// raw-query box, and Temporal's errors are genuinely better than anything this
+// layer could write:
+//
+//	invalid search attribute: NoSuchAttribute
+//	invalid value for search attribute RewardsPoints of type Int: "not-an-int"
+//	malformed SQL query: syntax error at position 41 near 'a'
+//
+// ORDER BY is the exception, handled before the query is sent -- see hasOrderBy.
+func mapListError(err error, userQuery string) error {
+	var invalid *serviceerror.InvalidArgument
+	if !errors.As(err, &invalid) {
+		return nil
+	}
+	msg := invalid.Error()
+	if userQuery == "" {
+		// Our own scoping clause was rejected, which is our bug, not theirs.
+		return &apiError{http.StatusInternalServerError, CodeInternal, "internal error"}
+	}
+	return &apiError{http.StatusBadRequest, CodeInvalidRequest, msg}
 }
 
 // getCustomer reads current state via Query, and liveness via Describe.
@@ -338,6 +496,11 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 // would become a 500. Bounding the call at 2s means our own deadline usually
 // wins the race, collapsing all three into one predictable 503 -- and a healthy
 // query answers in ~30ms, so this leaves roughly 60x headroom. PLAN.md 12.4.
+// listTimeout bounds the two visibility calls. Generous next to queryTimeout
+// because these read Elasticsearch rather than replaying a workflow, so no
+// worker is involved and the no-poller failure mode does not apply.
+const listTimeout = 10 * time.Second
+
 const queryTimeout = 2 * time.Second
 
 // updateTimeout bounds how long an Update may wait for a worker.
@@ -408,20 +571,31 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// fillFromSearchAttributes populates the fields a Query would have provided,
-// for a closed customer no worker is available to replay.
+// searchAttrValues is a customer's search attributes, decoded.
 //
-// Recovers everything the detail page shows except LifetimeEarnEvents, which is
-// workflow state rather than a registered search attribute (PLAN.md 4 lists the
-// set deliberately). Only reached on the degraded path, so that field is
-// present whenever the query works -- which is nearly always.
-//
-// Best-effort by design: a missing or undecodable attribute leaves its field at
-// the zero value rather than failing the request. A partial record for a
-// customer whose history has been deleted beats a 500.
-func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttributes) {
+// Shared by the two callers that read them -- the list, where they are the only
+// thing available, and the detail endpoint's degraded path -- so the decoding
+// quirks live in one place. The one that bites: CustomerName is registered as
+// Text, and the SDK's constructor for Text is NewSearchAttributeKeyString, so
+// "String" here means the server's "Text".
+type searchAttrValues struct {
+	CustomerID string
+	Name       string
+	Email      string
+	Points     int
+	Level      string
+	EnrolledAt time.Time
+	Generation int
+}
+
+// decodeSearchAttributes is best-effort by design: a missing or undecodable
+// attribute leaves its field at the zero value rather than failing the request.
+// Both callers would rather serve a partial record than a 500, and neither can
+// do anything about a customer whose attributes are incomplete.
+func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
+	var out searchAttrValues
 	if sa == nil {
-		return
+		return out
 	}
 	fields := sa.GetIndexedFields()
 	dc := converter.GetDefaultDataConverter()
@@ -440,6 +614,7 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 		}
 	}
 
+	decodeStr(rewards.KeyCustomerID.GetName(), &out.CustomerID)
 	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
 	decodeStr(rewards.KeyCustomerEmail.GetName(), &out.Email)
 	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
@@ -449,6 +624,24 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
 		_ = dc.FromPayload(p, &out.EnrolledAt)
 	}
+	return out
+}
+
+// fillFromSearchAttributes populates the fields a Query would have provided,
+// for a closed customer no worker is available to replay.
+//
+// Recovers everything the detail page shows except LifetimeEarnEvents, which is
+// workflow state rather than a registered search attribute (PLAN.md 4 lists the
+// set deliberately). Only reached on the degraded path, so that field is
+// present whenever the query works -- which is nearly always.
+func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttributes) {
+	v := decodeSearchAttributes(sa)
+	out.Name = v.Name
+	out.Email = v.Email
+	out.Level = v.Level
+	out.Points = v.Points
+	out.Generation = v.Generation
+	out.EnrolledAt = v.EnrolledAt
 
 	// Derived rather than stored, so it stays consistent with the balance we
 	// just recovered. PLAN.md 3.2.
