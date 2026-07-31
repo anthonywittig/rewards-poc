@@ -16,7 +16,8 @@ GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop test enroll status add deactivate
+        worker worker-stop workers api api-stop test enroll status add deactivate \
+        inspect inspect-pg inspect-es write-trace
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -56,17 +57,77 @@ ps: $(ENV) ## Show stack status
 tools: $(ENV) ## Shell in the temporal container (temporal CLI on PATH)
 	$(COMPOSE) exec temporal bash
 
-psql: $(ENV) ## psql into the Temporal persistence database
+# Interactive shell, or a canned §8 query: make psql Q=history-blob ID=inspect
+psql: $(ENV) ## psql into Temporal persistence (Q=… for canned inspect queries)
+ifeq ($(Q),)
 	$(COMPOSE) exec postgres psql -U temporal -d temporal
+else
+	@$(MAKE) --no-print-directory inspect-pg ENV=$(ENV) Q=$(Q) ID=$(ID)
+endif
 
-es: $(ENV) ## Elasticsearch index summary
-	@$(TCTL) curl -s "http://elasticsearch:9200/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size"
+# Index summary, or a canned §8 query: make es Q=mapping
+es: $(ENV) ## Elasticsearch summary (Q=… for canned inspect queries)
+ifeq ($(Q),)
+	@$(TCTL) curl -s "http://elasticsearch:9200/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size,docs.deleted"
+else
+	@$(MAKE) --no-print-directory inspect-es ENV=$(ENV) Q=$(Q) ID=$(ID)
+endif
 
 verify-config: $(ENV) ## Check the platform behaviour the plan depends on
 	@$(TCTL) bash /inspect/verify-config.sh
 
 reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
 	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) WF="$(WF)" bash /reap.sh
+
+# --- Datastore inspection (Phase 7 / PLAN.md §8) -----------------------------
+# Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
+# ID defaults to the same customer the CLI targets (inspect → customer-inspect).
+
+inspect: ## List canned Postgres/ES inspect queries
+	@echo "Postgres (make inspect-pg Q=… ID=$(ID)):"
+	@echo "  history-blob      opaque history_node blobs (§8.1.1)"
+	@echo "  current-run       continue-as-new indirection (§8.1.2)"
+	@echo "  visibility-tasks  async queue feeding ES (§8.1.3)"
+	@echo "  after-reap        rows before/after make reap (§8.1.4)"
+	@echo
+	@echo "Elasticsearch (make inspect-es Q=… ID=$(ID)):"
+	@echo "  mapping           index mapping with custom SAs (§8.2)"
+	@echo "  customer          docs for one WorkflowId (§8.2)"
+	@echo "  gold-running      list-page filter + ES-side sort (§8.2)"
+	@echo "  indices           index size / searchable count (§8.2)"
+	@echo "  closed            deactivated customer / post-reap (§8.2)"
+	@echo
+	@echo "End-to-end: make write-trace ID=$(ID) AMOUNT=10"
+	@echo "Docs:       docs/DATASTORES.md"
+
+inspect-pg: $(ENV) ## Run a Postgres inspect query (make inspect-pg Q=history-blob ID=inspect)
+	@case "$(Q)" in \
+	  history-blob) f=pg-01-history-blob.sql ;; \
+	  current-run) f=pg-02-current-run.sql ;; \
+	  visibility-tasks) f=pg-03-visibility-tasks.sql ;; \
+	  after-reap) f=pg-04-after-reap.sql ;; \
+	  *) echo "Unknown Q='$(Q)'. Run: make inspect" >&2; exit 1 ;; \
+	 esac; \
+	 echo "# deploy/inspect/$$f  (wf=customer-$(ID))"; \
+	 $(COMPOSE) exec -T postgres \
+	   psql -U temporal -d temporal -v ON_ERROR_STOP=1 -v wf=customer-$(ID) \
+	   < deploy/inspect/$$f
+
+inspect-es: $(ENV) ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
+	@case "$(Q)" in \
+	  mapping) f=es-01-mapping.sh ;; \
+	  customer) f=es-02-customer.sh ;; \
+	  gold-running) f=es-03-gold-running.sh ;; \
+	  indices) f=es-04-indices.sh ;; \
+	  closed) f=es-05-closed.sh ;; \
+	  *) echo "Unknown Q='$(Q)'. Run: make inspect" >&2; exit 1 ;; \
+	 esac; \
+	 echo "# deploy/inspect/$$f  (WF=customer-$(ID))"; \
+	 $(TCTL) env WF=customer-$(ID) bash /inspect/$$f
+
+write-trace: $(ENV) ## Trace one addPoints through Postgres + ES (make write-trace ID=inspect)
+	@NAMESPACE=$(NAMESPACE) ENV=$(ENV) ID=$(ID) AMOUNT=$(or $(AMOUNT),10) \
+	  bash deploy/inspect/write-trace.sh
 
 # --- Workflow (Phase 1) -----------------------------------------------------
 

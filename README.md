@@ -234,10 +234,16 @@ namespace on one stack is much cheaper.
 
 ```sh
 make tools            # shell in the server container, `temporal` CLI on PATH
-make psql             # psql into the Temporal persistence database
+make psql             # interactive psql into Temporal persistence
 make es               # Elasticsearch visibility index summary
+make inspect          # canned §8 queries into both stores
+make write-trace ID=inspect AMOUNT=10
 make logs SVC=temporal
 ```
+
+How Temporal actually uses Postgres (persistence) and Elasticsearch (visibility) — including
+an end-to-end write trace — is documented in [docs/DATASTORES.md](docs/DATASTORES.md).
+`make psql Q=history-blob ID=inspect` / `make es Q=mapping` run the same canned queries.
 
 ## Two things worth knowing up front
 

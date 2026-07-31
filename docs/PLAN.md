@@ -84,13 +84,14 @@ deploy/
   reap.sh                     force-delete closed executions (§6.3)
   inspect/
     verify-config.sh          platform assumption checks
-    ...                       canned psql + curl queries for §8
+    pg-*.sql / es-*.sh        canned queries for §8
+    write-trace.sh            one addPoints through both stores
 docs/
   PLAN.md                     this file
   DATASTORES.md               how Temporal uses Postgres and Elasticsearch
 README.md                     quick start and the two surprises
 .env.example                  all ports, versions, tuning
-Makefile                      up / down / bootstrap / verify-config / reap / psql / es
+Makefile                      up / down / bootstrap / verify-config / reap / psql / es / inspect
 ```
 
 Operational scripts run via `exec` into the **server** container rather than a separate
@@ -1048,7 +1049,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
 | 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix |
-| 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | Best done here — Phases 4–6 have generated data worth looking at, including reaped runs |
+| 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | Audit timeline now renders notification rows too |
 | 9 | Replay test, seed script, README | |
 
