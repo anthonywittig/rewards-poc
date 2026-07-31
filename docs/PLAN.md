@@ -132,6 +132,28 @@ type CustomerState struct {
 }
 ```
 
+#### The workflow is the integrity boundary
+
+Worth stating explicitly, because it is the cost of the headline decision. With no application
+database there is no schema, no `CHECK` constraint, no `NOT NULL`, and no unique index standing
+behind this state. A workflow accepts whatever payload it is started with, so **every invariant
+that a table definition would have enforced has to be written by hand**, at the top of the
+workflow, or it is not enforced at all.
+
+Phase 1 validates on start: `CustomerID` must match the workflow ID it was started under
+(otherwise search attributes and `getStatus` report one customer while every operation is keyed
+by another), counters must be non-negative, `Points` must not exceed `LifetimePoints`, and
+`LifetimePoints` must not already exceed the cap. That last pair matters more than it looks —
+without it, a start payload carrying a large `Points` and a zero `LifetimePoints` walks straight
+past the handler's lifetime cap, because the cap is measured against a number the caller
+supplied.
+
+A rejected enrollment fails the execution outright (`WorkflowExecutionFailed`, attempt 1, no
+retry loop — verified) rather than producing a running customer whose numbers do not add up.
+
+Note that `Points < LifetimePoints` is *legitimate* — it is what a spending mechanism would
+produce, and seeded fixtures depend on it. Only `Points > LifetimePoints` is incoherent.
+
 ### 3.2 Tier is derived, never stored
 
 ```go

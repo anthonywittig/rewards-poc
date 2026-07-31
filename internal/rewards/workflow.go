@@ -2,6 +2,7 @@ package rewards
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -20,6 +21,7 @@ const (
 // string match on an error message.
 const (
 	ErrTypeLifetimeCapExceeded = "LifetimeCapExceeded"
+	ErrTypeInvalidEnrollment   = "InvalidEnrollment"
 )
 
 // AddPointsRequest is the addPoints Update argument.
@@ -58,6 +60,13 @@ type CustomerStatus struct {
 // Phase 6.
 func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	logger := workflow.GetLogger(ctx)
+
+	// Nothing else will catch a bad payload, so this runs before anything is
+	// upserted or served. See validateEnrollment.
+	if err := validateEnrollment(ctx, &state); err != nil {
+		logger.Error("rejecting enrollment", "workflowId", workflow.GetInfo(ctx).WorkflowExecution.ID, "error", err)
+		return err
+	}
 
 	// EnrolledAt is set once, on the first run, and carried forward from then on.
 	// workflow.Now() rather than time.Now() -- PLAN.md 12.5.
@@ -190,6 +199,78 @@ func handleLeave(ctx workflow.Context, state *CustomerState) error {
 	// rather than Completed, which is the distinction the customer list reads to
 	// tell active from deactivated. PLAN.md 4.
 	return ctx.Err()
+}
+
+// validateEnrollment rejects a start payload that is internally inconsistent or
+// that disagrees with the workflow ID it was started under.
+//
+// This matters more here than it would in a conventional service. With no
+// application database there is no schema, no CHECK constraint and no unique
+// index sitting behind this workflow -- if the start payload is nonsense,
+// nothing downstream will notice. "Temporal as the system of record" means the
+// workflow *is* the integrity boundary, and the boundary has to be written by
+// hand. Everything below would otherwise be enforceable by a table definition.
+//
+// The state carried across continue-as-new (Phase 2) always satisfies these,
+// since we produced it, so this is safe to run at the top of every run rather
+// than only on the first.
+func validateEnrollment(ctx workflow.Context, state *CustomerState) error {
+	// The workflow ID is the real identity -- it is what every operation
+	// addresses and what the Phase 5 audit crawl walks. A payload claiming a
+	// different customer would index search attributes and answer getStatus
+	// under one ID while being addressed by another.
+	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	if !strings.HasPrefix(wfID, WorkflowIDPrefix) {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("workflow ID %q does not start with %q", wfID, WorkflowIDPrefix),
+			ErrTypeInvalidEnrollment, nil)
+	}
+	if want := strings.TrimPrefix(wfID, WorkflowIDPrefix); state.CustomerID != want {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("customerId %q does not match workflow ID %q (expected customerId %q)",
+				state.CustomerID, wfID, want),
+			ErrTypeInvalidEnrollment, nil)
+	}
+	if state.CustomerID == "" {
+		return temporal.NewNonRetryableApplicationError(
+			"customerId is required", ErrTypeInvalidEnrollment, nil)
+	}
+
+	if state.Points < 0 || state.LifetimePoints < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("counters must be non-negative (points=%d lifetimePoints=%d lifetimeEarnEvents=%d generation=%d)",
+				state.Points, state.LifetimePoints, state.LifetimeEarnEvents, state.Generation),
+			ErrTypeInvalidEnrollment, nil)
+	}
+
+	// A balance cannot exceed everything ever earned. Points may be *lower* --
+	// that is what a spending mechanism would produce, and seeded fixtures rely
+	// on it -- but higher is incoherent, and it is also how the lifetime cap
+	// gets sidestepped: seed a large balance with lifetimePoints at zero and the
+	// handler's cap check has nothing to push against.
+	if state.Points > state.LifetimePoints {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("points (%d) cannot exceed lifetimePoints (%d)", state.Points, state.LifetimePoints),
+			ErrTypeInvalidEnrollment, nil)
+	}
+
+	// The same cap the handler enforces, applied to the starting point, so it
+	// cannot be stepped over on the way in.
+	if state.LifetimePoints > LifetimePointsCap {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("lifetimePoints (%d) exceeds the lifetime cap of %d",
+				state.LifetimePoints, LifetimePointsCap),
+			ErrTypeInvalidEnrollment, nil)
+	}
+
+	// Points cannot have been earned without an event to earn them in.
+	if state.LifetimeEarnEvents == 0 && state.LifetimePoints > 0 {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("lifetimePoints is %d but lifetimeEarnEvents is 0", state.LifetimePoints),
+			ErrTypeInvalidEnrollment, nil)
+	}
+
+	return nil
 }
 
 func statusOf(state *CustomerState) CustomerStatus {

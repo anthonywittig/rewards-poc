@@ -9,6 +9,7 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
 	"github.com/stretchr/testify/suite"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
 )
@@ -21,13 +22,24 @@ type RewardsSuite struct {
 	env *testsuite.TestWorkflowEnvironment
 }
 
-func (s *RewardsSuite) SetupTest() { s.env = s.NewTestWorkflowEnvironment() }
+const testCustomerID = "c-001"
+
+func (s *RewardsSuite) SetupTest() {
+	s.env = s.NewTestWorkflowEnvironment()
+	// The workflow validates that its payload's customerId matches the workflow
+	// ID it was started under, so the test env's "default-test-workflow-id" has
+	// to be replaced with a real one.
+	s.env.SetStartWorkflowOptions(client.StartWorkflowOptions{
+		ID:        rewards.WorkflowID(testCustomerID),
+		TaskQueue: rewards.TaskQueue,
+	})
+}
 
 func (s *RewardsSuite) AfterTest(_, _ string) { s.env.AssertExpectations(s.T()) }
 
 func newState() rewards.CustomerState {
 	return rewards.CustomerState{
-		CustomerID: "c-001",
+		CustomerID: testCustomerID,
 		Name:       "Ada Lovelace",
 		Email:      "ada@example.com",
 	}
@@ -313,6 +325,100 @@ func (s *RewardsSuite) Test_GetStatus_PreservesCarriedEnrolledAt() {
 
 	s.True(status.EnrolledAt.Equal(enrolled), "got %s, want %s", status.EnrolledAt, enrolled)
 	s.Equal(4, status.Generation)
+}
+
+// --- Enrollment validation ---------------------------------------------------
+
+// The workflow is the only integrity boundary -- there is no database schema
+// behind it -- so an incoherent start payload has to be rejected here or not at
+// all. These fail the execution outright rather than starting a customer whose
+// numbers do not add up.
+func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
+	cases := []struct {
+		name  string
+		mutar func(*rewards.CustomerState)
+		want  string
+	}{
+		{"customerId disagrees with workflow ID",
+			func(st *rewards.CustomerState) { st.CustomerID = "someone-else" },
+			"does not match workflow ID"},
+		{"empty customerId",
+			func(st *rewards.CustomerState) { st.CustomerID = "" },
+			"does not match workflow ID"},
+		{"balance exceeds lifetime earnings",
+			func(st *rewards.CustomerState) { st.Points = 999999; st.LifetimePoints = 0 },
+			"cannot exceed lifetimePoints"},
+		{"seeded above the lifetime cap",
+			func(st *rewards.CustomerState) {
+				st.LifetimePoints = rewards.LifetimePointsCap + 1
+				st.LifetimeEarnEvents = 1
+			},
+			"exceeds the lifetime cap"},
+		{"negative points",
+			func(st *rewards.CustomerState) { st.Points = -1 },
+			"non-negative"},
+		{"negative generation",
+			func(st *rewards.CustomerState) { st.Generation = -1 },
+			"non-negative"},
+		{"points earned with no earn events",
+			func(st *rewards.CustomerState) { st.Points = 10; st.LifetimePoints = 10 },
+			"lifetimeEarnEvents is 0"},
+	}
+
+	for _, tc := range cases {
+		s.Run(tc.name, func() {
+			env := s.NewTestWorkflowEnvironment()
+			env.SetStartWorkflowOptions(client.StartWorkflowOptions{
+				ID:        rewards.WorkflowID(testCustomerID),
+				TaskQueue: rewards.TaskQueue,
+			})
+
+			state := newState()
+			tc.mutar(&state)
+			env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+
+			s.Require().True(env.IsWorkflowCompleted())
+			err := env.GetWorkflowError()
+			s.Require().Error(err, "an incoherent enrollment must not produce a running customer")
+			s.Contains(err.Error(), tc.want)
+
+			var appErr *temporal.ApplicationError
+			s.Require().True(errors.As(err, &appErr))
+			s.Equal(rewards.ErrTypeInvalidEnrollment, appErr.Type())
+			s.True(appErr.NonRetryable(), "a bad payload will not become good on retry")
+		})
+	}
+}
+
+// The specific bypass: seed a large balance with lifetimePoints at zero, and
+// the handler's cap check has nothing to push against. Rejected at the door.
+func (s *RewardsSuite) Test_Enroll_RejectsLifetimeCapBypass() {
+	state := newState()
+	state.Points = 5_000_000
+	state.LifetimePoints = 0
+
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	s.Require().Error(s.env.GetWorkflowError())
+}
+
+// A balance *below* lifetime earnings is legitimate -- that is what spending
+// would produce, and fixtures depend on it -- so it must still be accepted.
+func (s *RewardsSuite) Test_Enroll_AcceptsSpentDownBalance() {
+	state := newState()
+	state.Points = 40
+	state.LifetimePoints = 900
+	state.LifetimeEarnEvents = 6
+
+	status := s.queryStatusAt(time.Minute)
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(state)
+
+	s.Equal(40, status.Points)
+	s.Equal(900, status.LifetimePoints)
+	s.Equal(rewards.LevelBasic, status.Level, "tier follows the current balance, not lifetime earnings")
 }
 
 // --- Cancellation (PLAN.md 3.6) ---------------------------------------------
