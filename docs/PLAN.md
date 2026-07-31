@@ -407,9 +407,13 @@ Level})` logs a line saying what would be sent, and returns. The body is a stub 
 would call an email or push service here — but everything *around* it is real, and that is
 the part worth building.
 
-Triggered when a point-add crosses a tier boundary. Because tiers are derived (§3.2) this is
-a pure comparison inside the handler: compute `Level(before)` and `Level(after)`, and if they
-differ, a promotion happened.
+Triggered when a point-add leaves the customer at a tier they have not been told about. Because
+tiers are derived (§3.2) this is a pure comparison inside the handler: is `Level(points)` absent
+from `NotifiedLevels`?
+
+**Not** "did this add cross a boundary", which is what this said first and is subtly wrong: a
+crossing is an event that happens once, so a delivery that failed could never be reattempted.
+See [§12.33](#12-sharp-edges).
 
 #### Where it runs, and why not in the handler
 
@@ -479,7 +483,9 @@ someone's inbox.
 Two mitigations, both cheap:
 
 - Carry `NotifiedLevels []string` in `CustomerState` (so it survives continue-as-new) and skip
-  any level already in it. This is the workflow-side guard.
+  any level already in it. This is the workflow-side guard, and it is also the retry ledger: a
+  level stays out of it until a delivery actually succeeds, so a failed one is re-offered by
+  the next add.
 - Pass an idempotency key of `<customerID>:<level>` to the Activity, since a customer reaches
   gold exactly once. This is the guard a real notification service would honour, and including
   it in the stub documents the contract even though the stub ignores it.
@@ -1502,7 +1508,30 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     should roll on, and a rule the system only approximately keeps is a poor thing to have
     written into a constant.
 
-33. **Background work that must outlive cancellation needs a disconnected context of its own.**
+33. **An event-shaped condition cannot be retried; a state-shaped one can.** The promotion
+    trigger started as *"did this add cross a tier boundary"*, which is an event: it happens
+    once and is then gone. So a delivery that exhausted the Activity's (deliberately bounded)
+    retries was lost for good — points only go up, so the boundary could never be crossed
+    again, and nothing would ever re-offer it.
+
+    Rewriting the condition as *"is the customer at a tier nobody has told them about"* makes
+    it a property of the customer, so any later add retries it, and the state it reads is
+    already carried across continue-as-new. Same information, and the difference between a
+    notification that can be recovered and one that cannot.
+
+    It also made `NotifiedLevels` genuinely load-bearing. Under the crossing rule the monotonic
+    balance did the deduplication and the field was belt-and-braces; now it is both the dedup
+    and the retry ledger.
+
+    Two consequences worth knowing. The queue has to reject a level it is already holding or
+    delivering, or a provider that is down accumulates one entry per add and delays the roll
+    without bound — reintroducing, one level up, exactly the failure that bounding the
+    Activity's retries prevented. And the starting tier needs excluding explicitly: under the
+    old rule `basic` could never be crossed into, and under this one it has to be said.
+
+    Raised by review on PR #15.
+
+34. **Background work that must outlive cancellation needs a disconnected context of its own.**
     The notifier goroutine runs on one, so that deactivating a customer mid-delivery does not
     cancel a promotion they had already earned. Running it on the workflow's own context looks
     natural and silently loses that notification — `handleLeave` then waits for a drain that
@@ -1510,10 +1539,10 @@ Elasticsearch 7.17.27; details and the queries that show them are in
 
 **Design**
 
-34. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+35. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-35. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+36. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

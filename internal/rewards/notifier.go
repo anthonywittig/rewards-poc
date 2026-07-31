@@ -29,10 +29,10 @@ const (
 	notifyMaxAttempts = 3
 )
 
-// notifier holds the queue and the two facts the continue-as-new guard needs.
+// notifier holds the queue and the delivery currently in flight.
 type notifier struct {
-	pending  []NotifyRequest
-	inFlight bool
+	pending []NotifyRequest
+	current *NotifyRequest // nil when nothing is being delivered
 }
 
 // idle reports whether there is nothing queued and nothing in flight.
@@ -43,10 +43,37 @@ type notifier struct {
 // as new while a notification is still queued or executing, and it is silently
 // dropped. At EarnsPerRun = 3 a promotion landing on the third add is exactly
 // when that happens, which is common rather than exotic.
-func (n *notifier) idle() bool { return len(n.pending) == 0 && !n.inFlight }
+func (n *notifier) idle() bool { return len(n.pending) == 0 && n.current == nil }
 
-// queue adds a notification for the drain goroutine to pick up.
-func (n *notifier) queue(req NotifyRequest) { n.pending = append(n.pending, req) }
+// queue adds a notification for the drain goroutine to pick up, and reports
+// whether it did.
+//
+// Idempotent per (event, level). Since a promotion is now re-queued by any add
+// that finds the customer's tier unannounced (see promotionFor), a provider that
+// is down would otherwise accumulate one identical entry per add -- and because
+// continue-as-new waits for the queue to drain, that would delay the roll
+// without bound. Which is the exact failure that bounding the Activity's retries
+// was meant to prevent, reintroduced one level up.
+func (n *notifier) queue(req NotifyRequest) bool {
+	if n.alreadyHas(req) {
+		return false
+	}
+	n.pending = append(n.pending, req)
+	return true
+}
+
+// alreadyHas reports whether an equivalent notification is queued or in flight.
+func (n *notifier) alreadyHas(req NotifyRequest) bool {
+	if n.current != nil && n.current.Event == req.Event && n.current.Level == req.Level {
+		return true
+	}
+	for _, p := range n.pending {
+		if p.Event == req.Event && p.Level == req.Level {
+			return true
+		}
+	}
+	return false
+}
 
 // run drains the queue until the workflow ends.
 //
@@ -66,23 +93,28 @@ func (n *notifier) run(ctx workflow.Context, state *CustomerState) {
 		// here would reopen exactly the hole idle() exists to close.
 		req := n.pending[0]
 		n.pending = n.pending[1:]
-		n.inFlight = true
+		n.current = &req
 
 		if err := n.send(ctx, req); err != nil {
-			// Retries are already exhausted by this point. Losing a stub
-			// notification is not worth failing the workflow over, and there is
-			// nothing useful left to try -- so it is recorded and dropped.
-			logger.Error("notification delivery failed after retries",
+			// The Activity's own retries are exhausted by this point, and they
+			// are bounded on purpose. Failing the workflow over an undelivered
+			// stub notification would be worse than the notification, so this
+			// attempt is recorded and abandoned -- but *not* given up on: the
+			// level stays out of NotifiedLevels, so the next add re-queues it.
+			// That is the outer retry, and it is why promotionFor asks whether
+			// the customer's tier has been announced rather than whether this
+			// particular add crossed a line.
+			logger.Error("notification delivery failed after retries; will retry on the next add",
 				"customerId", req.CustomerID, "event", req.Event,
 				"level", req.Level, "error", err)
 		} else if req.Event == NotifyEventPromoted {
-			// Recorded only on success, and only for promotions: this is the
-			// dedup guard, and marking a level notified that was never
-			// delivered would suppress the retry it exists to allow.
+			// Recorded only on success, and only for promotions. Marking a level
+			// notified that was never delivered would suppress exactly the retry
+			// described above.
 			state.NotifiedLevels = append(state.NotifiedLevels, req.Level)
 		}
 
-		n.inFlight = false
+		n.current = nil
 	}
 }
 
@@ -98,31 +130,44 @@ func (n *notifier) send(ctx workflow.Context, req NotifyRequest) error {
 	return workflow.ExecuteActivity(actCtx, ActivityNotifyCustomer, req).Get(ctx, nil)
 }
 
-// promotionFor returns the notification to send if an add crossed a tier
-// boundary, given the balance before it.
+// promotionFor returns the notification to send if the customer has reached a
+// tier nobody has told them about.
 //
-// Tiers are derived rather than stored (PLAN.md 3.2), so detecting a promotion
-// is a comparison of two pure function calls and needs no extra state.
-func promotionFor(state *CustomerState, pointsBefore int) (NotifyRequest, bool) {
-	after := Level(state.Points)
-	if Level(pointsBefore) == after {
+// Deliberately *not* "did this add cross a boundary". A crossing is an event
+// that happens once and is then gone, so a delivery that failed its retries
+// could never be attempted again -- raised on PR #15, and reproduced by
+// Test_Notify_FailedDeliveryIsRetriedByALaterAdd. Asking instead whether the
+// customer's current tier appears in NotifiedLevels makes the condition a
+// property of the customer, so any later add retries it. The state is already
+// carried across continue-as-new, so this costs nothing new.
+//
+// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup
+// on the way in, and the at-least-once guard PLAN.md 3.7 asks for on the way
+// out. Previously the monotonic balance did the deduplication and this was
+// belt-and-braces.
+//
+// Tiers are derived rather than stored (PLAN.md 3.2), so this needs no extra
+// state to work out.
+func promotionFor(state *CustomerState) (NotifyRequest, bool) {
+	current := Level(state.Points)
+	// Nobody is congratulated for the tier they started in. Under the old
+	// crossing rule this was implicit -- basic can never be crossed into -- and
+	// under this one it has to be said.
+	if current == LevelBasic {
 		return NotifyRequest{}, false
 	}
-	// The at-least-once guard from PLAN.md 3.7. With points monotonic a level
-	// can only be crossed once, so this is currently belt-and-braces -- but it
-	// is the check that would start mattering the day a spend or expiry path
-	// let a balance fall back below a threshold and climb it again.
-	if slices.Contains(state.NotifiedLevels, after) {
+	if slices.Contains(state.NotifiedLevels, current) {
 		return NotifyRequest{}, false
 	}
 	return NotifyRequest{
 		CustomerID: state.CustomerID,
 		Email:      state.Email,
 		Event:      NotifyEventPromoted,
-		Level:      after,
-		// A customer reaches each tier once, so this is a natural key. The stub
-		// ignores it; a real provider would not.
-		IdempotencyKey: state.CustomerID + ":" + after,
+		Level:      current,
+		// A customer reaches each tier once, so this is a natural key -- and it
+		// is what makes the outer retry above safe to send more than once. The
+		// stub ignores it; a real provider would not.
+		IdempotencyKey: state.CustomerID + ":" + current,
 	}, true
 }
 

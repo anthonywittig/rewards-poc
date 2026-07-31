@@ -327,10 +327,15 @@ Everything else — points, tiers, enrollment, the audit log — is workflow sta
 side effects at all, which is rather the argument. Having exactly one Activity makes the
 boundary visible.
 
-It fires when a point-add crosses a tier, and again when a customer leaves. The handler does
-**not** await it: it applies the points, notices the crossing, queues a notification and
-returns, so a notification provider being down can neither fail a point-add that is already
-recorded nor put a network call on the UI's critical path.
+It fires when a point-add leaves the customer at a tier they have not been told about, and
+again when a customer leaves. The handler does **not** await it: it applies the points, queues
+a notification and returns, so a notification provider being down can neither fail a point-add
+that is already recorded nor put a network call on the UI's critical path.
+
+That condition is deliberately about the customer's *state* rather than about the add that
+just happened. "Did this add cross a boundary" is an event — it occurs once and is then gone,
+so a delivery that exhausted its retries could never be attempted again. "Is this customer at
+an unannounced tier" is a property, so the next add picks it up.
 
 That queue is drained by a `workflow.Go` goroutine, and it is where the most instructive bug in
 the design lives:

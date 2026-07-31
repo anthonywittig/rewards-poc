@@ -907,3 +907,68 @@ func TestActivityNameMatchesRegistration(t *testing.T) {
 			rewards.ActivityNotifyCustomer, registered, fn)
 	}
 }
+
+// mockNotifyFailing fails the first failures deliveries and succeeds after, so a
+// send can exhaust its retry budget and a later attempt can still land.
+func (s *RewardsSuite) mockNotifyFailing(failures int) *notifyCalls {
+	calls := &notifyCalls{}
+	var n int
+	s.env.OnActivity(rewards.NotifyCustomer, mock.Anything, mock.Anything).
+		Return(func(_ context.Context, req rewards.NotifyRequest) error {
+			n++
+			if n <= failures {
+				return fmt.Errorf("notification provider unreachable (attempt %d)", n)
+			}
+			calls.add(req)
+			return nil
+		}).Maybe()
+	return calls
+}
+
+// Raised on PR #15: a delivery that exhausts its retries was dropped for good.
+//
+// The Activity's own retry policy is bounded on purpose -- an unbounded one
+// would block continue-as-new for as long as the provider stayed down. So the
+// outer retry has to come from somewhere else, and "notify a tier the customer
+// has reached but not been told about" is that somewhere: any later add picks it
+// up, because the condition is a property of the customer rather than an event
+// that has already gone past.
+//
+// Before the fix this failed with no notifications at all: the crossing had
+// happened once, so nothing ever re-queued it.
+func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
+	// notifyMaxAttempts failures exhausts exactly one send.
+	calls := s.mockNotifyFailing(3)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	// Stays gold: no boundary is crossed by this one, which is the whole point.
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"a dropped promotion must be picked up by the next add, not lost for good")
+}
+
+// ...and the flip side: re-offering the tier on every add must not mean
+// announcing it on every add.
+//
+// Note this passes by way of NotifiedLevels rather than by way of the queue's
+// own idempotence -- the delivery succeeds before the next add lands, so the
+// duplicate never reaches the queue. The queue guard is tested directly in
+// notifier_test.go, because from out here the two are indistinguishable.
+func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
+	calls := s.mockNotifyFailing(0)
+
+	// Three adds, all inside gold after the first.
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.addPoints(3*time.Minute, "u3", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(4 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"gold is announced once, however many adds land inside it")
+}

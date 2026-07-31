@@ -117,7 +117,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			}
 
 			// The only mutation of Points in the system, and it only ever adds.
-			pointsBefore := state.Points
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
 
@@ -125,8 +124,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// point-add to the notifier's availability -- the points are already
 			// earned and recorded, so a notification provider being down must
 			// not fail them or hold the caller open. PLAN.md 3.7.
-			if note, ok := promotionFor(&state, pointsBefore); ok {
-				n.queue(note)
+			if note, ok := promotionFor(&state); ok && n.queue(note) {
 				logger.Info("tier promotion queued",
 					"customerId", state.CustomerID, "level", note.Level)
 			}
