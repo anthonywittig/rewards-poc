@@ -1068,6 +1068,19 @@ Things not in the original brief that will come up.
    no open execution means a departed customer. Matching the message instead shipped
    "please retry" to callers adding points to a deactivated customer, where retrying can never
    succeed — caught by review on PR #6.
+
+   **And "operate on a closed execution" is not one behaviour — it depends on the operation.**
+   Measured on 1.29.7:
+
+   | on a closed execution | `Canceled` | `Failed` | `Terminated` | never existed |
+   |---|---|---|---|---|
+   | `CancelWorkflow` | `nil` | `nil` | `nil` | `NotFound` |
+   | `UpdateWorkflow` | `NotFound` | — | — | `NotFound` |
+
+   Cancel is idempotent server-side; Update is not. So `DELETE` needs no disambiguation and is
+   naturally idempotent, while `POST /points` needs the extra `Describe` above. Assuming the two
+   behave alike is a reasonable guess and a wrong one — it was raised as a bug against `DELETE`
+   on PR #6 and disproved by measurement.
 3. Update dedup via `UpdateID` is scoped to a single run, so it does **not** survive
    continue-as-new. A retry that straddles a rollover can double-apply. The UI should send a
    UUID per click, and we should document that per-run dedup is not sufficient for real money.

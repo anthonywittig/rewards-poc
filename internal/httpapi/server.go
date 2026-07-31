@@ -367,6 +367,24 @@ func (s *Server) sendUpdate(
 
 // deactivate cancels the workflow. Cancel rather than Terminate so the
 // workflow's own departure code runs. PLAN.md 3.6.
+//
+// Deliberately does NOT disambiguate a closed execution the way the update path
+// does, because Cancel and Update disagree about what a closed run means.
+// Measured against a real server:
+//
+//	operation on a closed execution   Canceled   Failed   Terminated   never existed
+//	------------------------------    --------   ------   ----------   -------------
+//	CancelWorkflow                     nil        nil      nil          NotFound
+//	UpdateWorkflow                     NotFound   -        -            NotFound
+//
+// So Cancel is already idempotent server-side: deactivating a departed customer
+// is a successful no-op, and only a workflow ID that never existed produces the
+// NotFound that becomes a 404. That is exactly the REST semantics wanted here,
+// and it is why this handler is three lines while updateWithRolloverRetry needs
+// an extra Describe to decide the same question.
+//
+// Reviewed on PR #6 as a suspected bug -- repeat DELETE misreporting 404 -- on
+// the reasonable assumption that Cancel behaves like Update. It does not.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
