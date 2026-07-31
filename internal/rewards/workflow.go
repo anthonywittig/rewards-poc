@@ -20,8 +20,8 @@ const (
 // status codes in Phase 3; naming them here keeps that mapping from being a
 // string match on an error message.
 const (
-	ErrTypeLifetimeCapExceeded = "LifetimeCapExceeded"
-	ErrTypeInvalidEnrollment   = "InvalidEnrollment"
+	ErrTypePointsCapExceeded = "PointsCapExceeded"
+	ErrTypeInvalidEnrollment = "InvalidEnrollment"
 )
 
 // AddPointsRequest is the addPoints Update argument.
@@ -48,7 +48,6 @@ type CustomerStatus struct {
 	EnrolledAt time.Time `json:"enrolledAt"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
-	LifetimePoints     int `json:"lifetimePoints"`
 	Generation         int `json:"generation"`
 }
 
@@ -92,20 +91,20 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// already known good. What is left is the one rule that depends on
 			// accumulated state -- and that a support rep would want to see a
 			// record of. PLAN.md 3.4.
-			if state.LifetimePoints+req.Amount > LifetimePointsCap {
+			if state.Points+req.Amount > PointsCap {
 				// Non-retryable: the answer will not change on a retry, and the
 				// default retryable flag shows up in the CLI and API responses
 				// as an invitation to try again.
 				return AddPointsResult{}, temporal.NewNonRetryableApplicationError(
-					fmt.Sprintf("add of %d would exceed the lifetime cap of %d (lifetime total is %d)",
-						req.Amount, LifetimePointsCap, state.LifetimePoints),
-					ErrTypeLifetimeCapExceeded,
+					fmt.Sprintf("add of %d would exceed the cap of %d (balance is %d)",
+						req.Amount, PointsCap, state.Points),
+					ErrTypePointsCapExceeded,
 					nil,
 				)
 			}
 
+			// The only mutation of Points in the system, and it only ever adds.
 			state.Points += req.Amount
-			state.LifetimePoints += req.Amount
 			state.LifetimeEarnEvents++
 
 			// Deterministic and stable across replay, unlike a UUID. Lifetime
@@ -236,37 +235,27 @@ func validateEnrollment(ctx workflow.Context, state *CustomerState) error {
 			"customerId is required", ErrTypeInvalidEnrollment, nil)
 	}
 
-	if state.Points < 0 || state.LifetimePoints < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
+	if state.Points < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("counters must be non-negative (points=%d lifetimePoints=%d lifetimeEarnEvents=%d generation=%d)",
-				state.Points, state.LifetimePoints, state.LifetimeEarnEvents, state.Generation),
+			fmt.Sprintf("counters must be non-negative (points=%d lifetimeEarnEvents=%d generation=%d)",
+				state.Points, state.LifetimeEarnEvents, state.Generation),
 			ErrTypeInvalidEnrollment, nil)
 	}
 
-	// A balance cannot exceed everything ever earned. Points may be *lower* --
-	// that is what a spending mechanism would produce, and seeded fixtures rely
-	// on it -- but higher is incoherent, and it is also how the lifetime cap
-	// gets sidestepped: seed a large balance with lifetimePoints at zero and the
-	// handler's cap check has nothing to push against.
-	if state.Points > state.LifetimePoints {
+	// The same cap the handler enforces, applied to the starting balance, so it
+	// cannot be stepped over on the way in. Collapsing Points and LifetimePoints
+	// into one monotonic field is what makes this sufficient: there is no longer
+	// a second, caller-supplied number for the cap to be measured against.
+	if state.Points > PointsCap {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("points (%d) cannot exceed lifetimePoints (%d)", state.Points, state.LifetimePoints),
-			ErrTypeInvalidEnrollment, nil)
-	}
-
-	// The same cap the handler enforces, applied to the starting point, so it
-	// cannot be stepped over on the way in.
-	if state.LifetimePoints > LifetimePointsCap {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("lifetimePoints (%d) exceeds the lifetime cap of %d",
-				state.LifetimePoints, LifetimePointsCap),
+			fmt.Sprintf("points (%d) exceeds the cap of %d", state.Points, PointsCap),
 			ErrTypeInvalidEnrollment, nil)
 	}
 
 	// Points cannot have been earned without an event to earn them in.
-	if state.LifetimeEarnEvents == 0 && state.LifetimePoints > 0 {
+	if state.LifetimeEarnEvents == 0 && state.Points > 0 {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("lifetimePoints is %d but lifetimeEarnEvents is 0", state.LifetimePoints),
+			fmt.Sprintf("points is %d but lifetimeEarnEvents is 0", state.Points),
 			ErrTypeInvalidEnrollment, nil)
 	}
 
@@ -284,7 +273,6 @@ func statusOf(state *CustomerState) CustomerStatus {
 		NextTierAt:         nextAt,
 		EnrolledAt:         state.EnrolledAt,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
-		LifetimePoints:     state.LifetimePoints,
 		Generation:         state.Generation,
 	}
 }

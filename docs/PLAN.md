@@ -117,13 +117,12 @@ type CustomerState struct {
     Name       string
     Email      string
 
-    Points     int
+    Points     int // monotonic — only ever increases, see below
 
     // Survives history reaping — this is what lets the audit log detect and
     // quantify its own truncation. See §6.3.
     EnrolledAt         time.Time // original enrollment, from the very first run
     LifetimeEarnEvents int       // count of all successful adds, ever
-    LifetimePoints     int       // sum of all points ever added (≠ Points if we add spending later)
     Generation         int       // how many times we've continued-as-new
 
     // Levels we've already sent a promotion notification for. Guards against
@@ -131,6 +130,35 @@ type CustomerState struct {
     NotifiedLevels []string
 }
 ```
+
+#### Points only go up
+
+**Decided:** there is no spending, redemption, expiry, or manual adjustment in this POC, and
+none is planned. `addPoints` is the only thing that ever writes `Points`, and it only ever adds.
+Balances are monotonic for the life of a customer.
+
+The consequence is that there is no separate lifetime total. An earlier draft carried both a
+current `Points` and a `LifetimePoints`, on the theory that spending would eventually make them
+diverge. With a monotonic balance they are the same number, always — so carrying both bought
+nothing except an invariant to violate. It duly got violated: because the handler's cap was
+measured against the caller-supplied `LifetimePoints`, a start payload with a large `Points` and
+a zero `LifetimePoints` walked straight past it. One field, one number, no gap to exploit.
+
+`LifetimeEarnEvents` is *not* redundant in the same way and stays: it counts adds, not points,
+and §6.3 needs it to quantify how much of the audit log has been reaped.
+
+Two things follow that are worth being explicit about, since both are places a reviewer will
+reasonably expect different behaviour:
+
+- **Re-enrollment starts at zero** (§3.6) is the only way a balance ever decreases, and it does
+  so by starting a *new* execution rather than by mutating one — the old customer's final
+  balance is simply gone with them.
+- **Tier demotion cannot happen** through normal operation. Since tiers are derived from a
+  monotonic balance (§3.2), a customer's tier is monotonic too. The only way to demote is to
+  raise a threshold, which retroactively demotes everyone at once.
+
+If spending ever arrives, it means reintroducing a separate lifetime field — not repurposing
+`Points`. The cap, the tier derivation, and the audit log would all need to pick a side.
 
 #### The workflow is the integrity boundary
 
@@ -142,17 +170,11 @@ workflow, or it is not enforced at all.
 
 Phase 1 validates on start: `CustomerID` must match the workflow ID it was started under
 (otherwise search attributes and `getStatus` report one customer while every operation is keyed
-by another), counters must be non-negative, `Points` must not exceed `LifetimePoints`, and
-`LifetimePoints` must not already exceed the cap. That last pair matters more than it looks —
-without it, a start payload carrying a large `Points` and a zero `LifetimePoints` walks straight
-past the handler's lifetime cap, because the cap is measured against a number the caller
-supplied.
+by another), counters must be non-negative, `Points` must not already exceed the cap, and points
+cannot exist without an earn event to have earned them in.
 
 A rejected enrollment fails the execution outright (`WorkflowExecutionFailed`, attempt 1, no
 retry loop — verified) rather than producing a running customer whose numbers do not add up.
-
-Note that `Points < LifetimePoints` is *legitimate* — it is what a spending mechanism would
-produce, and seeded fixtures depend on it. Only `Points > LifetimePoints` is incoherent.
 
 ### 3.2 Tier is derived, never stored
 
@@ -220,14 +242,14 @@ program the honest answer differs by reason:
 
 - *"Amount was −50"* / *"amount was 6000"* — a client bug or a fat-finger. Nobody reviewing a
   customer's account cares. Recording it is noise.
-- *"This add would push them past their lifetime cap"* — genuinely useful. A support rep
+- *"This add would push them past their points cap"* — genuinely useful. A support rep
   asking "why didn't this customer reach platinum?" wants exactly that row.
 
 So we use both phases for what each is good at:
 
 - **Validator** (leaves no history) — `Amount <= 0`, `Amount > MaxPointsPerTxn`, empty reason.
 - **Handler returning an error** (both events recorded) — one business rule: reject if the add
-  would push `LifetimePoints` past a configured lifetime cap.
+  would push `Points` past `PointsCap`.
 
 #### Why this is more than a stylistic choice
 
@@ -239,7 +261,7 @@ Two independent consequences push the same way.
 enforced there is a surface for history growth. Keep that set small and meaningful.
 
 **Determinism surface.** Handler code is replayed; validator rejections leave nothing to
-replay. If the lifetime cap lives in the handler and we later change the constant, we have
+replay. If the points cap lives in the handler and we later change the constant, we have
 changed workflow code that must still reproduce already-recorded outcomes — an update recorded
 as rejected under the old threshold could evaluate differently on replay. Rules in the
 validator carry no such risk, because there is no recorded decision to contradict. This is a

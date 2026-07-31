@@ -30,30 +30,38 @@ const (
 )
 
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so
-// breaching it leaves no trace in Event History; LifetimePointsCap is enforced in
-// the *handler*, so breaching it is recorded. That split is the point of the
+// breaching it leaves no trace in Event History; PointsCap is enforced in the
+// *handler*, so breaching it is recorded. That split is the point of the
 // exercise, not an accident -- see PLAN.md 3.4.
 const (
-	MaxPointsPerTxn   = 1000
-	LifetimePointsCap = 100000
+	MaxPointsPerTxn = 1000
+	PointsCap       = 100000
 )
 
 // CustomerState is the workflow argument. Everything here has to survive
-// continue-as-new (Phase 2), which is why the lifetime counters live in state
-// rather than being recomputed from history: history is reaped, state is not.
+// continue-as-new (Phase 2), which is why the counters live in state rather than
+// being recomputed from history: history is reaped, state is not.
 // See PLAN.md 3.1 and 6.3.
 type CustomerState struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
 	Email      string `json:"email"`
 
+	// Points only ever increase. There is no spending, redemption, expiry or
+	// adjustment in this POC and none is planned -- see PLAN.md 3.1.
+	//
+	// That is why there is no separate lifetime total: with a monotonic balance,
+	// "points now" and "points ever earned" are the same number, and carrying
+	// both would only create an invariant to violate. Adding spending later
+	// means reintroducing that field, not repurposing this one.
 	Points int `json:"points"`
 
 	// Set on the very first run and carried forward untouched thereafter.
-	EnrolledAt         time.Time `json:"enrolledAt"`
-	LifetimeEarnEvents int       `json:"lifetimeEarnEvents"`
-	LifetimePoints     int       `json:"lifetimePoints"`
-	Generation         int       `json:"generation"`
+	EnrolledAt time.Time `json:"enrolledAt"`
+	// Count of successful adds, ever. Not derivable from Points once history is
+	// reaped, and PLAN.md 6.3 needs it to quantify audit-log truncation.
+	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
+	Generation         int `json:"generation"`
 
 	// Levels already notified about, so an at-least-once Activity delivery does
 	// not re-notify after a replay. Unused until Phase 6; carried now so the

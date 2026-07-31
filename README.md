@@ -80,7 +80,7 @@ Compare a rejection that comes from the *handler* instead — one that depends o
 accumulated state rather than the shape of the request:
 
 ```sh
-# a customer near the 100,000 lifetime-points cap
+# a customer near the 100,000 points cap
 make add ID=c-002 AMOUNT=11 REASON="over cap"
 ```
 
@@ -94,7 +94,24 @@ The rule of thumb, and where each rejection lives in the code:
 | | Where | Writes history? | Example |
 |---|---|---|---|
 | Facts about the **request** | Update validator | No | negative amount, over per-txn max, missing reason |
-| Facts about the **customer** | Update handler | Yes | would exceed the lifetime points cap |
+| Facts about the **customer** | Update handler | Yes | would exceed the points cap |
+
+## Points only go up
+
+There is no spending, redemption, expiry, or manual adjustment, and none is planned. `addPoints`
+is the only thing that writes a balance and it only ever adds, so points are monotonic for the
+life of a customer.
+
+Two consequences worth knowing before you go looking for them:
+
+- **Tiers never demote.** They're derived from a monotonic balance, so they're monotonic too.
+  The only way down is to raise a threshold, which demotes everyone at once.
+- **Deactivating and re-enrolling is the one thing that resets a balance**, and it does so by
+  starting a new execution rather than mutating one. The old balance leaves with the old run.
+
+This is also why there's a single `Points` field and no separate lifetime total — with a
+monotonic balance those are the same number. See §3.1 of the plan for why carrying both was
+worse than carrying one.
 
 ## Running more than one stack
 

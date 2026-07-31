@@ -188,7 +188,6 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	_ = s.runToCancellation(newState())
 
 	s.Equal(350, status.Points)
-	s.Equal(350, status.LifetimePoints)
 	s.Equal(2, status.LifetimeEarnEvents)
 }
 
@@ -245,14 +244,13 @@ func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 
 // --- Handler-side business rejection (PLAN.md 3.4) --------------------------
 
-// The lifetime cap is enforced in the handler, so unlike the validator cases
-// this attempt is accepted, runs, and its failure is recorded in history --
-// which is the point: a support rep asking "why didn't they reach platinum?"
-// gets an answer.
-func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverLifetimeCap() {
+// The points cap is enforced in the handler, so unlike the validator cases this
+// attempt is accepted, runs, and its failure is recorded in history -- which is
+// the point: a support rep asking "why didn't they reach platinum?" gets an
+// answer.
+func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	state := newState()
-	state.LifetimePoints = rewards.LifetimePointsCap - 10
-	state.Points = 40
+	state.Points = rewards.PointsCap - 10
 	state.LifetimeEarnEvents = 7
 
 	over := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 11, Reason: "purchase"})
@@ -263,19 +261,18 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverLifetimeCap() {
 	_ = s.runToCancellation(state)
 
 	// Accepted by the validator, then failed by the handler.
-	s.NoError(over.rejected, "the lifetime cap must not be enforced in the validator")
+	s.NoError(over.rejected, "the points cap must not be enforced in the validator")
 	s.Require().Error(over.completed)
 
 	var appErr *temporal.ApplicationError
 	s.Require().True(errors.As(over.completed, &appErr), "want a typed ApplicationError for the API layer to map")
-	s.Equal(rewards.ErrTypeLifetimeCapExceeded, appErr.Type())
+	s.Equal(rewards.ErrTypePointsCapExceeded, appErr.Type())
 
 	// Landing exactly on the cap is allowed.
 	s.NoError(under.completed)
 
 	// The rejected add applied nothing; only the successful one counted.
-	s.Equal(50, status.Points)
-	s.Equal(rewards.LifetimePointsCap, status.LifetimePoints)
+	s.Equal(rewards.PointsCap, status.Points)
 	s.Equal(8, status.LifetimeEarnEvents)
 }
 
@@ -345,15 +342,12 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 		{"empty customerId",
 			func(st *rewards.CustomerState) { st.CustomerID = "" },
 			"does not match workflow ID"},
-		{"balance exceeds lifetime earnings",
-			func(st *rewards.CustomerState) { st.Points = 999999; st.LifetimePoints = 0 },
-			"cannot exceed lifetimePoints"},
-		{"seeded above the lifetime cap",
+		{"seeded above the points cap",
 			func(st *rewards.CustomerState) {
-				st.LifetimePoints = rewards.LifetimePointsCap + 1
+				st.Points = rewards.PointsCap + 1
 				st.LifetimeEarnEvents = 1
 			},
-			"exceeds the lifetime cap"},
+			"exceeds the cap"},
 		{"negative points",
 			func(st *rewards.CustomerState) { st.Points = -1 },
 			"non-negative"},
@@ -361,7 +355,7 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 			func(st *rewards.CustomerState) { st.Generation = -1 },
 			"non-negative"},
 		{"points earned with no earn events",
-			func(st *rewards.CustomerState) { st.Points = 10; st.LifetimePoints = 10 },
+			func(st *rewards.CustomerState) { st.Points = 10 },
 			"lifetimeEarnEvents is 0"},
 	}
 
@@ -390,12 +384,15 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 	}
 }
 
-// The specific bypass: seed a large balance with lifetimePoints at zero, and
-// the handler's cap check has nothing to push against. Rejected at the door.
-func (s *RewardsSuite) Test_Enroll_RejectsLifetimeCapBypass() {
+// The bypass Bugbot found on PR #4: seed a large balance alongside a zero
+// lifetime total, and the handler's cap check has nothing to push against.
+// Collapsing the two fields removed the second number entirely, so the cap is
+// now measured against the only balance there is -- but the payload is still
+// rejected at the door, and this test stays as the regression guard.
+func (s *RewardsSuite) Test_Enroll_RejectsCapBypass() {
 	state := newState()
 	state.Points = 5_000_000
-	state.LifetimePoints = 0
+	state.LifetimeEarnEvents = 1
 
 	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
 
@@ -403,12 +400,11 @@ func (s *RewardsSuite) Test_Enroll_RejectsLifetimeCapBypass() {
 	s.Require().Error(s.env.GetWorkflowError())
 }
 
-// A balance *below* lifetime earnings is legitimate -- that is what spending
-// would produce, and fixtures depend on it -- so it must still be accepted.
-func (s *RewardsSuite) Test_Enroll_AcceptsSpentDownBalance() {
+// A seeded mid-life customer is legitimate -- the balance just has to be
+// consistent with having earned it.
+func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	state := newState()
-	state.Points = 40
-	state.LifetimePoints = 900
+	state.Points = 900
 	state.LifetimeEarnEvents = 6
 
 	status := s.queryStatusAt(time.Minute)
@@ -416,9 +412,37 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSpentDownBalance() {
 
 	_ = s.runToCancellation(state)
 
-	s.Equal(40, status.Points)
-	s.Equal(900, status.LifetimePoints)
-	s.Equal(rewards.LevelBasic, status.Level, "tier follows the current balance, not lifetime earnings")
+	s.Equal(900, status.Points)
+	s.Equal(6, status.LifetimeEarnEvents)
+	s.Equal(rewards.LevelGold, status.Level)
+}
+
+// --- Points are monotonic ----------------------------------------------------
+
+// The invariant the whole state shape now rests on: points only ever increase.
+// There is no spend, redeem, expire or adjust path, so no sequence of legal
+// operations can lower a balance. If a redemption feature ever arrives, this
+// test is the one that should fail first.
+func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
+	adds := []int{10, 250, 1, 1000, 5}
+
+	results := make([]*updateResult, len(adds))
+	for i, amount := range adds {
+		results[i] = s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: amount, Reason: "purchase"})
+	}
+	s.cancelAt(time.Duration(len(adds)+1) * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	prev, want := 0, 0
+	for i, amount := range adds {
+		s.Require().NoError(results[i].completed)
+		want += amount
+		s.Equal(want, results[i].value.Balance, "add %d", i)
+		s.Greater(results[i].value.Balance, prev, "balance must strictly increase on every add")
+		prev = results[i].value.Balance
+	}
 }
 
 // --- Cancellation (PLAN.md 3.6) ---------------------------------------------
