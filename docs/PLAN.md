@@ -117,13 +117,12 @@ type CustomerState struct {
     Name       string
     Email      string
 
-    Points     int
+    Points     int // monotonic — only ever increases, see below
 
     // Survives history reaping — this is what lets the audit log detect and
     // quantify its own truncation. See §6.3.
     EnrolledAt         time.Time // original enrollment, from the very first run
     LifetimeEarnEvents int       // count of all successful adds, ever
-    LifetimePoints     int       // sum of all points ever added (≠ Points if we add spending later)
     Generation         int       // how many times we've continued-as-new
 
     // Levels we've already sent a promotion notification for. Guards against
@@ -131,6 +130,51 @@ type CustomerState struct {
     NotifiedLevels []string
 }
 ```
+
+#### Points only go up
+
+**Decided:** there is no spending, redemption, expiry, or manual adjustment in this POC, and
+none is planned. `addPoints` is the only thing that ever writes `Points`, and it only ever adds.
+Balances are monotonic for the life of a customer.
+
+The consequence is that there is no separate lifetime total. An earlier draft carried both a
+current `Points` and a `LifetimePoints`, on the theory that spending would eventually make them
+diverge. With a monotonic balance they are the same number, always — so carrying both bought
+nothing except an invariant to violate. It duly got violated: because the handler's cap was
+measured against the caller-supplied `LifetimePoints`, a start payload with a large `Points` and
+a zero `LifetimePoints` walked straight past it. One field, one number, no gap to exploit.
+
+`LifetimeEarnEvents` is *not* redundant in the same way and stays: it counts adds, not points,
+and §6.3 needs it to quantify how much of the audit log has been reaped.
+
+Two things follow that are worth being explicit about, since both are places a reviewer will
+reasonably expect different behaviour:
+
+- **Re-enrollment starts at zero** (§3.6) is the only way a balance ever decreases, and it does
+  so by starting a *new* execution rather than by mutating one — the old customer's final
+  balance is simply gone with them.
+- **Tier demotion cannot happen** through normal operation. Since tiers are derived from a
+  monotonic balance (§3.2), a customer's tier is monotonic too. The only way to demote is to
+  raise a threshold, which retroactively demotes everyone at once.
+
+If spending ever arrives, it means reintroducing a separate lifetime field — not repurposing
+`Points`. The cap, the tier derivation, and the audit log would all need to pick a side.
+
+#### The workflow is the integrity boundary
+
+Worth stating explicitly, because it is the cost of the headline decision. With no application
+database there is no schema, no `CHECK` constraint, no `NOT NULL`, and no unique index standing
+behind this state. A workflow accepts whatever payload it is started with, so **every invariant
+that a table definition would have enforced has to be written by hand**, at the top of the
+workflow, or it is not enforced at all.
+
+Phase 1 validates on start: `CustomerID` must match the workflow ID it was started under
+(otherwise search attributes and `getStatus` report one customer while every operation is keyed
+by another), counters must be non-negative, `Points` must not already exceed the cap, and points
+cannot exist without an earn event to have earned them in.
+
+A rejected enrollment fails the execution outright (`WorkflowExecutionFailed`, attempt 1, no
+retry loop — verified) rather than producing a running customer whose numbers do not add up.
 
 ### 3.2 Tier is derived, never stored
 
@@ -198,14 +242,14 @@ program the honest answer differs by reason:
 
 - *"Amount was −50"* / *"amount was 6000"* — a client bug or a fat-finger. Nobody reviewing a
   customer's account cares. Recording it is noise.
-- *"This add would push them past their lifetime cap"* — genuinely useful. A support rep
+- *"This add would push them past their points cap"* — genuinely useful. A support rep
   asking "why didn't this customer reach platinum?" wants exactly that row.
 
 So we use both phases for what each is good at:
 
 - **Validator** (leaves no history) — `Amount <= 0`, `Amount > MaxPointsPerTxn`, empty reason.
 - **Handler returning an error** (both events recorded) — one business rule: reject if the add
-  would push `LifetimePoints` past a configured lifetime cap.
+  would push `Points` past `PointsCap`.
 
 #### Why this is more than a stylistic choice
 
@@ -217,7 +261,7 @@ Two independent consequences push the same way.
 enforced there is a surface for history growth. Keep that set small and meaningful.
 
 **Determinism surface.** Handler code is replayed; validator rejections leave nothing to
-replay. If the lifetime cap lives in the handler and we later change the constant, we have
+replay. If the points cap lives in the handler and we later change the constant, we have
 changed workflow code that must still reproduce already-recorded outcomes — an update recorded
 as rejected under the old threshold could evaluate differently on replay. Rules in the
 validator carry no such risk, because there is no recorded decision to contradict. This is a
@@ -298,9 +342,25 @@ execution closes as `Canceled`.
 Cancel, not Terminate: Terminate skips workflow code entirely, so no cleanup runs and the
 departure is never recorded by our own code.
 
-Re-enrollment works because the workflow ID is free once the execution closes. Set
-`WorkflowIDConflictPolicy: FAIL` on start so a double-create against a *running* customer
-returns a clean 409 instead of silently attaching to the existing run.
+Re-enrollment works because the workflow ID is free once the execution closes. A double-create
+against a *running* customer should return a clean 409 rather than silently attaching to the
+existing run — which takes **two** settings on `StartWorkflowOptions`, not one:
+
+```go
+WorkflowIDConflictPolicy:                 enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
+WorkflowExecutionErrorWhenAlreadyStarted: true, // without this, ExecuteWorkflow returns nil
+```
+
+Verified in Phase 1: with the conflict policy alone, `client.ExecuteWorkflow` returns the
+*existing* `WorkflowRun` and a **nil error**, so there is nothing for the API to map to a 409.
+Only with the second flag does it return `serviceerror.WorkflowExecutionAlreadyStarted`. The
+conflict policy governs what the server does; this flag governs whether the SDK tells you
+about it. (`WorkflowIDConflictPolicy` also already defaults to `Fail`, so the flag that looks
+redundant is the load-bearing one.)
+
+The `temporal` CLI hides this too: `workflow start --id-conflict-policy Fail` against a
+running execution prints `Running execution:` with the existing run ID and **exits 0**. So the
+CLI cannot be used to verify this behaviour — check it through the SDK.
 
 **Re-enrolling starts over at zero points and basic tier** — decided, not a default. A
 returning customer is simply a fresh enrollment that happens to reuse the workflow ID, so
@@ -412,8 +472,26 @@ Registered once at bootstrap, before any workflow starts. Using the typed API
 Built-ins we get free and will use: `ExecutionStatus` (Running vs Canceled → active vs
 deactivated), `StartTime`, `CloseTime`, `WorkflowId`, `RunId`.
 
-This powers the customer list page directly:
-`RewardsLevel = "gold" AND ExecutionStatus = "Running" ORDER BY RewardsPoints DESC`.
+This powers the customer list page's **filtering**:
+`RewardsLevel = "gold" AND ExecutionStatus = "Running"`.
+
+**It cannot do the sorting.** `ORDER BY` is rejected outright by server 1.29.7 —
+`ORDER BY clause is not supported` — and not just for custom attributes: it is refused for
+built-ins like `StartTime` and `CloseTime` too, with Elasticsearch visibility active and
+custom search attributes otherwise working normally. Verified in Phase 1 against the real
+stack, so this is the platform's answer, not a misconfiguration.
+
+What still works, and is enough: equality and range filters on custom attributes
+(`RewardsPoints >= 500`), `Text` partial match on `CustomerName`, `Keyword` exact match on
+`CustomerEmail`, and `ExecutionStatus` for active-vs-deactivated. Results come back in the
+server's default order (most recent first).
+
+The consequence lands on Phase 4 and Phase 8: **sorting must happen client-side**, which is
+only equivalent to server-side sorting when the full filtered result set fits in one page.
+Sorting a page of an arbitrarily-paginated list sorts the wrong thing. For a POC with tens of
+customers, fetch the filtered set and sort in the API. Worth stating plainly in the README,
+because "sort the customer list by points" is the first thing anyone will ask for and the
+honest answer is that Temporal's visibility store is a filter index, not a reporting database.
 
 Two notes:
 
@@ -930,6 +1008,15 @@ Things not in the original brief that will come up.
 6. **`AllHandlersFinished` covers Update and Signal handlers, not `workflow.Go` goroutines.**
    Any background work spawned that way needs its own drain condition before continue-as-new
    or workflow completion, or it is silently dropped ([§3.7](#37-tier-promotion-notifications)).
+7. **A duplicate start is silent by default.** `WorkflowIDConflictPolicy: FAIL` is not enough
+   to make `ExecuteWorkflow` return an error — it also needs
+   `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
+   error. The `temporal` CLI hides it as well, exiting 0. Confirmed in Phase 1;
+   see [§3.6](#36-deactivation-via-cancel).
+8. **`ORDER BY` is not supported in visibility queries**, for custom *or* built-in attributes,
+   even on Elasticsearch visibility. Filtering is server-side; sorting is the caller's problem,
+   and is only correct when the whole filtered set fits one page. Confirmed in Phase 1 on
+   server 1.29.7; see [§4](#4-search-attributes).
 
 **Operational**
 
