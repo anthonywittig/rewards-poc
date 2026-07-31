@@ -537,27 +537,58 @@ Two notes:
 ## 5. HTTP API
 
 ```
-POST   /api/customers              → ExecuteWorkflow (conflict policy FAIL)
-GET    /api/customers?q=<sql>      → ListWorkflow, projected from search attributes
-GET    /api/customers/{id}         → QueryWorkflow(getStatus) + DescribeWorkflowExecution
-POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous
-DELETE /api/customers/{id}         → CancelWorkflow
-GET    /api/customers/{id}/audit   → history crawl (§6)
+POST   /api/customers              → ExecuteWorkflow (conflict policy FAIL)     Phase 3
+GET    /api/customers?q=<sql>      → ListWorkflow, projected from search attrs  Phase 4
+GET    /api/customers/{id}         → QueryWorkflow(getStatus) + Describe        Phase 3
+POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous     Phase 3
+DELETE /api/customers/{id}         → CancelWorkflow                             Phase 3
+GET    /api/customers/{id}/audit   → history crawl (§6)                         Phase 5
 ```
 
 The API holds a Temporal Client and nothing else — no database, no cache, no ORM. That is
 the whole argument of the POC and the code should make it obvious at a glance.
 
+**A deactivated customer is still readable.** A closed execution cannot answer a Query, so the
+detail endpoint falls back to the search attributes on the execution record, which survive it.
+That recovers everything the page shows except `LifetimeEarnEvents`, which is workflow state
+rather than a registered attribute and stays zero until the §6 crawl can supply it. This is
+the search attributes doing something other than powering the list: for a departed customer
+they are the only readable state short of crawling history.
+
 Error mapping worth getting right, because these are the failure modes a reviewer will poke
 at:
 
-| Condition | HTTP |
-|---|---|
-| Update rejected by validator or handler | 422 + message |
-| Customer already exists and is running | 409 |
-| Workflow not found / history reaped | 404 |
-| Query fails because no worker is polling | 503 + "worker unavailable" |
-| Update lost to a continue-as-new race | retried once server-side, then 409 |
+| Condition | HTTP | How it is actually detected |
+|---|---|---|
+| Malformed or incomplete request | 400 | validated in the handler, before Temporal |
+| Update rejected by validator or handler | 422 + message | `*temporal.ApplicationError` — see below |
+| Customer already exists and is running | 409 | `*serviceerror.WorkflowExecutionAlreadyStarted` |
+| Workflow not found / history reaped | 404 | `*serviceerror.NotFound` |
+| No worker polling | 503 + "worker unavailable" | `FailedPrecondition`, `DeadlineExceeded`, or our own timeout |
+| Update lost to a continue-as-new race | retried once, then 409 | best-effort; see [§12.10](#12-sharp-edges) |
+
+**Both halves of the validator/handler split arrive as `*temporal.ApplicationError`**, and are
+told apart only by `Type()`: a handler rejection carries the type we chose
+(`PointsCapExceeded`), a validator rejection carries an empty one. That is more convenient
+than expected — no message matching is needed to separate a business rejection from an outage,
+which was the thing most likely to go wrong here. Both map to 422 carrying `appErr.Message()`,
+which excludes the SDK's `(type: ..., retryable: ...)` suffix. The caller cannot tell the two
+apart, which is the intent of [§3.4](#34-validation--and-a-deliberate-split), not a limitation.
+
+**Timeouts are load-bearing on both read paths**, and were sized from measurement rather than
+taste:
+
+- A **Query** with no worker takes ~9–10s to fail, and *how* it fails is not stable: within a
+  few seconds of the worker dying it is a bare gRPC `RST_STREAM` (a 500), later it is
+  `FailedPrecondition` or `DeadlineExceeded`. A 2 s bound means our own deadline usually wins
+  the race and all three collapse into one predictable 503 — against ~30 ms for a healthy
+  query, so the headroom is ~60×.
+- An **Update** with no worker does not fail at all. It *blocks* — observed still waiting after
+  two minutes. Without a bound, `POST /points` hangs for as long as the client will hold the
+  connection whenever the worker is down. 15 s.
+
+The asymmetry is worth internalising: the same underlying condition fails fast on one API and
+never on the other.
 
 ---
 
@@ -1003,7 +1034,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 | 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example`, `make verify-config` | **Done.** 20m retention proved impossible; 1h floor plus `make reap` instead — §6.3 |
 | 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
 | 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
-| 3 | Go HTTP API + error mapping | |
+| 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
 | 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix |
@@ -1027,11 +1058,39 @@ Things not in the original brief that will come up.
 2. An Update in flight when a run rolls over gets aborted; the client must retry against the
    new run. With `EarnsPerRun = 3` this race is *frequent* — every third add can hit it. The
    API must retry transparently or the demo looks broken.
+
+   **The error that reports it is ambiguous, and getting this wrong is easy.** An Update whose
+   run has closed comes back as `*serviceerror.NotFound` carrying *"workflow execution already
+   completed"* — and that is the same error, byte for byte, whether the run closed because it
+   continued-as-new or because the customer deactivated. It has to be: in both cases the run
+   really did complete. The two need opposite responses (retry vs refuse), so **the error alone
+   cannot decide**. Ask the server what is running now: a successor execution means a rollover,
+   no open execution means a departed customer. Matching the message instead shipped
+   "please retry" to callers adding points to a deactivated customer, where retrying can never
+   succeed — caught by review on PR #6.
+
+   **And "operate on a closed execution" is not one behaviour — it depends on the operation.**
+   Measured on 1.29.7:
+
+   | on a closed execution | `Canceled` | `Failed` | `Terminated` | never existed |
+   |---|---|---|---|---|
+   | `CancelWorkflow` | `nil` | `nil` | `nil` | `NotFound` |
+   | `UpdateWorkflow` | `NotFound` | — | — | `NotFound` |
+
+   Cancel is idempotent server-side; Update is not. So `DELETE` needs no disambiguation and is
+   naturally idempotent, while `POST /points` needs the extra `Describe` above. Assuming the two
+   behave alike is a reasonable guess and a wrong one — it was raised as a bug against `DELETE`
+   on PR #6 and disproved by measurement.
 3. Update dedup via `UpdateID` is scoped to a single run, so it does **not** survive
    continue-as-new. A retry that straddles a rollover can double-apply. The UI should send a
    UUID per click, and we should document that per-run dedup is not sufficient for real money.
-4. Queries fail with a confusing error when no worker is polling. Map it to a clear
-   "worker unavailable" — during development the worker will be down often.
+4. **No worker polling fails differently depending on which API you call, and on how long the
+   worker has been gone.** A Query fails in ~9–10s, as a bare gRPC `RST_STREAM` in the first
+   seconds and as `FailedPrecondition` or `DeadlineExceeded` later. An **Update does not fail
+   at all** — it blocks indefinitely, observed still waiting after two minutes. Both need a
+   client-imposed timeout to become a usable 503; measurements and chosen bounds in
+   [§5](#5-http-api). During development the worker will be down often, so this is the failure
+   mode a reviewer is most likely to meet first.
 5. `workflow.Now()`, never `time.Now()`. Same for randomness and UUIDs.
 6. **`AllHandlersFinished` covers Update and Signal handlers, not `workflow.Go` goroutines.**
    Any background work spawned that way needs its own drain condition before continue-as-new
@@ -1063,39 +1122,55 @@ Things not in the original brief that will come up.
    the departure permanently, because continue-as-new starts a fresh run while the cancellation
    targeted the run that just ended. The customer clicks deactivate and stays active. Re-check
    `ctx.Err()` after every such `Await`. Found by review on PR #5.
+10. **Continue-as-new races the read path too, not just the write path.** Item 2 anticipates an
+    Update being aborted by a rollover. A **Query** immediately after a point-add that triggered
+    one can also fail, with `Workflow task is not scheduled yet.` — the successor run exists but
+    has no workflow task to dispatch the query to. Observed once through the API at three adds
+    per run, transient, and not reproducible on demand despite deliberate attempts. The API
+    retries unrecognised query failures once rather than matching that message, on the grounds
+    that a ~30 ms idempotent read is cheap to repeat and the error could not be pinned down.
+    Recorded here because the *class* is real even though this instance is not reliably
+    reproducible, and because "not scheduled yet" will look like a bug to whoever meets it next.
+
+    A related caution from the same phase: **the update-side rollover retry has never been
+    observed firing.** Sequential adds complete before the next begins, so the roll finishes in
+    the gap and no update is ever in flight across it. The retry is now correct *if* it fires —
+    it disambiguates via Describe rather than by message, per item 2 — but "correct and
+    unexercised" is what it is, and the same was true of two guards in §3.5. Phase 8's UI, which
+    can issue overlapping adds from a browser, is the first thing likely to exercise it.
 
 **Operational**
 
-10. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
+11. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
    changing workflow code under a running execution causes non-determinism errors. In dev,
    terminate stale workflows between changes. Document Worker Versioning / patching as the
    production answer, and add a `make reset` that wipes all customer workflows.
-11. Customer names and emails land in Event History and are readable in plaintext in the
+12. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
-12. No authentication anywhere. State it in the README so nobody mistakes this for a starting
+13. No authentication anywhere. State it in the README so nobody mistakes this for a starting
    point for something exposed.
-13. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
+14. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
    ES 8 needs 1.18+). Pin both images.
-14. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
+15. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
     Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
-15. **A stale worker is invisible and looks exactly like a workflow bug.** `go run` execs its
+16. **Stale processes are invisible and look exactly like a code bug.** `go run` execs its
     binary out of `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker`
     nor `exe/worker` — so the obvious `pkill -f cmd/worker` leaves it alive and happily polling
     the same task queue with the *old* code. Cost real debugging time in Phase 2: continue-as-new
     was correct and unit-tested, but a pre-Phase-2 worker kept winning the tasks, so `generation`
     stayed 0 and the feature looked broken. Use `make worker-stop` (which matches the cache path)
     and `make workers` to confirm exactly one is running before concluding anything about
-    workflow behaviour. Worth pairing with the versioning discipline in item 10: stale *workflows*
+    workflow behaviour. Worth pairing with the versioning discipline in item 11: stale *workflows*
     and stale *workers* fail in opposite directions — one errors loudly on replay, the other
     succeeds quietly with the wrong logic.
 
 **Design**
 
-16. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+17. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-17. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+18. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

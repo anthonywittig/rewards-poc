@@ -13,9 +13,10 @@ RETENTION = $(shell grep -E '^TEMPORAL_RETENTION=' $(ENV) | cut -d= -f2)
 REFRESH   = $(shell grep -E '^ES_REFRESH_INTERVAL=' $(ENV) | cut -d= -f2)
 UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
 GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
+API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers test enroll status add deactivate
+        worker worker-stop workers api api-stop test enroll status add deactivate
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -90,6 +91,15 @@ worker-stop: ## Stop every running worker, including orphaned ones
 workers: ## List running workers (there should be at most one)
 	@ps -eo pid,etimes,args | grep -E 'go-build.*/worker$$' | grep -v grep \
 	  || echo "no workers running"
+
+api: $(ENV) ## Run the HTTP API in the foreground (Ctrl-C to stop)
+	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
+	  API_PORT=$(API_PORT) go run ./cmd/api
+
+api-stop: ## Stop every running API process, including orphaned ones
+	@pkill -f 'go-build.*/api$$' 2>/dev/null; \
+	 pkill -f 'go run \./cmd/api' 2>/dev/null; \
+	 sleep 1; echo "stopped"
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.

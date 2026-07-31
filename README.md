@@ -6,8 +6,9 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 2.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
-end to end from the `temporal` CLI. No HTTP API or UI yet — those are Phases 3 and 8.
+**Status: Phase 3.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
+either from the `temporal` CLI or over HTTP. No UI yet — that's Phase 8. The customer *list*
+endpoint is Phase 4 and the audit log is Phase 5.
 
 ## Quick start
 
@@ -112,6 +113,56 @@ deactivation is a cancellation.
 **Re-enrolling a deactivated customer starts them over at zero.** The workflow ID is free once
 the execution closes, so enrollment succeeds — but it is a genuinely new enrollment, not a
 restoration. That is a decision, not an oversight; see §3.6 of the plan.
+
+## The HTTP API
+
+Run the worker and the API in two terminals:
+
+```sh
+make worker
+make api        # :8081
+```
+
+```sh
+curl -XPOST localhost:8081/api/customers \
+  -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'
+
+curl localhost:8081/api/customers/c-001
+curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":500,"reason":"purchase"}'
+curl -XDELETE localhost:8081/api/customers/c-001
+```
+
+The API holds a Temporal client and **nothing else** — no database, no cache, no ORM. That
+absence is the whole argument of the POC, and `internal/httpapi` is short enough to confirm it
+at a glance.
+
+Every failure comes back as `{"error":{"code":"...","message":"..."}}` with a stable code:
+
+| | Code | When |
+|---|---|---|
+| 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
+| 404 | `not_found` | no such customer, or their history was reaped |
+| 409 | `already_exists` | enrolling a customer who is already active |
+| 409 | `deactivated` | adding points to a customer who has left |
+| 409 | `rollover_race` | the workflow rolled over twice while applying one request |
+| 422 | `rejected` | the workflow refused it — see the split below |
+| 503 | `worker_unavailable` | nothing is polling the task queue |
+
+The 503 is the one you'll meet most, because the worker is down more often than anything else
+in development. It says so in as many words rather than surfacing a gRPC error.
+
+Two things behind that table were only learnable by measurement, and are worth knowing before
+you build anything else on Temporal:
+
+- **A Query with no worker fails three different ways** depending on how long the worker has
+  been gone — a bare gRPC `RST_STREAM` in the first seconds, then `FailedPrecondition` or
+  `DeadlineExceeded`, all taking ~9–10s. The API bounds queries at 2s so its own deadline wins
+  and all three become one predictable 503.
+- **An Update with no worker doesn't fail at all — it blocks.** Still waiting after two
+  minutes. Without a bound, `POST /points` hangs for as long as the client holds the
+  connection.
+
+Same underlying condition; fails fast on one API, never on the other.
 
 ## The validator/handler split, live
 
