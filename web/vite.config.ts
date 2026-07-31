@@ -1,11 +1,21 @@
-import { defineConfig } from 'vite'
+import { defineConfig, loadEnv } from 'vite'
 import react from '@vitejs/plugin-react'
 
-// Dev server on :5173. Point VITE_API_BASE at the mock (:8082) or real API (:8081).
-export default defineConfig({
-  plugins: [react()],
-  server: {
-    port: 5173,
-    strictPort: true,
-  },
+// Dev server on :5173. Browser calls stay same-origin (/api/…) and Vite proxies
+// to the mock or real API — avoids CORS, which only the mock sets today.
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const proxyTarget = env.VITE_API_PROXY_TARGET || 'http://localhost:8082'
+
+  return {
+    plugins: [react()],
+    server: {
+      port: 5173,
+      strictPort: true,
+      proxy: {
+        '/api': { target: proxyTarget, changeOrigin: true },
+        '/healthz': { target: proxyTarget, changeOrigin: true },
+      },
+    },
+  }
 })

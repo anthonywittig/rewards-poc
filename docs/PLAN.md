@@ -1106,9 +1106,10 @@ Worth testing deliberately: create a customer and immediately hit the list endpo
 tuning in §7.5 is working the row should be there within ~300 ms, and `visibility_tasks`
 (§8.1) will show why when it isn't. The mock reproduces the lag at 400 ms.
 
-Run: `make mockapi` then `make web` (Vite on `:5173`, default API `http://localhost:8082`).
-`VITE_API_BASE=http://localhost:8081 make web` points at the real API. Findings for §12 live
-in `web/NOTES.md`.
+Run: `make mockapi` then `make web` (Vite on `:5173`; `/api` proxied to the mock).
+`VITE_API_PROXY_TARGET=http://localhost:8081 make web` points at the real API — the Go
+server does not send CORS headers, so a cross-origin `VITE_API_BASE` fails in the browser.
+Findings for §12 live in `web/NOTES.md`.
 
 ---
 

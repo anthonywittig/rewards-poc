@@ -101,44 +101,51 @@ export function CustomerDetailPage() {
   async function onAddPoints(e: React.FormEvent) {
     e.preventDefault()
     if (!customer || customer.status !== 'active') return
+    const requestedId = customer.customerId
     setPointsBusy(true)
     setPointsError(null)
     setPointsOk(null)
     try {
-      const res = await addPoints(customer.customerId, {
+      const res = await addPoints(requestedId, {
         amount: Number(amount),
         reason: reason.trim(),
         requestId: newRequestId(),
       })
+      if (requestedId !== id) return
       setPointsOk(res)
       await refresh()
     } catch (err) {
+      if (requestedId !== id) return
       setPointsError(err)
       // Handler rejections leave an audit row; validator ones do not.
       if (err instanceof ApiError && err.code === 'rejected') {
         try {
-          setAudit(await getAudit(customer.customerId))
+          const a = await getAudit(requestedId)
+          if (requestedId === id) setAudit(a)
         } catch {
           /* ignore */
         }
       }
     } finally {
-      setPointsBusy(false)
+      if (requestedId === id) setPointsBusy(false)
     }
   }
 
   async function onDeactivate() {
     if (!customer) return
+    const requestedId = customer.customerId
     setLeaveBusy(true)
     setLeaveError(null)
     try {
-      await deactivateCustomer(customer.customerId)
+      await deactivateCustomer(requestedId)
+      if (requestedId !== id) return
       setConfirmLeave(false)
       await refresh()
     } catch (err) {
+      if (requestedId !== id) return
       setLeaveError(err)
     } finally {
-      setLeaveBusy(false)
+      if (requestedId === id) setLeaveBusy(false)
     }
   }
 

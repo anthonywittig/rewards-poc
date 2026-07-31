@@ -4,8 +4,8 @@ Local README for the Vite app. Project-level README is owned by Phase 9 — do n
 edit it from this phase. Draft paragraph for the integrator:
 
 > The React UI lives in `web/`. Run `make mockapi` then `make web` (Vite on
-> `:5173`, API default `http://localhost:8082`). Point
-> `VITE_API_BASE=http://localhost:8081` at the real API once the stack is up.
+> `:5173`; `/api` is proxied to the mock on `:8082`). For the real API:
+> `VITE_API_PROXY_TARGET=http://localhost:8081 make web`.
 
 ## Findings for PLAN.md
 
@@ -22,7 +22,12 @@ edit it from this phase. Draft paragraph for the integrator:
    "status toggle (Running/Canceled)" is the visibility vocabulary and is
    correct — just easy to confuse with the DTO field of the same English word.
 
-3. **Optimistic list insert is session-scoped.** §9 says the list should
-   optimistically insert after create. Implemented via `sessionStorage` so a
-   hard refresh of `/` still shows the row during the ~400 ms mock lag (and the
-   real ~200–300 ms ES lag). Cleared once the server list includes that ID.
+3. **Optimistic list insert is session-scoped with a TTL.** §9 says the list should
+   optimistically insert after create. Implemented via `sessionStorage` (cleared once
+   the server list includes that ID, or after ~2s past the lag window). Filtered against
+   the active visibility query so a basic enroll does not appear under a gold filter.
+
+4. **Real API needs a Vite proxy, not a cross-origin base URL.** The Go API does not
+   send CORS headers; only the mock does. `VITE_API_BASE=http://localhost:8081` fails in
+   the browser. Use `VITE_API_PROXY_TARGET=http://localhost:8081` so Vite same-origin
+   proxies `/api`. Worth a sentence in the Phase 9 README when it lands.

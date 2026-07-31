@@ -10,9 +10,10 @@ import type {
 } from './types'
 import { ApiError } from './types'
 
-// Default to the mock. Switch with VITE_API_BASE=http://localhost:8081 for the real API.
+// Default: same-origin (Vite proxies /api → mock or real API). Set VITE_API_BASE
+// only if you need to hit an absolute URL without the proxy.
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '')
-  ?? 'http://localhost:8082'
+  ?? ''
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
@@ -56,7 +57,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 
 export function apiBase(): string {
-  return API_BASE
+  if (API_BASE) return API_BASE
+  const proxy = import.meta.env.VITE_API_PROXY_TARGET as string | undefined
+  return proxy?.replace(/\/$/, '') || 'http://localhost:8082 (via Vite proxy)'
 }
 
 export function listCustomers(query?: string): Promise<CustomerListResponse> {

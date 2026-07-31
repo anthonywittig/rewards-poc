@@ -66,9 +66,10 @@ export function CustomerListPage() {
   }, [query])
 
   const items = useMemo(() => {
-    if (!data) return [] as CustomerListItem[]
-    let rows = mergeWithPending(data.items, pending, query)
-    if (data.complete && sortKey) {
+    // Keep optimistic rows visible even when the list request failed.
+    const serverItems = data?.items ?? []
+    let rows = mergeWithPending(serverItems, pending, query)
+    if (data?.complete && sortKey) {
       rows = [...rows].sort((a, b) => compare(a, b, sortKey, sortDir))
     }
     return rows
