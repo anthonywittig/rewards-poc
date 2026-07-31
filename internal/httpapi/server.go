@@ -107,8 +107,8 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 //
 // Two calls rather than one because they answer different questions: Query asks
 // the workflow what it holds, Describe asks the server whether it is still
-// running. A cancelled customer cannot answer a Query at all, so Describe has to
-// come first to tell "deactivated" apart from "no worker".
+// running. A workflow cannot report its own closure, so Describe is what
+// distinguishes active from deactivated.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -133,38 +133,47 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		RunID:      info.GetExecution().GetRunId(),
 	}
 
-	// A closed execution cannot answer a Query -- there is no workflow left to
-	// ask. Its search attributes survive on the execution record though, and
-	// they carry exactly the fields the detail page needs, so a deactivated
-	// customer still renders with their final balance and tier instead of a row
-	// of zeroes.
-	//
-	// This is the search attributes earning their keep somewhere other than the
-	// customer list: for a departed customer they are the only readable state
-	// short of crawling history.
-	if status == "deactivated" {
+	// Queried regardless of whether the customer is still active. A closed
+	// execution answers Queries perfectly well -- Temporal replays its history
+	// to serve them -- which is worth knowing, because assuming otherwise is
+	// easy and costs real fidelity: search attributes carry no
+	// LifetimeEarnEvents, so a departed customer would read back missing a field
+	// that was available all along.
+	enc, qerr := s.queryStatus(r.Context(), wfID)
+	switch {
+	case qerr == nil:
+		var st rewards.CustomerStatus
+		if err := enc.Get(&st); err != nil {
+			return err
+		}
+		out.Name = st.Name
+		out.Email = st.Email
+		out.Points = st.Points
+		out.Level = st.Level
+		out.NextTierAt = st.NextTierAt
+		out.EnrolledAt = st.EnrolledAt
+		out.LifetimeEarnEvents = st.LifetimeEarnEvents
+		out.Generation = st.Generation
+
+	case status == "deactivated":
+		// Answering a closed customer needs a worker to replay their history,
+		// so with no worker polling they would otherwise 503 -- despite the
+		// execution record in hand already carrying most of what the page
+		// shows. Degrade to that rather than failing: a departed customer is
+		// not going to change, and a stale-but-complete-enough record beats an
+		// outage for someone who is only being looked up.
+		//
+		// Note this does NOT cover a reaped customer. `make reap` deletes the
+		// whole execution record, search attributes included, so those fail at
+		// Describe above and surface as a 404 -- see PLAN.md 6.3.
+		s.log.Info("query failed for a closed customer, falling back to search attributes",
+			"workflowId", wfID, "error", qerr)
 		fillFromSearchAttributes(&out, info.GetSearchAttributes())
-		writeJSON(w, s.log, http.StatusOK, out)
-		return nil
-	}
 
-	enc, err := s.queryStatus(r.Context(), wfID)
-	if err != nil {
-		return err
+	default:
+		// A running customer that cannot answer is a real failure.
+		return qerr
 	}
-	var st rewards.CustomerStatus
-	if err := enc.Get(&st); err != nil {
-		return err
-	}
-
-	out.Name = st.Name
-	out.Email = st.Email
-	out.Points = st.Points
-	out.Level = st.Level
-	out.NextTierAt = st.NextTierAt
-	out.EnrolledAt = st.EnrolledAt
-	out.LifetimeEarnEvents = st.LifetimeEarnEvents
-	out.Generation = st.Generation
 
 	writeJSON(w, s.log, http.StatusOK, out)
 	return nil
@@ -400,18 +409,16 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 }
 
 // fillFromSearchAttributes populates the fields a Query would have provided,
-// for a customer whose workflow is closed.
+// for a closed customer no worker is available to replay.
 //
 // Recovers everything the detail page shows except LifetimeEarnEvents, which is
-// carried in workflow state but is not a registered search attribute (PLAN.md 4
-// lists the set deliberately). It stays zero for a deactivated customer until
-// the Phase 5 history crawl can supply it. Adding an eighth attribute purely to
-// close that gap would mean a bootstrap change and one more thing to keep in
-// sync, for a number nobody reads on a departed customer.
+// workflow state rather than a registered search attribute (PLAN.md 4 lists the
+// set deliberately). Only reached on the degraded path, so that field is
+// present whenever the query works -- which is nearly always.
 //
 // Best-effort by design: a missing or undecodable attribute leaves its field at
-// the zero value rather than failing the request. The customer is gone either
-// way, and a partial record beats a 500.
+// the zero value rather than failing the request. A partial record for a
+// customer whose history has been deleted beats a 500.
 func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttributes) {
 	if sa == nil {
 		return
