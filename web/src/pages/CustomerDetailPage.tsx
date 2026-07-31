@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   addPoints,
@@ -33,32 +33,70 @@ export function CustomerDetailPage() {
   const [leaveBusy, setLeaveBusy] = useState(false)
   const [leaveError, setLeaveError] = useState<unknown>(null)
 
-  const refresh = useCallback(async () => {
+  useEffect(() => {
     if (!id) return
+    let cancelled = false
+
+    async function load(requestedId: string) {
+      setLoading(true)
+      setError(null)
+      setAuditError(null)
+      setCustomer(null)
+      setAudit(null)
+      setPointsOk(null)
+      setPointsError(null)
+      setConfirmLeave(false)
+      try {
+        const [c, a] = await Promise.all([
+          getCustomer(requestedId),
+          getAudit(requestedId).catch((err) => {
+            if (!cancelled) setAuditError(err)
+            return null
+          }),
+        ])
+        if (cancelled) return
+        setCustomer(c)
+        setAudit(a)
+      } catch (err) {
+        if (cancelled) return
+        setError(err)
+        setCustomer(null)
+      } finally {
+        if (!cancelled) setLoading(false)
+      }
+    }
+
+    void load(id)
+    return () => {
+      cancelled = true
+    }
+  }, [id])
+
+  async function refresh() {
+    if (!id) return
+    const requestedId = id
     setLoading(true)
     setError(null)
     setAuditError(null)
     try {
       const [c, a] = await Promise.all([
-        getCustomer(id),
-        getAudit(id).catch((err) => {
-          setAuditError(err)
+        getCustomer(requestedId),
+        getAudit(requestedId).catch((err) => {
+          if (requestedId === id) setAuditError(err)
           return null
         }),
       ])
+      if (requestedId !== id) return
       setCustomer(c)
       setAudit(a)
     } catch (err) {
+      if (requestedId !== id) return
       setError(err)
       setCustomer(null)
     } finally {
-      setLoading(false)
+      if (requestedId === id) setLoading(false)
     }
-  }, [id])
-
-  useEffect(() => {
-    void refresh()
-  }, [refresh])
+  }
 
   async function onAddPoints(e: React.FormEvent) {
     e.preventDefault()

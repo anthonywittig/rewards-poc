@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { listCustomers } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
@@ -29,47 +29,50 @@ export function CustomerListPage() {
     [tier, status, raw],
   )
 
-  const load = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    try {
-      const res = await listCustomers(query)
-      setData(res)
-      // Drop pending rows once the server includes them.
-      const ids = new Set(res.items.map((i) => i.customerId))
-      for (const p of readPending()) {
-        if (ids.has(p.customerId)) clearPending(p.customerId)
+  useEffect(() => {
+    let cancelled = false
+
+    async function run() {
+      setLoading(true)
+      setError(null)
+      try {
+        const res = await listCustomers(query)
+        if (cancelled) return
+        setData(res)
+        const ids = new Set(res.items.map((i) => i.customerId))
+        for (const p of readPending()) {
+          if (ids.has(p.customerId)) clearPending(p.customerId)
+        }
+        setPending(readPending())
+      } catch (err) {
+        if (cancelled) return
+        setError(err)
+        setData(null)
+      } finally {
+        if (!cancelled) setLoading(false)
       }
-      setPending(readPending())
-    } catch (err) {
-      setError(err)
-      setData(null)
-    } finally {
-      setLoading(false)
+    }
+
+    void run()
+    // Visibility lag: re-fetch once shortly after mount / query change.
+    const t = window.setTimeout(() => {
+      if (!cancelled) void run()
+    }, 500)
+
+    return () => {
+      cancelled = true
+      window.clearTimeout(t)
     }
   }, [query])
 
-  useEffect(() => {
-    void load()
-  }, [load])
-
-  // Visibility lag: re-fetch once shortly after mount / query change.
-  useEffect(() => {
-    const t = window.setTimeout(() => {
-      void load()
-      setPending(readPending())
-    }, 500)
-    return () => window.clearTimeout(t)
-  }, [load])
-
   const items = useMemo(() => {
     if (!data) return [] as CustomerListItem[]
-    let rows = mergeWithPending(data.items, pending, data.limit)
+    let rows = mergeWithPending(data.items, pending, query)
     if (data.complete && sortKey) {
       rows = [...rows].sort((a, b) => compare(a, b, sortKey, sortDir))
     }
     return rows
-  }, [data, pending, sortKey, sortDir])
+  }, [data, pending, sortKey, sortDir, query])
 
   const incompleteNotice = useMemo(() => {
     if (!data || data.complete) return null
