@@ -40,6 +40,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/customers/{id}", s.handle(s.getCustomer))
 	mux.HandleFunc("POST /api/customers/{id}/points", s.handle(s.addPoints))
 	mux.HandleFunc("DELETE /api/customers/{id}", s.handle(s.deactivate))
+	mux.HandleFunc("GET /api/customers/{id}/audit", s.handle(s.getAudit))
 	mux.HandleFunc("GET /healthz", s.handle(s.health))
 	return mux
 }

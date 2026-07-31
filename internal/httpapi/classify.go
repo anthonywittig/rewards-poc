@@ -108,6 +108,50 @@ func isClosedRun(err error) bool {
 	return errors.As(err, &notFound)
 }
 
+// isHistoryGone reports whether a run's Event History has been deleted --
+// reaped after retention, or removed on demand by `make reap`.
+//
+// PLAN.md 6.3 predicted this arrives as NotFound. It does not, and the
+// difference is not cosmetic: the audit crawl detects truncation by *this
+// error*, so with the predicted classification a truncated log came back as an
+// unmapped 500 instead of the timeline it was designed to serve. Measured
+// against the real server, GetWorkflowHistory answers:
+//
+//	condition                        Go type                          message
+//	------------------------------   ------------------------------   -----------------------------------
+//	run reaped                       *serviceerror.InvalidArgument    "Requested workflow history not
+//	                                                                   found, may have passed retention
+//	                                                                   period."
+//	run ID well-formed, never used   *serviceerror.InvalidArgument    (identical to the above)
+//	run ID malformed                 *serviceerror.InvalidArgument    "Invalid RunId."
+//	workflow ID never existed        *serviceerror.NotFound           "workflow not found for ID: ..."
+//
+// So the type alone cannot decide it, and this is the one place in the codebase
+// that matches on message text -- everywhere else that would be a bug. There is
+// no other signal: "history deleted" and "run ID you made up" are the same error
+// because they are, from the server's side, the same situation.
+//
+// Note the server says "may have passed retention period" even when the run was
+// explicitly deleted, which for `make reap` is a guess and a wrong one. The
+// substring below is chosen from the half of the sentence that is diagnostic
+// rather than speculative.
+//
+// If a server upgrade changes that wording, truncation stops being recognised
+// and starts surfacing as a 500. That is the direction to fail in -- a loud
+// error beats a timeline that quietly shows fewer rows than the customer has,
+// which is precisely the outcome PLAN.md 6.3 exists to prevent.
+func isHistoryGone(err error) bool {
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return true
+	}
+	var invalid *serviceerror.InvalidArgument
+	if !errors.As(err, &invalid) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(invalid.Error()), "retention period")
+}
+
 // mentionsNoPoller reports whether a message names the specific condition the
 // worker-unavailable 503 claims. Used to decide how *confidently* to word that
 // response, never to decide the status code.

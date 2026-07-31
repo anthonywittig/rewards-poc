@@ -20,7 +20,7 @@ MOCK_PORT ?= 8082
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate \
-        inspect inspect-pg inspect-es write-trace
+        inspect inspect-pg inspect-es write-trace audit
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -206,3 +206,13 @@ add: $(ENV) ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 
 deactivate: $(ENV) ## Leave the program -- cancel, not terminate (make deactivate ID=c-001)
 	@$(TCLI) workflow cancel --workflow-id customer-$(ID)
+
+# The one target that goes through the API rather than the temporal CLI, because
+# the audit log is not a thing the server can be asked for -- it is reconstructed
+# by crawling Event History (PLAN.md 6). Compare with the raw events behind it:
+#
+#   make audit ID=c-001
+#   $(COMPOSE) exec temporal temporal workflow show --workflow-id customer-c-001
+audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
+	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
+	  || { echo "no API on :$(API_PORT) -- is 'make api' running?" >&2; exit 1; }
