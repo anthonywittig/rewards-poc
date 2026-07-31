@@ -29,7 +29,8 @@ func TestWorkflowTypeNameMatchesRegistration(t *testing.T) {
 }
 
 func TestScopedQuery(t *testing.T) {
-	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'"
+	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
+		" AND ExecutionStatus != 'ContinuedAsNew'"
 
 	if got, want := scopedQuery(""), scope; got != want {
 		t.Errorf("empty query = %q, want %q", got, want)
@@ -45,6 +46,19 @@ func TestScopedQuery(t *testing.T) {
 	}
 	if !strings.Contains(got, "AND (") {
 		t.Error("caller's filter must be parenthesised or an OR escapes the type scope")
+	}
+}
+
+// Visibility holds one document per Run, so without excluding ContinuedAsNew a
+// customer appears once per generation -- three rows and a total of 3 for one
+// customer who has rolled over twice. Verified against the real stack; this
+// pins the clause so it cannot be dropped as redundant-looking noise.
+func TestScopedQueryExcludesRolledOverGenerations(t *testing.T) {
+	for _, q := range []string{"", "RewardsLevel = 'gold'"} {
+		got := scopedQuery(q)
+		if !strings.Contains(got, "ExecutionStatus != 'ContinuedAsNew'") {
+			t.Errorf("scopedQuery(%q) = %q, must exclude rolled-over generations", q, got)
+		}
 	}
 }
 

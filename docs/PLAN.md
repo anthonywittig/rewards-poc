@@ -503,6 +503,34 @@ Registered once at bootstrap, before any workflow starts. Using the typed API
 Built-ins we get free and will use: `ExecutionStatus` (Running vs Canceled → active vs
 deactivated), `StartTime`, `CloseTime`, `WorkflowId`, `RunId`.
 
+### Visibility indexes Runs, not customers
+
+**One document per Run, not per Workflow ID.** A customer who has continued-as-new twice has
+*three* visibility documents, each frozen at that generation's balance. Anything that treats a
+visibility result set as a customer list is therefore double-counting, and does it silently —
+every individual row is correct, the totals are just wrong:
+
+```
+WorkflowId = 'customer-dup-check'                           Total: 3
+WorkflowId = 'customer-dup-check' AND status != CAN         Total: 1
+```
+
+Every list and count must exclude rolled-over generations:
+
+```
+ExecutionStatus != 'ContinuedAsNew'
+```
+
+That leaves exactly the current generation whatever its final state — `Running` for an active
+customer, `Canceled` for a departed one, `Failed` for an enrollment that never validated.
+`IN ('Running','Canceled')` looks equivalent and silently drops that last group: 45 against 47
+on the same data.
+
+This shipped as a bug in the Phase 4 list endpoint and was caught by the Phase 7 datastore
+inspection — which is the argument for [§8](#8-inspecting-postgres-and-elasticsearch) being a
+deliverable rather than a nice-to-have. No API test would have found it, because the API was
+faithfully reporting what it was asked for.
+
 This powers the customer list page's **filtering**:
 `RewardsLevel = "gold" AND ExecutionStatus = "Running"`.
 
@@ -934,9 +962,10 @@ canned queries in `deploy/inspect/`.
 
 ### 8.1 Postgres — how a workflow is actually stored
 
-Temporal creates two databases. `temporal` is persistence and is the one we care about;
-`temporal_visibility` gets its schema created by auto-setup but stays empty, because
-Elasticsearch is our visibility store.
+Temporal creates **one** database here: `temporal`, which is persistence. An earlier draft of
+this section said `temporal_visibility` also exists with a schema but no rows — that describes a
+Postgres-visibility deployment. With `ENABLE_ES=true` auto-setup does not create it at all, so
+persistence really is the only thing Postgres is doing for us. Measured in Phase 7.
 
 | Table | What it holds |
 |---|---|
@@ -1231,12 +1260,38 @@ Things not in the original brief that will come up.
     and stale *workers* fail in opposite directions — one errors loudly on replay, the other
     succeeds quietly with the wrong logic.
 
+**From the Phase 7 datastore inspection** — all measured against server 1.29.7 with
+Elasticsearch 7.17.27; details and the queries that show them are in
+[`docs/DATASTORES.md`](DATASTORES.md).
+
+17. **Visibility indexes Runs, not customers**, so any list or count must exclude
+    `ContinuedAsNew` or it double-counts anyone who has rolled over. Shipped as a bug in the
+    Phase 4 list endpoint; see [§4](#4-search-attributes) for the numbers and the fix.
+18. **`ORDER BY` is a limitation of Temporal's query language, not of Elasticsearch.** The same
+    sort runs fine against `temporal_visibility_v1_dev` directly — it is only `ListWorkflow` /
+    `temporal workflow list` that reject it. Sharpens item 8: the data *is* sortable, we simply
+    cannot ask for it through the supported API, which is why the answer is filter-then-sort
+    client-side rather than a read model.
+19. **There is no `temporal_visibility` Postgres database when ES is the visibility store.**
+    With `ENABLE_ES=true`, auto-setup creates only `temporal`. §8.1's earlier claim that the
+    second database exists but stays empty describes a Postgres-visibility deployment, not this
+    one.
+20. **`visibility_tasks` is empty at rest** and only briefly non-empty under write, so a
+    `SELECT count(*)` after the fact reports 0 even though the queue was used. Catching a row
+    needs a poll running alongside the write — `make write-trace` does this.
+21. **`_cat/indices` `docs.count` lags deletes.** After `make reap`, `_search` and `_count` drop
+    to zero for the deleted runs while `docs.count` can stay high until merges clear
+    soft-deletes. Use `_search`/`_count` to answer "is it gone?", not the index summary.
+22. `history_node.tree_id` equals `executions.run_id` for these entity workflows, and the
+    encoding is `Proto3` for `history_node.data`, `executions.data` and `executions.state`.
+    Useful for anyone writing further SQL against persistence.
+
 **Design**
 
-17. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+23. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-18. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+24. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."
