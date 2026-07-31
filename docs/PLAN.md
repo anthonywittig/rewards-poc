@@ -548,12 +548,22 @@ GET    /api/customers/{id}/audit   → history crawl (§6)                      
 The API holds a Temporal Client and nothing else — no database, no cache, no ORM. That is
 the whole argument of the POC and the code should make it obvious at a glance.
 
-**A deactivated customer is still readable.** A closed execution cannot answer a Query, so the
-detail endpoint falls back to the search attributes on the execution record, which survive it.
-That recovers everything the page shows except `LifetimeEarnEvents`, which is workflow state
-rather than a registered attribute and stays zero until the §6 crawl can supply it. This is
-the search attributes doing something other than powering the list: for a departed customer
-they are the only readable state short of crawling history.
+**A closed execution answers Queries perfectly well.** Temporal replays its history to serve
+them, so a deactivated customer returns full state — balance, tier, `LifetimeEarnEvents`, the
+lot. Worth stating because assuming the opposite is easy and the cost is silent: Phase 3
+initially short-circuited on status and fell straight to search attributes, which carry no
+`LifetimeEarnEvents`, so departed customers read back missing a field that had been available
+all along. The assumption was never tested because the code path that would have tested it was
+skipped. Corrected once measured.
+
+The search-attribute fallback survives, on the degraded path only: replay needs a worker, so a
+closed customer with none would otherwise 503 despite the execution record already holding most
+of the page. Falling back beats failing for someone who cannot change anyway.
+
+It does **not** cover a reaped customer. `make reap` deletes the whole execution record,
+search attributes included, so those fail at `Describe` and surface as a 404 rather than
+degrading — see [§6.3](#63-truncation-is-the-feature). Truncation detection is the §6 crawl's
+job, not this endpoint's.
 
 Error mapping worth getting right, because these are the failure modes a reviewer will poke
 at:
