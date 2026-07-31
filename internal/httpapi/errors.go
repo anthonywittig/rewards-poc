@@ -96,6 +96,36 @@ func mapUpdateError(err error) error {
 	return classifyCommon(err)
 }
 
+// mapStoreReadError classifies failures for the two endpoints that read *stored*
+// data rather than asking a running workflow: the customer list, which reads the
+// visibility index, and the audit crawl, which reads Event History. Neither
+// involves a worker at any point.
+//
+// subject names the operation that ran out of time, e.g. "the customer list".
+//
+// Without this, both inherit the Query path's wording -- "the rewards workflow
+// did not respond in time; the worker may be down or overloaded" -- which names
+// two things neither endpoint touches. Sending someone to restart a worker
+// because the visibility store was slow is exactly the mistake the
+// FailedPrecondition wording made before PR #6 split status from message; this
+// is the same fix applied to two call sites that were missed at the time.
+//
+// The status stays 503. Slow is transient and retrying is right, so nothing the
+// caller *does* changes -- only what they are told to go and look at.
+//
+// The code stays CodeWorkerUnavailable, which reads oddly here. It is deliberate:
+// the error contract is frozen so Phase 8 can build against it (PLAN.md 5.1), and
+// this is the only 503 in it. Clients treat it as "backend not ready, retry",
+// which is correct for a slow visibility store as much as for a missing worker.
+// A truer code would be worth having and is not worth breaking the freeze for.
+func mapStoreReadError(err error, subject string) error {
+	if isTimeout(err) {
+		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
+			subject + " did not finish in time; temporal is slow or unreachable"}
+	}
+	return classifyCommon(err)
+}
+
 // classifyCommon handles the failures every endpoint shares.
 func classifyCommon(err error) error {
 	var notFound *serviceerror.NotFound

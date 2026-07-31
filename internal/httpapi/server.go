@@ -40,6 +40,7 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("GET /api/customers/{id}", s.handle(s.getCustomer))
 	mux.HandleFunc("POST /api/customers/{id}/points", s.handle(s.addPoints))
 	mux.HandleFunc("DELETE /api/customers/{id}", s.handle(s.deactivate))
+	mux.HandleFunc("GET /api/customers/{id}/audit", s.handle(s.getAudit))
 	mux.HandleFunc("GET /healthz", s.handle(s.health))
 	return mux
 }
@@ -161,7 +162,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		if apiErr := mapListError(err, userQuery); apiErr != nil {
 			return apiErr
 		}
-		return mapQueryError(err)
+		// Not mapQueryError: this read never involves a worker, so a timeout
+		// here must not send anyone to go and restart one.
+		return mapStoreReadError(err, "the customer list")
 	}
 
 	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
