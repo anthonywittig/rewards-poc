@@ -1,0 +1,4 @@
+# Per-stack env files. .env.example is the template and is tracked.
+.env
+.env.*
+!.env.example

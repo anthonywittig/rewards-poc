@@ -1,0 +1,111 @@
+# Phase 0 stack: Postgres (persistence) + Elasticsearch (visibility) + Temporal.
+# worker/api/web join in later phases.
+#
+# Run via the Makefile at the repo root, which points here and loads .env.
+
+name: ${COMPOSE_PROJECT_NAME:-rewards-alpha}
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION}
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  elasticsearch:
+    image: elasticsearch:${ELASTICSEARCH_VERSION}
+    environment:
+      - discovery.type=single-node
+      - ES_JAVA_OPTS=${ES_JAVA_OPTS}
+      - xpack.security.enabled=false
+      # Absolute-byte watermarks, not percentages. With ES's default 85/90/95%
+      # thresholds a nearly-full laptop disk flips indices read-only and
+      # visibility silently stops updating while workflows keep running fine.
+      # These are Temporal's own reference values -- keep them.
+      - cluster.routing.allocation.disk.threshold_enabled=true
+      - cluster.routing.allocation.disk.watermark.low=512mb
+      - cluster.routing.allocation.disk.watermark.high=256mb
+      - cluster.routing.allocation.disk.watermark.flood_stage=128mb
+      # We index a handful of documents. None of this earns its memory.
+      - xpack.ml.enabled=false
+      - xpack.monitoring.collection.enabled=false
+      - xpack.watcher.enabled=false
+      - indices.memory.index_buffer_size=5%
+    mem_limit: ${ES_MEM_LIMIT}
+    ports:
+      - "${ES_PORT}:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    healthcheck:
+      # yellow is fine: single node, and Temporal's index template sets
+      # number_of_replicas 0 with auto_expand_replicas 0-2.
+      test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  temporal:
+    image: temporalio/auto-setup:${TEMPORAL_VERSION}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      elasticsearch:
+        condition: service_healthy
+    environment:
+      - DB=postgres12
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD}
+      - POSTGRES_SEEDS=postgres
+      - ENABLE_ES=true
+      - ES_SEEDS=elasticsearch
+      - ES_VERSION=v7
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/dev.yaml
+      # auto-setup creates a default namespace on boot; ours is created by
+      # bootstrap.sh with the retention we actually want.
+      - SKIP_DEFAULT_NAMESPACE_CREATION=true
+    ports:
+      - "${TEMPORAL_GRPC_PORT}:7233"
+    volumes:
+      - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
+      # The server image ships the `temporal` CLI, so operational scripts run
+      # here via `exec` rather than in a separate admin-tools container --
+      # several seconds faster per invocation, and one less image to pin.
+      # Note it has bash, curl and grep but no python3 or jq.
+      - ./bootstrap.sh:/bootstrap.sh:ro
+      - ./reap.sh:/reap.sh:ro
+      - ./inspect:/inspect:ro
+    healthcheck:
+      # The frontend binds the container's own IP, not 127.0.0.1, so localhost
+      # is refused here. `hostname -i` gives the address it actually listens on.
+      test: ["CMD-SHELL", "temporal operator cluster health --address $$(hostname -i):7233 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+
+  temporal-ui:
+    image: temporalio/ui:${TEMPORAL_UI_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:${TEMPORAL_UI_PORT}
+      - TEMPORAL_DEFAULT_NAMESPACE=${TEMPORAL_NAMESPACE}
+    ports:
+      - "${TEMPORAL_UI_PORT}:8080"
+
+volumes:
+  postgres-data:
+  es-data:
