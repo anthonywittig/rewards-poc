@@ -107,26 +107,53 @@ type CustomerListItem struct {
 	RunID      string    `json:"runId"`
 }
 
+// ListLimit caps GET /api/customers. There is no pagination.
+//
+// A deliberate simplification, and one the platform pushes towards: Temporal
+// rejects ORDER BY (PLAN.md 12.8), so a paginated list would hand back
+// arbitrary pages of an unordered set — page 2 of "customers" means nothing in
+// particular. Rather than build paging that cannot be made coherent, the list
+// returns a small fixed slice, says how many matched in total, and tells the
+// user to filter. Filtering is the operation the visibility store is actually
+// good at.
+const ListLimit = 5
+
 // CustomerListResponse is the body of GET /api/customers.
 //
-// Two properties the UI has to respect, both consequences of the visibility
+// The UI renders one of:
+//
+//	Complete            -> no notice; this is everything matching
+//	Total >= 0          -> "Showing 5 of 23 — filter to find additional results"
+//	Total < 0           -> "Showing 5 of many — filter to find additional results"
+//
+// Three properties the UI has to respect, all consequences of the visibility
 // store rather than of this API:
 //
 //   - **Results are unsorted.** Temporal rejects ORDER BY outright, for custom
-//     and built-in attributes alike (PLAN.md 12.8), so sorting is the client's
-//     job. Complete says whether that is even meaningful: sorting a *page* of a
-//     paginated list sorts the wrong thing. Sort only when Complete is true;
-//     otherwise present in server order or keep paging.
-//   - **Results lag writes.** Elasticsearch visibility is asynchronous, ~200-300ms
-//     after tuning and never zero, so a just-created customer may be missing.
-//     PLAN.md 7.5 and 9.
+//     and built-in attributes alike, so sorting is the client's job. With no
+//     pagination that is now always safe — Items is the whole of what was
+//     returned — but note sorting five arbitrary rows out of twenty-three sorts
+//     a sample, not the set. Only meaningful when Complete.
+//   - **Which five you get is unspecified.** No ORDER BY means no stable
+//     ordering, so the same request can return a different five. Do not build
+//     anything that assumes otherwise.
+//   - **Results lag writes.** Elasticsearch visibility is asynchronous,
+//     ~200-300ms after tuning and never zero, so a just-created customer may be
+//     missing from both Items and Total. PLAN.md 7.5 and 9.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
-	// Opaque; pass back as ?pageToken= to continue. Empty means no more pages.
-	NextPageToken string `json:"nextPageToken,omitempty"`
-	// True when this response contains the entire filtered set, i.e. there was
-	// no page token and none is returned. Only then is client-side sorting
-	// correct.
+	// The cap that was applied, echoed so the UI does not hardcode it.
+	Limit int `json:"limit"`
+	// Customers matching Query, ignoring the limit. -1 when the count could not
+	// be obtained, which is what "of many" is for -- the list itself still
+	// works, so a failed count degrades the message rather than the request.
+	//
+	// Total and Items come from two separate visibility queries, so under
+	// concurrent writes they can disagree by a row. Not worth solving for a
+	// count shown next to the word "filter".
+	Total int `json:"total"`
+	// True when Items is everything that matched, i.e. Total <= Limit. Only
+	// then is client-side sorting sorting the actual set.
 	Complete bool `json:"complete"`
 	// Echoed back so the UI can show what it asked for, and so a rejected query
 	// is debuggable from the response alone.

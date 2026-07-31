@@ -129,6 +129,11 @@ customer list and the audit timeline), plus a deactivated customer, a truncated 
 customer sitting under the points cap, and the ~400 ms visibility lag on newly created customers.
 It shares the API's DTOs, so it cannot drift from the real thing without failing to compile.
 
+**The customer list is capped at five rows and has no pagination.** That's a consequence of
+`ORDER BY` not working: with no stable ordering, "page 2" doesn't mean anything in particular, so
+the list returns a small slice, tells you how many matched, and pushes you to filter — which is
+what the visibility store is actually good at.
+
 ```sh
 curl -XPOST localhost:8081/api/customers \
   -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'

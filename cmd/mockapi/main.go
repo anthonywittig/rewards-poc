@@ -107,10 +107,10 @@ func (m *mock) list(w http.ResponseWriter, r *http.Request) {
 	defer m.mu.Unlock()
 
 	q := r.URL.Query().Get("q")
-	pageSize := atoiOr(r.URL.Query().Get("pageSize"), 50)
-	token := r.URL.Query().Get("pageToken")
 
-	var items []httpapi.CustomerListItem
+	// Everything matching, which is the count the real endpoint gets from
+	// CountWorkflow rather than by materialising rows.
+	var matched []httpapi.CustomerListItem
 	now := time.Now()
 	for _, id := range sortedKeys(m.customers) {
 		c := m.customers[id]
@@ -120,28 +120,24 @@ func (m *mock) list(w http.ResponseWriter, r *http.Request) {
 		if !matches(c, q) {
 			continue
 		}
-		items = append(items, httpapi.FixtureListItem(c))
+		matched = append(matched, httpapi.FixtureListItem(c))
 	}
 
-	// Paginate crudely; the point is that the UI handles a token at all.
-	start := atoiOr(token, 0)
-	if start > len(items) {
-		start = len(items)
+	total := len(matched)
+	items := matched
+	if len(items) > httpapi.ListLimit {
+		items = items[:httpapi.ListLimit]
 	}
-	end := start + pageSize
-	complete := start == 0 && end >= len(items)
-	next := ""
-	if end < len(items) {
-		next = strconv.Itoa(end)
-	} else {
-		end = len(items)
+	if items == nil {
+		items = []httpapi.CustomerListItem{}
 	}
 
 	writeJSON(w, 200, httpapi.CustomerListResponse{
-		Items:         items[start:end],
-		NextPageToken: next,
-		Complete:      complete,
-		Query:         q,
+		Items:    items,
+		Limit:    httpapi.ListLimit,
+		Total:    total,
+		Complete: total <= httpapi.ListLimit,
+		Query:    q,
 	})
 }
 

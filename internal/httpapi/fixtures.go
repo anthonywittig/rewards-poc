@@ -64,6 +64,34 @@ var FixtureCustomers = map[string]CustomerResponse{
 		LifetimeEarnEvents: 4, Generation: 1,
 		Status: "deactivated", RunID: "019fb9c1-0000-0000-0000-000000000004",
 	},
+
+	// Filler, so an unfiltered list exceeds ListLimit and the
+	// "Showing 5 of 9 -- filter to find additional results" notice actually
+	// renders. Without more fixtures than the limit, the UI's most important
+	// list state is unreachable in the mock.
+	"alan":      filler("alan", "Alan Turing", 480, "basic", 5, 1),
+	"barbara":   filler("barbara", "Barbara Liskov", 720, "gold", 9, 3),
+	"edsger":    filler("edsger", "Edsger Dijkstra", 1200, "platinum", 15, 5),
+	"katherine": filler("katherine", "Katherine Johnson", 95, "basic", 1, 0),
+}
+
+// filler builds an unremarkable active customer. The interesting fixtures are
+// spelled out above; these exist to make the list long enough to truncate.
+func filler(id, name string, points int, level string, earns, generation int) CustomerResponse {
+	next := 500
+	switch level {
+	case "gold":
+		next = 1000
+	case "platinum":
+		next = 0
+	}
+	return CustomerResponse{
+		CustomerID: id, Name: name, Email: id + "@example.com",
+		Points: points, Level: level, NextTierAt: next,
+		EnrolledAt:         ago(time.Duration(20+earns) * 24 * time.Hour),
+		LifetimeEarnEvents: earns, Generation: generation,
+		Status: "active", RunID: "019fb9c1-filler-" + id,
+	}
 }
 
 // FixtureAudits mirrors FixtureCustomers. "grace" is deliberately truncated.
