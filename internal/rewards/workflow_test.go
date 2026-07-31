@@ -559,6 +559,46 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		"the successor run must start its own count, not inherit a primed one")
 }
 
+// awaitSemanticsWorkflow pins the SDK behaviour the ctx.Err() guards in
+// CustomerRewardsWorkflow exist for. It reports (awaitReturnedNil, ctxWasDone)
+// for an Await whose condition is already true on an already-cancelled context.
+func awaitSemanticsWorkflow(ctx workflow.Context) ([]bool, error) {
+	cctx, cancel := workflow.WithCancel(ctx)
+	cancel()
+
+	err := workflow.Await(cctx, func() bool { return true })
+	return []bool{err == nil, cctx.Err() != nil}, nil
+}
+
+// workflow.Await returning nil does NOT mean "not cancelled". It evaluates its
+// condition before it checks the context, so a satisfied condition short-
+// circuits the cancellation check entirely.
+//
+// That is the whole reason CustomerRewardsWorkflow re-checks ctx.Err() after
+// each Await: on a real server a single workflow task can carry both the Nth
+// addPoints and a cancellation request, and without the guard the run would
+// roll instead of deactivating -- stranding the departure permanently, since
+// continue-as-new starts a fresh run and the cancellation targeted the run that
+// just ended.
+//
+// This asserts the primitive rather than that scenario. The test environment
+// dispatches env.UpdateWorkflow synchronously, running the main coroutine to
+// quiescence before the next env call, so it cannot stage two things landing in
+// one transition -- verified by attempting it. The guards are therefore correct
+// by construction but not exercised end to end here; see PLAN.md 12.9.
+func (s *RewardsSuite) Test_AwaitReturnsNilOnCancelledContextWhenConditionHolds() {
+	s.env.ExecuteWorkflow(awaitSemanticsWorkflow)
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	s.Require().NoError(s.env.GetWorkflowError())
+
+	var got []bool
+	s.Require().NoError(s.env.GetWorkflowResult(&got))
+
+	s.True(got[0], "Await returned nil despite the context being cancelled")
+	s.True(got[1], "...and the context really was cancelled -- hence the explicit ctx.Err() guards")
+}
+
 // Deactivation beats the roll: a cancel arriving before the threshold takes the
 // departure path rather than continuing as new.
 func (s *RewardsSuite) Test_ContinueAsNew_CancelWinsBeforeThreshold() {

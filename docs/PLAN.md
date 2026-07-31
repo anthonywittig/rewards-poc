@@ -1017,39 +1017,57 @@ Things not in the original brief that will come up.
    even on Elasticsearch visibility. Filtering is server-side; sorting is the caller's problem,
    and is only correct when the whole filtered set fits one page. Confirmed in Phase 1 on
    server 1.29.7; see [§4](#4-search-attributes).
+9. **`workflow.Await` returning `nil` does not mean "not cancelled."** It evaluates its
+   condition *before* it checks the context:
+
+   ```go
+   for !condition() {
+       ... return NewCanceledError(...) if ctx is done ...
+       state.yield("Await")
+   }
+   return nil
+   ```
+
+   so a condition that already holds short-circuits the cancellation check entirely. Any
+   `Await` whose nil return is treated as "the condition fired, and only the condition" is
+   wrong whenever cancellation can race it. In §3.5 that meant a cancel arriving in the same
+   workflow task as the Nth point-add would roll the run instead of deactivating — and strand
+   the departure permanently, because continue-as-new starts a fresh run while the cancellation
+   targeted the run that just ended. The customer clicks deactivate and stays active. Re-check
+   `ctx.Err()` after every such `Await`. Found by review on PR #5.
 
 **Operational**
 
-7. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
+10. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
    changing workflow code under a running execution causes non-determinism errors. In dev,
    terminate stale workflows between changes. Document Worker Versioning / patching as the
    production answer, and add a `make reset` that wipes all customer workflows.
-8. Customer names and emails land in Event History and are readable in plaintext in the
+11. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
-9. No authentication anywhere. State it in the README so nobody mistakes this for a starting
+12. No authentication anywhere. State it in the README so nobody mistakes this for a starting
    point for something exposed.
-10. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
+13. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
    ES 8 needs 1.18+). Pin both images.
-11. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
+14. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
     Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
-12. **A stale worker is invisible and looks exactly like a workflow bug.** `go run` execs its
+15. **A stale worker is invisible and looks exactly like a workflow bug.** `go run` execs its
     binary out of `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker`
     nor `exe/worker` — so the obvious `pkill -f cmd/worker` leaves it alive and happily polling
     the same task queue with the *old* code. Cost real debugging time in Phase 2: continue-as-new
     was correct and unit-tested, but a pre-Phase-2 worker kept winning the tasks, so `generation`
     stayed 0 and the feature looked broken. Use `make worker-stop` (which matches the cache path)
     and `make workers` to confirm exactly one is running before concluding anything about
-    workflow behaviour. Worth pairing with the versioning discipline in item 7: stale *workflows*
+    workflow behaviour. Worth pairing with the versioning discipline in item 10: stale *workflows*
     and stale *workers* fail in opposite directions — one errors loudly on replay, the other
     succeeds quietly with the wrong logic.
 
 **Design**
 
-13. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+16. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-14. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+17. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

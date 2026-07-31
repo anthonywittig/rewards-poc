@@ -179,6 +179,27 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return handleLeave(ctx, &state)
 	}
 
+	// A nil error above does NOT mean "not cancelled". workflow.Await evaluates
+	// its condition before it checks cancellation:
+	//
+	//	for !condition() {
+	//	    ... return NewCanceledError(...) if ctx is done ...
+	//	    state.yield("Await")
+	//	}
+	//	return nil
+	//
+	// so once the condition holds it returns nil without ever looking at ctx. A
+	// cancel arriving in the same workflow transition as the Nth add therefore
+	// lands here with err == nil and ctx already done.
+	//
+	// Rolling at that point strands the departure permanently: continue-as-new
+	// starts a fresh run, and the cancellation request targeted the run that
+	// just ended. The customer clicks deactivate and stays active. Departure
+	// always wins -- the points are already recorded either way.
+	if ctx.Err() != nil {
+		return handleLeave(ctx, &state)
+	}
+
 	// An Update accepted just before the roll condition fired is still running.
 	// Rolling now would abort it -- the caller gets an error for points that
 	// were about to be applied. Wait for handlers to drain first. PLAN.md 3.5.
@@ -195,6 +216,13 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	//     drain clause alongside this one, or its notification is silently
 	//     dropped by the roll. PLAN.md 3.7 and 12.6 -- write that test first.
 	if err := workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
+		return handleLeave(ctx, &state)
+	}
+
+	// Same trap as above, and a wider window: handlers are usually already
+	// finished, so this Await frequently returns nil on its first condition
+	// check without ever consulting ctx.
+	if ctx.Err() != nil {
 		return handleLeave(ctx, &state)
 	}
 
