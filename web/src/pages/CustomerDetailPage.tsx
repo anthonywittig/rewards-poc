@@ -1,0 +1,277 @@
+import { useCallback, useEffect, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import {
+  addPoints,
+  deactivateCustomer,
+  getAudit,
+  getCustomer,
+  newRequestId,
+} from '../api'
+import { AuditTimeline } from '../components/AuditTimeline'
+import { ErrorBanner } from '../components/ErrorBanner'
+import { ProgressBar } from '../components/ProgressBar'
+import { TierBadge } from '../components/TierBadge'
+import { formatDate } from '../format'
+import type { AddPointsResponse, AuditResponse, CustomerResponse } from '../types'
+import { ApiError } from '../types'
+
+export function CustomerDetailPage() {
+  const { id = '' } = useParams()
+  const [customer, setCustomer] = useState<CustomerResponse | null>(null)
+  const [audit, setAudit] = useState<AuditResponse | null>(null)
+  const [error, setError] = useState<unknown>(null)
+  const [auditError, setAuditError] = useState<unknown>(null)
+  const [loading, setLoading] = useState(true)
+
+  const [amount, setAmount] = useState('100')
+  const [reason, setReason] = useState('purchase')
+  const [pointsBusy, setPointsBusy] = useState(false)
+  const [pointsError, setPointsError] = useState<unknown>(null)
+  const [pointsOk, setPointsOk] = useState<AddPointsResponse | null>(null)
+
+  const [confirmLeave, setConfirmLeave] = useState(false)
+  const [leaveBusy, setLeaveBusy] = useState(false)
+  const [leaveError, setLeaveError] = useState<unknown>(null)
+
+  const refresh = useCallback(async () => {
+    if (!id) return
+    setLoading(true)
+    setError(null)
+    setAuditError(null)
+    try {
+      const [c, a] = await Promise.all([
+        getCustomer(id),
+        getAudit(id).catch((err) => {
+          setAuditError(err)
+          return null
+        }),
+      ])
+      setCustomer(c)
+      setAudit(a)
+    } catch (err) {
+      setError(err)
+      setCustomer(null)
+    } finally {
+      setLoading(false)
+    }
+  }, [id])
+
+  useEffect(() => {
+    void refresh()
+  }, [refresh])
+
+  async function onAddPoints(e: React.FormEvent) {
+    e.preventDefault()
+    if (!customer || customer.status !== 'active') return
+    setPointsBusy(true)
+    setPointsError(null)
+    setPointsOk(null)
+    try {
+      const res = await addPoints(customer.customerId, {
+        amount: Number(amount),
+        reason: reason.trim(),
+        requestId: newRequestId(),
+      })
+      setPointsOk(res)
+      await refresh()
+    } catch (err) {
+      setPointsError(err)
+      // Handler rejections leave an audit row; validator ones do not.
+      if (err instanceof ApiError && err.code === 'rejected') {
+        try {
+          setAudit(await getAudit(customer.customerId))
+        } catch {
+          /* ignore */
+        }
+      }
+    } finally {
+      setPointsBusy(false)
+    }
+  }
+
+  async function onDeactivate() {
+    if (!customer) return
+    setLeaveBusy(true)
+    setLeaveError(null)
+    try {
+      await deactivateCustomer(customer.customerId)
+      setConfirmLeave(false)
+      await refresh()
+    } catch (err) {
+      setLeaveError(err)
+    } finally {
+      setLeaveBusy(false)
+    }
+  }
+
+  if (loading && !customer) {
+    return (
+      <>
+        <Link className="back-link" to="/">
+          ← Customers
+        </Link>
+        <p className="muted">Loading…</p>
+      </>
+    )
+  }
+
+  if (!customer) {
+    return (
+      <>
+        <Link className="back-link" to="/">
+          ← Customers
+        </Link>
+        <ErrorBanner error={error} />
+      </>
+    )
+  }
+
+  const active = customer.status === 'active'
+
+  return (
+    <>
+      <Link className="back-link" to="/">
+        ← Customers
+      </Link>
+      <ErrorBanner error={error} />
+
+      <div className="detail-grid">
+        <section className="detail-hero">
+          <TierBadge level={customer.level} />
+          <h1 className="name">{customer.name}</h1>
+          <p className="email">{customer.email}</p>
+
+          <div className="points-block">
+            <div className="points">
+              {customer.points.toLocaleString()}
+              <span>points</span>
+            </div>
+            <ProgressBar
+              points={customer.points}
+              nextTierAt={customer.nextTierAt}
+              level={customer.level}
+            />
+          </div>
+
+          <div className="meta-row">
+            <span>
+              Status{' '}
+              <strong className={`status-pill status-${customer.status}`}>
+                {customer.status}
+              </strong>
+            </span>
+            <span>
+              Enrolled <strong>{formatDate(customer.enrolledAt)}</strong>
+            </span>
+            <span>
+              Generation <strong>{customer.generation}</strong>
+            </span>
+            <span>
+              Lifetime earns <strong>{customer.lifetimeEarnEvents}</strong>
+            </span>
+          </div>
+        </section>
+
+        <div className="side-panel">
+          {active ? (
+            <section className="panel">
+              <h2>Add points</h2>
+              <form onSubmit={onAddPoints}>
+                <div className="field">
+                  <label htmlFor="amount">Amount</label>
+                  <input
+                    id="amount"
+                    type="number"
+                    min={1}
+                    required
+                    value={amount}
+                    onChange={(e) => setAmount(e.target.value)}
+                  />
+                </div>
+                <div className="field" style={{ marginTop: '0.65rem' }}>
+                  <label htmlFor="reason">Reason</label>
+                  <input
+                    id="reason"
+                    required
+                    value={reason}
+                    onChange={(e) => setReason(e.target.value)}
+                  />
+                </div>
+                <div className="form-actions">
+                  <button className="btn btn-primary" type="submit" disabled={pointsBusy}>
+                    {pointsBusy ? 'Applying…' : 'Add points'}
+                  </button>
+                </div>
+              </form>
+              <ErrorBanner error={pointsError} />
+              {pointsOk ? (
+                <p className="success">
+                  Balance {pointsOk.balance.toLocaleString()} · {pointsOk.level}
+                </p>
+              ) : null}
+              <p className="hint" style={{ marginTop: '0.75rem' }}>
+                Each click sends a fresh <code>requestId</code>. Validator rejections
+                never appear in the audit log; handler (cap) rejections do.
+              </p>
+            </section>
+          ) : (
+            <section className="panel">
+              <h2>Deactivated</h2>
+              <p className="warn-copy">
+                This customer has left the program. Points cannot be added.
+                Re-enrollment starts a new workflow at zero — deactivation is not
+                irreversible, but history on the old run may still be reaped.
+              </p>
+            </section>
+          )}
+
+          {active ? (
+            <section className="panel">
+              <h2>Leave program</h2>
+              {!confirmLeave ? (
+                <button
+                  type="button"
+                  className="btn btn-danger"
+                  onClick={() => setConfirmLeave(true)}
+                >
+                  Deactivate
+                </button>
+              ) : (
+                <>
+                  <p className="warn-copy">
+                    Cancel the workflow (graceful). Re-enrolling later starts over at
+                    zero points.
+                  </p>
+                  <div className="form-actions">
+                    <button
+                      type="button"
+                      className="btn btn-danger"
+                      disabled={leaveBusy}
+                      onClick={() => void onDeactivate()}
+                    >
+                      {leaveBusy ? 'Deactivating…' : 'Confirm deactivate'}
+                    </button>
+                    <button
+                      type="button"
+                      className="btn btn-ghost"
+                      onClick={() => setConfirmLeave(false)}
+                    >
+                      Keep active
+                    </button>
+                  </div>
+                </>
+              )}
+              <ErrorBanner error={leaveError} />
+            </section>
+          ) : null}
+        </div>
+      </div>
+
+      <section className="panel" style={{ marginTop: '1.25rem' }}>
+        <h2>Audit timeline</h2>
+        <ErrorBanner error={auditError} />
+        {audit ? <AuditTimeline audit={audit} /> : null}
+      </section>
+    </>
+  )
+}
