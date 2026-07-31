@@ -1155,23 +1155,29 @@ Two conclusions fall out of it, and they are what `DATASTORES.md` should lead wi
 
 ## 9. Web UI
 
-Vite + React + TypeScript. Three screens:
+Vite + React + TypeScript in `web/`. **Done** — three screens against `make mockapi`
+(and the same base URL against `make api`).
 
 - **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
   ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status toggle
-  (Running/Canceled), and a raw search-attribute query box so we can show the same query working
-  in the Temporal UI. This is where search attributes earn their keep — and where the design has
-  to be honest that filtering, not browsing, is what the visibility store supports.
+  (Running/Canceled via `ExecutionStatus`), and a raw search-attribute query box so we can show
+  the same query working in the Temporal UI. This is where search attributes earn their keep —
+  and where the design has to be honest that filtering, not browsing, is what the visibility
+  store supports.
 
   When more matched than fit, render **"Showing 5 of 23 — filter to find additional results"**
   (or "of many" when `Total` is `-1`). Sorting is offered only when `Complete`; otherwise it
   would sort five arbitrary rows out of twenty-three and look authoritative while being a
   sample.
-- **Create customer** — name + email, POSTs, redirects to detail.
-- **Customer detail** — tier badge, points, progress bar to next tier, enrollment date;
-  an add-points form showing synchronous success or the rejection message; a Deactivate
-  button with confirmation; and the audit timeline with generation dividers and the
-  truncation notice.
+- **Create customer** — name + email + `customerId` (auto-slugged from the name, editable),
+  POSTs, redirects to detail. The ID field is required by `EnrollRequest` even though an earlier
+  draft of this section omitted it.
+- **Customer detail** — tier badge, points, progress bar to next tier (`nextTierAt == 0` means
+  none — do not divide by it), enrollment date; an add-points form showing synchronous success
+  or the rejection message (hidden when deactivated); a Deactivate button with confirmation and
+  an explicit note that re-enrollment starts at zero; and the audit timeline with generation
+  dividers, notification rows, and the truncation notice
+  ("Showing N of M point events. Earlier history has been deleted.").
 
 **The one UI gotcha that will bite:** Elasticsearch visibility is *asynchronous*, so after
 creating a customer `ListWorkflow` will not include them for a beat. [§7.5](#75-cutting-the-visibility-lag)
@@ -1186,7 +1192,12 @@ never exactly zero, so the UI should not assume it is. Two rules follow:
 
 Worth testing deliberately: create a customer and immediately hit the list endpoint. If the
 tuning in §7.5 is working the row should be there within ~300 ms, and `visibility_tasks`
-(§8.1) will show why when it isn't.
+(§8.1) will show why when it isn't. The mock reproduces the lag at 400 ms.
+
+Run: `make mockapi` then `make web` (Vite on `:5173`; `/api` proxied to the mock).
+`VITE_API_PROXY_TARGET=http://localhost:8081 make web` points at the real API — the Go
+server does not send CORS headers, so a cross-origin `VITE_API_BASE` fails in the browser.
+Findings for §12 live in `web/NOTES.md`.
 
 ---
 
@@ -1222,7 +1233,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
 | 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix. The audit crawl already renders notification rows against `rewards.NotifyRequest`; register the Activity under `rewards.ActivityNotifyCustomer` and they appear |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
-| 8 | React UI, all three screens | Audit timeline now renders notification rows too |
+| 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | |
 
 Phases 1–2 are the substance and Phase 7 is the other headline deliverable; the rest is
@@ -1399,12 +1410,35 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     `LifetimeEarnEvents` from the newest run's start payload rather than from a Query is what
     buys this, and it costs nothing.
 
+**From the Phase 8 UI** — found building the React screens against both APIs.
+
+29. **"Status" means two different things, in two different vocabularies.** The visibility
+    query language says `ExecutionStatus = 'Running' | 'Canceled'`; the API's DTOs say
+    `status: "active" | "deactivated"`. Same concept, same English word, no overlap in
+    spelling — and they are not interchangeable in either direction, because one is a Temporal
+    built-in search attribute and the other is our projection of it. A status filter in the UI
+    has to translate. The mismatch is not accidental: a workflow cannot record its own closure
+    ([§3.6](#36-deactivation-via-cancel)), so the API is deriving a rewards-domain word from a
+    platform-domain one.
+
+30. **The Go API sends no CORS headers; only the mock does.** So pointing a browser at it with
+    a cross-origin base URL fails, and `make web` proxies `/api` through Vite instead
+    (`VITE_API_PROXY_TARGET=http://localhost:8081`). The Phase 8 handoff brief claimed the two
+    servers were interchangeable by base URL alone — they are field-for-field identical in
+    *content*, which is what was actually verified, and that was written up as more than it
+    was.
+
+    Left as-is rather than "fixed" by adding permissive CORS: same-origin proxying is the
+    normal Vite setup and the one that survives into production, whereas an unauthenticated API
+    advertising `Access-Control-Allow-Origin: *` is a shape worth not copying out of a POC. The
+    mock has it precisely because it is meant to be hit directly with no stack running.
+
 **Design**
 
-29. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+31. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-30. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+32. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

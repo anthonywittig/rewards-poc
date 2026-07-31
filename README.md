@@ -298,6 +298,27 @@ The rule of thumb, and where each rejection lives in the code:
 | Facts about the **request** | Update validator | No | negative amount, over per-txn max, missing reason |
 | Facts about the **customer** | Update handler | Yes | would exceed the points cap |
 
+## The UI
+
+```sh
+make mockapi     # :8082, fixtures only
+make web         # :5173
+```
+
+Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the mock.
+Against the real stack:
+
+```sh
+make up && make worker && make api
+VITE_API_PROXY_TARGET=http://localhost:8081 make web
+```
+
+It has to be a proxy rather than a cross-origin base URL: the Go API deliberately sends no
+CORS headers, and same-origin proxying is both the normal Vite setup and the one that survives
+into production. Only the mock sets CORS, because it exists to be hit directly with no stack.
+
+See `web/NOTES.md` for the UI's own notes.
+
 ## Points only go up
 
 There is no spending, redemption, expiry, or manual adjustment, and none is planned. `addPoints`

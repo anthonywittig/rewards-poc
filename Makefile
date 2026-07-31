@@ -20,7 +20,7 @@ MOCK_PORT ?= 8082
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate \
-        inspect inspect-pg inspect-es write-trace audit
+        inspect inspect-pg inspect-es write-trace audit web web-build
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -174,6 +174,12 @@ mockapi-stop: ## Stop every running mockapi process
 	@pkill -f 'go-build.*/mockapi$$' 2>/dev/null; \
 	 pkill -f 'go run \./cmd/mockapi' 2>/dev/null; \
 	 sleep 1; echo "stopped"
+
+web: ## Run the Vite UI (make mockapi first; VITE_API_PROXY_TARGET points at the real API)
+	cd web && npm run dev
+
+web-build: ## Typecheck and build the UI
+	cd web && npm run build
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.
