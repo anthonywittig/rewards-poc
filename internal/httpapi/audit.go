@@ -40,6 +40,11 @@ import (
 // that would make the one honest signal in the response dishonest.
 const auditTimeout = 30 * time.Second
 
+// auditSubject names this endpoint in a timeout message. It exists because the
+// default wording blames the worker, and the crawl never speaks to one --
+// see mapStoreReadError.
+const auditSubject = "the audit crawl"
+
 // getAudit walks the customer's run chain newest-first and renders it oldest-first.
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
@@ -57,7 +62,7 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	// the latest run instead of reporting the specific run as gone.
 	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
 	if err != nil {
-		return mapQueryError(err)
+		return mapStoreReadError(err, auditSubject)
 	}
 
 	resp, err := s.crawl(ctx, wfID, id, desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
@@ -78,7 +83,7 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (AuditResponse, error) {
 	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID), runID)
 	if err != nil {
-		return AuditResponse{}, mapQueryError(err)
+		return AuditResponse{}, mapStoreReadError(err, auditSubject)
 	}
 	return assemble(customerID, runs, truncated), nil
 }

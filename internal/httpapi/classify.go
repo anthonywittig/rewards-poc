@@ -43,14 +43,6 @@ func isWorkerUnavailable(err error) bool {
 		return true
 	}
 
-	// The same condition, reported differently depending on how long the worker
-	// has been gone -- a query that nobody answers eventually runs out of time
-	// rather than being refused. See queryTimeout for the measurements.
-	var deadline *serviceerror.DeadlineExceeded
-	if errors.As(err, &deadline) {
-		return true
-	}
-
 	// An Update with no worker does not fail -- it blocks -- so it reaches us as
 	// the deadline we imposed in updateTimeout, wrapped in the SDK's own type.
 	// That type also covers client-side cancellation, which would be a caller
@@ -60,7 +52,18 @@ func isWorkerUnavailable(err error) bool {
 	if errors.As(err, &updTimeout) {
 		return true
 	}
-	return errors.Is(err, context.DeadlineExceeded)
+	return isTimeout(err)
+}
+
+// isTimeout reports whether a call ran out of the time we gave it.
+//
+// Both spellings matter: the SDK surfaces a server-side deadline as its own
+// typed error, while a deadline our own context imposed arrives as the stdlib
+// sentinel. Note context.Canceled is deliberately absent -- that is the caller
+// hanging up, and nobody is left to read the response.
+func isTimeout(err error) bool {
+	var deadline *serviceerror.DeadlineExceeded
+	return errors.As(err, &deadline) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // isBusinessRejection reports whether the workflow itself refused the request,

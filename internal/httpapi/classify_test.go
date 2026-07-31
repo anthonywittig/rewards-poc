@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -278,5 +279,55 @@ func TestIsHistoryGone(t *testing.T) {
 		if got := isHistoryGone(tc.err); got != tc.want {
 			t.Errorf("%s: isHistoryGone(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
 		}
+	}
+}
+
+// Raised on PR #13: a crawl that ran out of time reported "the rewards workflow
+// did not respond in time; the worker may be down or overloaded" -- naming a
+// workflow that was never queried and a worker that was never involved.
+//
+// The status is right and stays put; only the attribution was wrong. Anyone
+// following that message restarts a healthy worker and learns nothing, which is
+// the same wrong turn the FailedPrecondition wording sent people down before the
+// message was split from the status.
+func TestMapStoreReadError_TimeoutDoesNotBlameTheWorker(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		serviceerror.NewDeadlineExceeded("context deadline exceeded"),
+		fmt.Errorf("reading history: %w", context.DeadlineExceeded), // wrapped in transit
+	} {
+		mapped := mapStoreReadError(err, "the audit crawl")
+		gotCode, gotKind := status(t, mapped)
+		if gotCode != http.StatusServiceUnavailable || gotKind != CodeWorkerUnavailable {
+			t.Errorf("got %d/%s, want 503/%s", gotCode, gotKind, CodeWorkerUnavailable)
+		}
+
+		var apiErr *apiError
+		asAPIError(mapped, &apiErr)
+		if strings.Contains(strings.ToLower(apiErr.message), "worker") {
+			t.Errorf("timeout on a worker-free read must not mention the worker, got %q",
+				apiErr.message)
+		}
+		if !strings.Contains(apiErr.message, "the audit crawl") {
+			t.Errorf("message should name what timed out, got %q", apiErr.message)
+		}
+	}
+}
+
+// Everything that is not a timeout still goes through the shared classifier, so
+// this mapper adds a case rather than replacing one.
+func TestMapStoreReadError_FallsThroughToCommon(t *testing.T) {
+	gotCode, gotKind := status(t, mapStoreReadError(
+		serviceerror.NewNotFound("workflow not found"), "the customer list"))
+	if gotCode != http.StatusNotFound || gotKind != CodeNotFound {
+		t.Errorf("got %d/%s, want 404/%s", gotCode, gotKind, CodeNotFound)
+	}
+
+	// A genuinely missing worker still says so -- on the endpoints where that is
+	// what happened. This one only fires for reads that cannot involve a worker.
+	_, gotKind = status(t, mapQueryError(
+		serviceerror.NewFailedPrecondition("no poller seen for task queue recently")))
+	if gotKind != CodeWorkerUnavailable {
+		t.Errorf("the Query path's worker diagnosis must survive, got %s", gotKind)
 	}
 }
