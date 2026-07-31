@@ -1,0 +1,36 @@
+# Temporal dynamic config -- DEVELOPMENT ONLY.
+#
+# Both settings here exist to make this POC's behaviour observable on a laptop,
+# not because they are good production values. Both were verified against
+# server 1.29.7 by `make verify-config`.
+#
+# NOTE ON RETENTION: the plan originally wanted a 20-minute namespace retention.
+# That is not achievable on any released server. Temporal enforces a 1h minimum,
+# and the `system.namespaceMinRetentionLocal` key that would lower it exists only
+# on unreleased main -- 1.29.7 logs `unregistered key` and ignores it. So
+# retention is pinned at the 1h floor and truncation is demonstrated on demand
+# with `make reap` instead. See docs/PLAN.md section 6.3.
+
+# --- Retention ------------------------------------------------------------------
+# Deletion of a closed execution's data is jittered, landing somewhere in
+# [retention, retention + jitter]. The default jitter is large enough to make
+# "when exactly does history disappear" hard to reason about, so pin it small.
+#
+# Verified registered: the server logs this key being applied, and it appears in
+# the server binary's dynamic config key table.
+history.retentionTimerJitterDuration:
+  - value: 1m
+
+# --- Visibility lag --------------------------------------------------------------
+# Elasticsearch visibility is asynchronous. Out of the box the gap between a
+# workflow changing and it appearing in ListWorkflows is roughly 1-2s, which is
+# very visible in a UI. Two of the three contributing components are tunable;
+# this is the Temporal-side one (docs/PLAN.md section 7.5).
+#
+# The default was raised from 200ms to 1s in server v1.12 for throughput reasons
+# that do not apply to a stack holding tens of workflows.
+#
+# The other component is Elasticsearch's own index.refresh_interval, which
+# Temporal's index template leaves unset -- bootstrap.sh sets it explicitly.
+worker.ESProcessorFlushInterval:
+  - value: 100ms

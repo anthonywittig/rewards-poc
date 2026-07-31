@@ -21,16 +21,17 @@ effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
 |---|---|
 | Stack | Go worker + Go HTTP API + React/TypeScript (Vite) UI |
 | Visibility store | Elasticsearch, only. Postgres is persistence only — we care about it for how *workflows* are stored, not as a visibility backend |
-| Audit log durability | Namespace retention set to **20 minutes**; continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice |
+| Audit log durability | Namespace retention **1 hour** (the platform floor; 20m proved impossible — see [§6.3](#63-truncation-is-the-feature)); continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice. `make reap` forces truncation on demand |
 | Deactivate | `CancelWorkflow` (graceful), not Terminate |
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
 | Continue-as-new | After **3** successful point-add updates (configurable) |
 | Datastore inspection | An explicit POC goal — tooling and docs for looking inside both stores ([§8](#8-inspecting-postgres-and-elasticsearch)) |
 | Activities | Exactly one, `NotifyCustomer` — a stubbed tier-promotion notification ([§3.7](#37-tier-promotion-notifications)) |
 
-The 20-minute retention is deliberate and is the most interesting choice here — see
-[§6.3](#63-truncation-is-the-feature). It makes the history-truncation trade-off visible
-within a coffee break instead of theoretical.
+Making history truncation *observable* rather than theoretical is the most interesting choice
+here — see [§6.3](#63-truncation-is-the-feature). The original plan did that with a 20-minute
+retention; Phase 0 established that is not achievable, so `make reap` does it on demand
+instead.
 
 ---
 
@@ -78,15 +79,24 @@ internal/httpapi/             handlers, DTOs
 web/                          Vite + React + TS
 deploy/
   docker-compose.yml          full stack (Postgres + ES)
-  dynamicconfig/dev.yaml      retention + visibility-lag overrides
+  dynamicconfig/dev.yaml      retention jitter + visibility-lag overrides
   bootstrap.sh                namespace + search attribute registration
-  inspect/                    canned psql + curl queries for §8
+  reap.sh                     force-delete closed executions (§6.3)
+  inspect/
+    verify-config.sh          platform assumption checks
+    ...                       canned psql + curl queries for §8
 docs/
   PLAN.md                     this file
   DATASTORES.md               how Temporal uses Postgres and Elasticsearch
-.env.example                  all ports + STACK_NAME
-Makefile                      up / down / bootstrap / seed / test / psql / es
+README.md                     quick start and the two surprises
+.env.example                  all ports, versions, tuning
+Makefile                      up / down / bootstrap / verify-config / reap / psql / es
 ```
+
+Operational scripts run via `exec` into the **server** container rather than a separate
+`admin-tools` one: the `auto-setup` image already ships the `temporal` CLI, which saves
+several seconds per invocation and one more image to pin. It has `bash`, `curl` and `grep`
+but no `python3` or `jq`, which constrains how those scripts are written.
 
 ---
 
@@ -295,7 +305,7 @@ returns a clean 409 instead of silently attaching to the existing run.
 **Re-enrolling starts over at zero points and basic tier** — decided, not a default. A
 returning customer is simply a fresh enrollment that happens to reuse the workflow ID, so
 there is no "restore the prior balance" path to build and no dependency on the old run's
-history (which under a 20-minute retention is usually gone anyway). The UI should say so at
+history (which after reaping is usually gone anyway). The UI should say so at
 the point of deactivation, since it makes the action irreversible in a way "deactivate"
 doesn't imply on its own.
 
@@ -476,37 +486,69 @@ worker share a Go module.
 
 ### 6.3 Truncation is the feature
 
-With retention at 20 minutes and a new run every 3 point-adds, closed runs get reaped while
-you watch. The audit log is designed around that rather than pretending it won't happen:
+Closed runs get reaped, and the audit log is designed around that rather than pretending it
+won't happen:
 
 - Walking back, a non-empty `ContinuedExecutionRunId` whose `GetWorkflowHistory` returns
   `NotFound` means history was reaped. Stop and mark the result truncated.
 - The carried `CustomerState` gives us ground truth to *quantify* the gap. If
   `LifetimeEarnEvents` is 23 and we could only reconstruct 7 rows, the UI says:
 
-  > Showing 7 of 23 point events. Earlier history was deleted by Temporal's 20-minute
-  > retention policy.
+  > Showing 7 of 23 point events. Earlier history has been deleted.
 
 - `EnrolledAt` and the running totals survive in the continue-as-new payload, so the header
   of the detail page stays fully correct even when the log beneath it is partial.
 
-This is the honest version of "Temporal as a data store," and demonstrating the limitation
-is more valuable than hiding it.
+This is the honest version of "Temporal as a data store," and demonstrating the limitation is
+more valuable than hiding it.
 
-### 6.4 Consequences of 20-minute retention to expect
+#### How we trigger it: `make reap`, not a short retention
 
-- **Deactivated customers vanish from the list after ~20 minutes.** Their workflow is closed,
-  so it gets reaped; the detail page starts returning 404. Active customers are never reaped
-  (running executions are exempt), so this only affects deactivated ones.
-- Temporal's default minimum retention for a *local* namespace is 1 hour, so 20 minutes
-  requires a dynamic config override — `system.namespaceMinRetentionLocal` — before
-  `namespace create --retention 20m` will be accepted.
-- The reaping timer is jittered (`history.retentionTimerJitterDuration`), so deletion lands
-  somewhere in `[retention, retention + jitter]`, not exactly at 20 minutes. Set the jitter
-  low in dev config too. **Phase 0 must verify both keys empirically** — I confirmed
-  `system.namespaceMinRetentionLocal` and its 1h default from the server source, but inferred
-  the jitter key's exact name from the file's naming convention rather than reading it
-  directly, so treat it as unverified until the stack is up.
+The original plan set namespace retention to 20 minutes so reaping happened while you watched.
+**Phase 0 established that this is not achievable**, and the finding is worth recording
+because it is not what the documentation implies:
+
+- Temporal enforces a **1 hour minimum** namespace retention. Probing server 1.29.7 directly,
+  `59m` is rejected with "A valid retention period is not set on request" and `1h` is accepted.
+- The dynamic config key that would lower the floor, `system.namespaceMinRetentionLocal`,
+  **exists only on unreleased `main`**. Setting it on 1.29.7 produces
+  `dynamic config warning ... unregistered key "system.namespaceMinRetentionLocal"` at
+  startup, after which it is loaded and then ignored — so it looks configured but does
+  nothing. 1.29.7 is the newest published `auto-setup` image, so no released server has it.
+
+So retention sits at the 1 h floor, and truncation is forced on demand instead:
+
+```sh
+make reap                      # every closed execution in the namespace
+make reap WF=customer-abc123   # just that customer's closed runs
+```
+
+This is implemented with `temporal workflow delete --query`, a server-side batch operation.
+Verified end to end: a closed execution stops resolving roughly 25–40 s after the request, so
+deletion is asynchronous and a demo should expect a short pause rather than an instant change.
+
+**The `ExecutionStatus != "Running"` filter in that query is load-bearing, not a nicety.**
+`workflow delete` *terminates* a running execution before deleting it, so an unfiltered reap
+would destroy every active customer rather than just their old generations.
+
+Arguably this is the better demo anyway: it makes truncation a thing you *do* on cue rather
+than a thing you wait out, and it targets one customer so the contrast between a truncated and
+an intact audit log is visible side by side.
+
+### 6.4 Consequences to expect
+
+- **Deactivated customers eventually vanish from the list**, at the 1 h mark or on the next
+  reap. Their workflow is closed, so it gets reaped and the detail page starts returning 404.
+  Running executions are exempt, so this only affects deactivated customers — and it is why
+  the reap query filters on status.
+- The reaping timer is jittered, so natural deletion lands somewhere in
+  `[retention, retention + jitter]` rather than exactly on the hour.
+  `history.retentionTimerJitterDuration` **is** a registered key (verified against the 1.29.7
+  binary and by the server logging it applied), and dev config pins it to 1m.
+- `make verify-config` asserts all of the above — the 1 h floor, that every key in
+  `dynamicconfig/dev.yaml` is genuinely registered, and that on-demand deletion works. Re-run
+  it after a server upgrade; if a future version relaxes the floor, check 1 fails loudly and
+  we can drop the workaround.
 - Cost: the crawl is O(runs × events) per page view, uncached. Fine at POC scale; note
   pagination and a cache as future work rather than building them now.
 
@@ -534,7 +576,7 @@ STACK_NAME=alpha
 COMPOSE_PROJECT_NAME=rewards-${STACK_NAME}
 
 TEMPORAL_NAMESPACE=rewards
-TEMPORAL_RETENTION=20m
+TEMPORAL_RETENTION=1h
 EARNS_PER_RUN=3
 MAX_POINTS_PER_TXN=1000
 
@@ -727,7 +769,7 @@ Four things worth demonstrating, because each one explains a decision elsewhere 
    [§7.5](#75-cutting-the-visibility-lag) — not an abstract caveat but a queue you can watch,
    and a direct way to confirm the flush-interval tuning actually did something.
 4. **Retention deletion is visible at the storage layer.** After a continue-as-new, watch the
-   closed run's rows disappear from `history_node` around the 20-minute mark. That is the
+   closed run's rows disappear from `history_node` after a `make reap` (or an hour). That is the
    audit-log truncation from [§6.3](#63-truncation-is-the-feature) happening in the database
    — the UI's "showing 7 of 23" message and these vanishing rows are the same event seen from
    two ends.
@@ -767,7 +809,7 @@ curl -s "$ES/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size"
 ```
 
 Also worth capturing: the document for a **closed** (deactivated) customer, and then the same
-query 20 minutes later after retention reaps it. ES does not decide to delete that document
+query again after `make reap`. ES does not decide to delete that document
 on its own — it goes because the source in Postgres went. That is the projection relationship
 made concrete.
 
@@ -852,7 +894,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 
 | # | Deliverable | Notes |
 |---|---|---|
-| 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example` | Verify the 20m retention and jitter keys actually take effect — §6.4 |
+| 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example`, `make verify-config` | **Done.** 20m retention proved impossible; 1h floor plus `make reap` instead — §6.3 |
 | 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
 | 2 | Continue-as-new after 3 adds, carrying totals | Includes the `AllHandlersFinished` guard |
 | 3 | Go HTTP API + error mapping | |
