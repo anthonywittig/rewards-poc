@@ -6,10 +6,10 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 5.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
-either from the `temporal` CLI or over HTTP. The customer list comes straight out of the
-visibility store, and the audit timeline is reconstructed by crawling Event History. No UI yet
-— that's Phase 8; the tier-promotion notification is Phase 6.
+**Status: Phase 6.** The workflow runs, continues-as-new every 3 point-adds, notifies customers
+when they cross a tier, and is drivable from the `temporal` CLI, over HTTP, or through the
+React UI. The customer list comes straight out of the visibility store; the audit timeline is
+reconstructed by crawling Event History. Phase 9 (replay test, seed script) is what's left.
 
 ## Quick start
 
@@ -320,6 +320,55 @@ into production. Only the mock sets CORS, because it exists to be hit directly w
 
 See `web/NOTES.md` for the UI's own notes.
 
+## The one Activity
+
+`NotifyCustomer` is the only thing in this codebase that would touch the outside world.
+Everything else — points, tiers, enrollment, the audit log — is workflow state and needs no
+side effects at all, which is rather the argument. Having exactly one Activity makes the
+boundary visible.
+
+It fires when a point-add crosses a tier, and again when a customer leaves. The handler does
+**not** await it: it applies the points, notices the crossing, queues a notification and
+returns, so a notification provider being down can neither fail a point-add that is already
+recorded nor put a network call on the UI's critical path.
+
+That queue is drained by a `workflow.Go` goroutine, and it is where the most instructive bug in
+the design lives:
+
+> **`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
+> and Signal handlers only.
+
+So the pre-continue-as-new drain that Phase 2 added is not enough. A promotion landing on the
+third add — the ordinary case at three adds per run — is queued, the handler returns,
+`AllHandlersFinished` goes true, and the run rolls away from a notification nobody ever sent.
+No error, no retry, no trace in history.
+
+The test for it was written before the fix, and failed:
+
+```
+--- FAIL: Test_Notify_PromotionOnTheRollingAddIsNotDropped
+    expected the promotion to survive the roll, got []
+```
+
+The fix is one clause — `AllHandlersFinished(ctx) && n.idle()` — and the same clause is needed
+again on the departure path.
+
+```sh
+make enroll ID=c-003
+make add ID=c-003 AMOUNT=200 REASON=purchase   # x3, crossing gold on the third
+make audit ID=c-003
+```
+
+```
+points_added       gen=0 +200 -> 600 (gold)
+notification_sent  gen=0 level=gold
+generation_rolled  gen=1
+```
+
+The notification row lands *before* the generation divider, which is the guard doing its job.
+And it appears in the audit log for free, because Activities are history events — the crawl
+needed no changes at all to render it.
+
 ## Points only go up
 
 There is no spending, redemption, expiry, or manual adjustment, and none is planned. `addPoints`
@@ -430,6 +479,8 @@ internal/rewards/
   workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
+  notifier.go                 the drain goroutine and the continue-as-new guard
+  activity.go                 NotifyCustomer -- the only side effect in the system
   workflow_test.go            unit tests (no Docker required)
 internal/httpapi/
   server.go                   enroll, detail, add points, deactivate, list

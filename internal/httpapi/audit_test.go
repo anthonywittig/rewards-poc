@@ -445,3 +445,40 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 		prev = e.At
 	}
 }
+
+// The departure notification uses the same Activity as a promotion (PLAN.md 3.7)
+// and must not render as one.
+//
+// These are real events, captured from a customer who earned gold and then left:
+// the Activity input says event "departed", and without the filter the timeline
+// showed "Promoted to Gold — notification sent" immediately below that
+// customer's own deactivated row.
+func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
+	departure := loadEvents(t, "events-departure-notification.json")
+
+	// Sanity-check the fixture is what this test thinks it is, so it cannot
+	// quietly start passing because the payload changed.
+	sched := departure[0].GetActivityTaskScheduledEventAttributes()
+	if got := sched.GetActivityType().GetName(); got != rewards.ActivityNotifyCustomer {
+		t.Fatalf("fixture activity = %q, want %q", got, rewards.ActivityNotifyCustomer)
+	}
+
+	run := auditRun("run-0", append(loadEvents(t, "run-deactivated.json"), departure...))
+	for _, e := range run.entries {
+		if e.Kind == AuditNotificationSent {
+			t.Errorf("a departure notice rendered as a promotion row (level %q)", e.NotifiedLevel)
+		}
+	}
+
+	// The departure itself is still on the timeline -- this drops a duplicate
+	// telling, not the fact.
+	var sawDeactivated bool
+	for _, e := range run.entries {
+		if e.Kind == AuditDeactivated {
+			sawDeactivated = true
+		}
+	}
+	if !sawDeactivated {
+		t.Error("the deactivated row must survive; it is what now carries the departure")
+	}
+}
