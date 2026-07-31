@@ -411,6 +411,13 @@ Triggered when a point-add leaves the customer at a tier they have not been told
 tiers are derived (§3.2) this is a pure comparison inside the handler: is `Level(points)` absent
 from `NotifiedLevels`?
 
+**One notification per customer per tier reached, naming where they are now — not one per
+threshold passed.** `MaxPointsPerTxn` is 1000 and platinum starts at 1000, so a single add from
+zero lands a customer in platinum having never been observed at gold, and only platinum is
+announced. Sending "Welcome to Gold" beside "Welcome to Platinum" would describe a state that
+held for no measurable time. The original crossing rule behaved identically; it is a decision,
+not a consequence of the retry rewrite.
+
 **Not** "did this add cross a boundary", which is what this said first and is subtly wrong: a
 crossing is an event that happens once, so a delivery that failed could never be reattempted.
 See [§12.33](#12-sharp-edges).
@@ -1515,8 +1522,16 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     again, and nothing would ever re-offer it.
 
     Rewriting the condition as *"is the customer at a tier nobody has told them about"* makes
-    it a property of the customer, so any later add retries it, and the state it reads is
-    already carried across continue-as-new. Same information, and the difference between a
+    it a property of the customer, so a later add retries it, and the state it reads is
+    already carried across continue-as-new.
+
+    **The retry is narrower than that sounds, and deliberately so.** It only re-offers the tier
+    the customer is at *now*, so a failed gold notice is retried while they are still gold and
+    dropped once they reach platinum. That is the right outcome — they get told where they are,
+    and a belated "you reached gold" arriving after they are past it would be worse than
+    silence — but the unqualified phrase "retried on the next add" over-claims it. Same class of
+    over-claim as the comment that started this, so it is pinned by a test rather than trusted
+    to a sentence. Same information, and the difference between a
     notification that can be recovered and one that cannot.
 
     It also made `NotifiedLevels` genuinely load-bearing. Under the crossing rule the monotonic

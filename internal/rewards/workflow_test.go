@@ -972,3 +972,54 @@ func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"gold is announced once, however many adds land inside it")
 }
+
+// A single add can clear two thresholds at once: MaxPointsPerTxn is 1000 and
+// platinum starts at 1000, so one add from zero lands a customer straight in
+// platinum without ever being observed at gold.
+//
+// One notification, naming where they are. Raised on PR #15 as a missed
+// promotion; recorded here as a decision instead. Announcing gold and then
+// immediately platinum tells the customer something that was true for no
+// measurable time, and "Welcome to Gold" arriving beside "Welcome to Platinum"
+// reads as a bug to the person receiving it.
+//
+// It is also not a change: the original crossing rule compared Level(before) to
+// Level(after) and likewise produced only platinum. Pinned so that if a later
+// phase decides differently, it decides deliberately.
+func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{
+		Amount: rewards.PlatinumThreshold, Reason: "one big purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
+		"a customer who never sat at gold should not be congratulated for it")
+}
+
+// The boundary of the retry added for PR #15, stated exactly.
+//
+// A failed delivery is re-offered by later adds *while the customer stays at
+// that tier*. Advance a tier first and the lower one is dropped for good, since
+// promotionFor only ever offers the tier they are at now.
+//
+// That is the intended behaviour rather than a gap in it: the customer is
+// platinum, and platinum is what they get told. A belated "you reached gold",
+// sent after they are already past it, would be worse than silence. Worth
+// pinning because the obvious reading of "retried on the next add" is broader
+// than what actually happens, and that over-claim is what the first round of
+// review on this PR caught in a comment.
+func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
+	calls := s.mockNotifyFailing(3) // exhausts exactly the gold delivery
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "a"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "b"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
+		"the failed gold notice is dropped; platinum, where they actually are, is sent")
+}

@@ -138,8 +138,21 @@ func (n *notifier) send(ctx workflow.Context, req NotifyRequest) error {
 // could never be attempted again -- raised on PR #15, and reproduced by
 // Test_Notify_FailedDeliveryIsRetriedByALaterAdd. Asking instead whether the
 // customer's current tier appears in NotifiedLevels makes the condition a
-// property of the customer, so any later add retries it. The state is already
+// property of the customer, so a later add retries it. The state is already
 // carried across continue-as-new, so this costs nothing new.
+//
+// Two things it deliberately does not do, both pinned by tests:
+//
+//   - **It offers only the tier they are at, never the ones they passed.** One
+//     add of MaxPointsPerTxn from zero lands straight in platinum, and gold is
+//     never announced. Announcing both would tell the customer something that
+//     was true for no measurable time, and the original crossing rule behaved
+//     the same way.
+//   - **The retry does not survive a tier advance.** A failed gold notice is
+//     re-offered by later adds only while the customer is still gold; reach
+//     platinum first and gold is dropped for good. That is the right outcome --
+//     they are told where they are -- but it makes "retried on the next add"
+//     narrower than it sounds.
 //
 // It also makes NotifiedLevels genuinely load-bearing in both directions: dedup
 // on the way in, and the at-least-once guard PLAN.md 3.7 asks for on the way
