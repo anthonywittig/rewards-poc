@@ -18,9 +18,10 @@ also needs Go — 1.25.4 or newer, which is the Temporal Go SDK's own floor, not
 older Go the default `GOTOOLCHAIN=auto` will fetch it for you).
 
 ```sh
-cp .env.example .env
 make up
 ```
+
+Defaults come from `.env.example`. Copy to `.env` only when you want local overrides.
 
 That starts Postgres, Elasticsearch, Temporal, and the Temporal Web UI, then bootstraps the
 namespace and search attributes. When it finishes:

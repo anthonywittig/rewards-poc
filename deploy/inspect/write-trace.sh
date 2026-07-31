@@ -10,7 +10,13 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 
-ENV_FILE="${ENV:-.env}"
+if [[ -n "${ENV:-}" ]]; then
+  ENV_FILE="$ENV"
+elif [[ -f .env ]]; then
+  ENV_FILE=.env
+else
+  ENV_FILE=.env.example
+fi
 ID="${ID:-inspect}"
 AMOUNT="${AMOUNT:-10}"
 REASON="${REASON:-write-trace}"
