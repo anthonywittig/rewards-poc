@@ -38,6 +38,18 @@ const (
 	PointsCap       = 100000
 )
 
+// EarnsPerRun is how many successful adds a run handles before continuing as
+// new. Artificially low so the rollover is easy to watch -- see the note at the
+// continue-as-new itself for what production should do instead.
+//
+// CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history already records a
+// roll after 3 adds will, on replay under a different value, not produce that
+// command at that point, and a command that does not match the recorded event
+// is exactly what the replayer refuses. Entity workflows outlive deploys, so
+// this is not theoretical; PLAN.md 12.10. In dev, terminate existing workflows
+// after changing it.
+const EarnsPerRun = 3
+
 // CustomerState is the workflow argument. Everything here has to survive
 // continue-as-new (Phase 2), which is why the counters live in state rather than
 // being recomputed from history: history is reaped, state is not.

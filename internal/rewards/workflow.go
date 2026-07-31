@@ -67,6 +67,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return err
 	}
 
+	// Successful adds in *this* run, as opposed to state.LifetimeEarnEvents
+	// which spans every run. Resets to zero on continue-as-new, by construction:
+	// it is a local, not part of the carried state.
+	earnsThisRun := 0
+
 	// EnrolledAt is set once, on the first run, and carried forward from then on.
 	// workflow.Now() rather than time.Now() -- PLAN.md 12.5.
 	if state.EnrolledAt.IsZero() {
@@ -106,6 +111,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// The only mutation of Points in the system, and it only ever adds.
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
+
+			// Drives continue-as-new. The handler only counts -- the roll itself
+			// happens in the main function, because continue-as-new is not
+			// supported inside an Update handler. PLAN.md 3.5.
+			earnsThisRun++
 
 			// Deterministic and stable across replay, unlike a UUID. Lifetime
 			// event count is monotonic across continue-as-new, so this stays
@@ -162,14 +172,84 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		"generation", state.Generation,
 		"points", state.Points)
 
-	// Phase 1 runs until cancelled. Phase 2 replaces this predicate with the
-	// earns-per-run counter that drives continue-as-new (PLAN.md 3.5); the
-	// cancellation path below is unchanged by that.
-	if err := workflow.Await(ctx, func() bool { return false }); err != nil {
+	// Run until it is time to roll over, or until the customer leaves.
+	//
+	// A FIXED COUNT IS THE WRONG RULE FOR PRODUCTION. It is used here because
+	// three adds is easy to demonstrate, not because it is defensible: what
+	// actually matters is history *size*, and a fixed count is only a proxy for
+	// it. Three adds is wastefully early for a customer whose updates are small,
+	// and would be far too late if each add carried a large payload -- the
+	// limits are 50k events / 50 MB per run, and neither is a count of adds.
+	//
+	// The server already tracks the real thing and will say so:
+	//
+	//	workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+	//
+	// which flips to true as a run approaches those limits, and
+	// GetContinueAsNewSuggestedReasons() says which one. Production code should
+	// roll on that and let the server decide, rather than picking a number.
+	// Doing so also sidesteps the versioning hazard on EarnsPerRun: there is no
+	// constant to change, so nothing to break running workflows with.
+	if err := workflow.Await(ctx, func() bool { return earnsThisRun >= EarnsPerRun }); err != nil {
 		return handleLeave(ctx, &state)
 	}
 
-	return nil
+	// A nil error above does NOT mean "not cancelled". workflow.Await evaluates
+	// its condition before it checks cancellation:
+	//
+	//	for !condition() {
+	//	    ... return NewCanceledError(...) if ctx is done ...
+	//	    state.yield("Await")
+	//	}
+	//	return nil
+	//
+	// so once the condition holds it returns nil without ever looking at ctx. A
+	// cancel arriving in the same workflow transition as the Nth add therefore
+	// lands here with err == nil and ctx already done.
+	//
+	// Rolling at that point strands the departure permanently: continue-as-new
+	// starts a fresh run, and the cancellation request targeted the run that
+	// just ended. The customer clicks deactivate and stays active. Departure
+	// always wins -- the points are already recorded either way.
+	if ctx.Err() != nil {
+		return handleLeave(ctx, &state)
+	}
+
+	// An Update accepted just before the roll condition fired is still running.
+	// Rolling now would abort it -- the caller gets an error for points that
+	// were about to be applied. Wait for handlers to drain first. PLAN.md 3.5.
+	//
+	// Two honest caveats:
+	//
+	//  1. This is currently unfalsifiable. The handler does arithmetic and
+	//     returns without ever blocking, so it has always finished by the time
+	//     this is evaluated -- the tests still pass with this Await removed
+	//     (verified by mutation). It is here because Phase 6 makes it real, not
+	//     because Phase 2 proves it.
+	//  2. It covers Update and Signal handlers only. The workflow.Go goroutine
+	//     Phase 6 adds is NOT covered by AllHandlersFinished and needs its own
+	//     drain clause alongside this one, or its notification is silently
+	//     dropped by the roll. PLAN.md 3.7 and 12.6 -- write that test first.
+	if err := workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
+		return handleLeave(ctx, &state)
+	}
+
+	// Same trap as above, and a wider window: handlers are usually already
+	// finished, so this Await frequently returns nil on its first condition
+	// check without ever consulting ctx.
+	if ctx.Err() != nil {
+		return handleLeave(ctx, &state)
+	}
+
+	state.Generation++
+
+	logger.Info("continuing as new",
+		"customerId", state.CustomerID,
+		"generation", state.Generation,
+		"earnsThisRun", earnsThisRun,
+		"points", state.Points)
+
+	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 
 // handleLeave records a graceful departure and closes the execution as Canceled.

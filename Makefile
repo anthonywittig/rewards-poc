@@ -15,7 +15,7 @@ UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
 GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker test enroll status add deactivate
+        worker worker-stop workers test enroll status add deactivate
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -75,6 +75,21 @@ test: ## Run the Go unit tests
 worker: $(ENV) ## Run the workflow worker in the foreground (Ctrl-C to stop)
 	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
 	  go run ./cmd/worker
+
+# `go run` execs the compiled binary out of /root/.cache/go-build/<hash>/worker,
+# not a path containing "cmd/worker", so a stale worker survives the obvious
+# pkill and keeps serving old code against the same task queue. That failure is
+# silent and looks like a workflow bug -- see PLAN.md 12.10.
+worker-stop: ## Stop every running worker, including orphaned ones
+	@pkill -f 'go-build.*/worker$$' 2>/dev/null; \
+	 pkill -f 'go run \./cmd/worker' 2>/dev/null; \
+	 sleep 1; \
+	 left=$$(pgrep -fc 'go-build.*/worker$$' 2>/dev/null || echo 0); \
+	 echo "workers still running: $$left"
+
+workers: ## List running workers (there should be at most one)
+	@ps -eo pid,etimes,args | grep -E 'go-build.*/worker$$' | grep -v grep \
+	  || echo "no workers running"
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.

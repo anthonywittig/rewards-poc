@@ -24,7 +24,7 @@ effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
 | Audit log durability | Namespace retention **1 hour** (the platform floor; 20m proved impossible — see [§6.3](#63-truncation-is-the-feature)); continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice. `make reap` forces truncation on demand |
 | Deactivate | `CancelWorkflow` (graceful), not Terminate |
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
-| Continue-as-new | After **3** successful point-add updates (configurable) |
+| Continue-as-new | After **3** successful point-add updates (hardcoded; production should use `GetContinueAsNewSuggested()` — see [§3.5](#35-continue-as-new-after-3-updates)) |
 | Datastore inspection | An explicit POC goal — tooling and docs for looking inside both stores ([§8](#8-inspecting-postgres-and-elasticsearch)) |
 | Activities | Exactly one, `NotifyCustomer` — a stubbed tier-promotion notification ([§3.7](#37-tier-promotion-notifications)) |
 
@@ -307,10 +307,16 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     // addPoints increments earnsThisRun on success
 
     if err := workflow.Await(ctx, func() bool {
-        return earnsThisRun >= cfg.EarnsPerRun
+        return earnsThisRun >= EarnsPerRun
     }); err != nil {
         // Cancelled — graceful departure. Cleanup, if any, needs a
         // disconnected context because ctx is already cancelled.
+        return handleLeave(ctx, &state)
+    }
+    // Await returns nil the moment its condition holds, without checking
+    // the context — so a cancel arriving in the same transition lands
+    // here with err == nil. Departure wins. See §12.9.
+    if ctx.Err() != nil {
         return handleLeave(ctx, &state)
     }
 
@@ -322,16 +328,40 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     }); err != nil {
         return handleLeave(ctx, &state)
     }
+    if ctx.Err() != nil {
+        return handleLeave(ctx, &state)
+    }
 
     state.Generation++
     return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 ```
 
-`EarnsPerRun = 3` is artificially low to make the demo observable. Note in the README that
-production code would instead use `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`, which
-lets the server decide based on actual history size. Make the constant configurable so both
-behaviours are demonstrable.
+#### A fixed count is the wrong rule, and we use it anyway
+
+`EarnsPerRun = 3` is a hardcoded constant, chosen because three adds is easy to demonstrate in
+a terminal — not because it is defensible. What actually bounds a run is history **size**, and
+a count of adds is only a proxy for it: three is wastefully early for small updates and would
+be far too late if each add carried a large payload. The real limits are 50k events and 50 MB
+per run, and neither is a number of adds.
+
+The server already tracks the real thing:
+
+```go
+workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+```
+
+which flips to true as a run approaches those limits, with
+`GetContinueAsNewSuggestedReasons()` reporting which one. **Production should roll on that**,
+and the POC should say so at the call site rather than leaving a magic 3 to be cargo-culted.
+
+An earlier version of Phase 2 made the threshold configurable — env var, worker-level setter,
+zero meaning "ask the server" — so both behaviours were demonstrable. That was removed. It
+bought a demo of the correct behaviour at the cost of a mutable knob on a value that is baked
+into recorded history, which is precisely the shape that causes the non-determinism in
+[§12.10](#12-sharp-edges). One hardcoded constant with a comment explaining what production
+should do instead is both simpler and harder to misuse than a switch inviting people to change
+it at runtime.
 
 ### 3.6 Deactivation via cancel
 
@@ -655,8 +685,6 @@ COMPOSE_PROJECT_NAME=rewards-${STACK_NAME}
 
 TEMPORAL_NAMESPACE=rewards
 TEMPORAL_RETENTION=1h
-EARNS_PER_RUN=3
-MAX_POINTS_PER_TXN=1000
 
 TEMPORAL_GRPC_PORT=7233
 TEMPORAL_UI_PORT=8080
@@ -974,7 +1002,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 |---|---|---|
 | 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example`, `make verify-config` | **Done.** 20m retention proved impossible; 1h floor plus `make reap` instead — §6.3 |
 | 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
-| 2 | Continue-as-new after 3 adds, carrying totals | Includes the `AllHandlersFinished` guard |
+| 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
 | 3 | Go HTTP API + error mapping | |
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
@@ -1017,31 +1045,60 @@ Things not in the original brief that will come up.
    even on Elasticsearch visibility. Filtering is server-side; sorting is the caller's problem,
    and is only correct when the whole filtered set fits one page. Confirmed in Phase 1 on
    server 1.29.7; see [§4](#4-search-attributes).
+9. **`workflow.Await` returning `nil` does not mean "not cancelled."** It evaluates its
+   condition *before* it checks the context:
+
+   ```go
+   for !condition() {
+       ... return NewCanceledError(...) if ctx is done ...
+       state.yield("Await")
+   }
+   return nil
+   ```
+
+   so a condition that already holds short-circuits the cancellation check entirely. Any
+   `Await` whose nil return is treated as "the condition fired, and only the condition" is
+   wrong whenever cancellation can race it. In §3.5 that meant a cancel arriving in the same
+   workflow task as the Nth point-add would roll the run instead of deactivating — and strand
+   the departure permanently, because continue-as-new starts a fresh run while the cancellation
+   targeted the run that just ended. The customer clicks deactivate and stays active. Re-check
+   `ctx.Err()` after every such `Await`. Found by review on PR #5.
 
 **Operational**
 
-7. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
+10. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
    changing workflow code under a running execution causes non-determinism errors. In dev,
    terminate stale workflows between changes. Document Worker Versioning / patching as the
    production answer, and add a `make reset` that wipes all customer workflows.
-8. Customer names and emails land in Event History and are readable in plaintext in the
+11. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
-9. No authentication anywhere. State it in the README so nobody mistakes this for a starting
+12. No authentication anywhere. State it in the README so nobody mistakes this for a starting
    point for something exposed.
-10. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
+13. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
    ES 8 needs 1.18+). Pin both images.
-11. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
+14. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
     Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
+15. **A stale worker is invisible and looks exactly like a workflow bug.** `go run` execs its
+    binary out of `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker`
+    nor `exe/worker` — so the obvious `pkill -f cmd/worker` leaves it alive and happily polling
+    the same task queue with the *old* code. Cost real debugging time in Phase 2: continue-as-new
+    was correct and unit-tested, but a pre-Phase-2 worker kept winning the tasks, so `generation`
+    stayed 0 and the feature looked broken. Use `make worker-stop` (which matches the cache path)
+    and `make workers` to confirm exactly one is running before concluding anything about
+    workflow behaviour. Worth pairing with the versioning discipline in item 10: stale *workflows*
+    and stale *workers* fail in opposite directions — one errors loudly on replay, the other
+    succeeds quietly with the wrong logic.
 
 **Design**
 
-12. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+16. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-13. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
-    out of scope, but the entity workflow with a durable timer is exactly where they'd go.
-    Worth one paragraph as "what this shape buys you next."
+17. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+    out of scope — and spending is now explicitly *decided against*, not merely deferred
+    ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
+    timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."
 
 ---
 
