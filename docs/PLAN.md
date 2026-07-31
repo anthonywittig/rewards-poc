@@ -548,6 +548,35 @@ GET    /api/customers/{id}/audit   → history crawl (§6)                      
 The API holds a Temporal Client and nothing else — no database, no cache, no ORM. That is
 the whole argument of the POC and the code should make it obvious at a glance.
 
+### 5.1 The contract is frozen ahead of the endpoints
+
+`CustomerListItem`, `CustomerListResponse`, `AuditEntry` and `AuditResponse` are defined in
+`internal/httpapi/dto.go` **before** the endpoints that return them, so the UI (Phase 8) can be
+built in parallel with Phases 4 and 5 rather than serialised behind them. `cmd/mockapi` serves
+that contract from fixtures:
+
+```sh
+make mockapi     # :8082, no Temporal, no Docker, no .env
+```
+
+Sharing the DTOs means the mock cannot drift from the real API without failing to compile.
+
+Two shape decisions are worth flagging, because both encode a platform constraint rather than a
+preference:
+
+- **`CustomerListItem` is deliberately narrower than `CustomerResponse`.** The list is served by
+  `ListWorkflow`, which returns *search attributes only*, so `LifetimeEarnEvents` is absent by
+  construction rather than by omission.
+- **`CustomerListResponse.Complete`** exists because `ORDER BY` is rejected
+  ([§12.8](#12-sharp-edges)) and sorting is therefore the client's job — but sorting a *page* of a
+  paginated list sorts the wrong thing. `Complete` is how the UI knows whether sorting is
+  meaningful at all.
+
+The fixtures cover the cases a UI built against a freshly-enrolled happy path gets wrong: a
+top-tier customer with no next tier, a customer with an empty timeline, a deactivated customer,
+a truncated audit log, a customer sitting under the points cap so handler rejections are
+reachable, and the ~400 ms visibility lag on newly created customers.
+
 **A closed execution answers Queries perfectly well.** Temporal replays its history to serve
 them, so a deactivated customer returns full state — balance, tier, `LifetimeEarnEvents`, the
 lot. Worth stating because assuming the opposite is easy and the cost is silent: Phase 3
