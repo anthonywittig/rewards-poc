@@ -15,8 +15,11 @@ UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
 GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
+# The mock needs no env file at all -- that is the point of it.
+MOCK_PORT ?= 8082
+
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop test enroll status add deactivate
+        worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -99,6 +102,16 @@ api: $(ENV) ## Run the HTTP API in the foreground (Ctrl-C to stop)
 api-stop: ## Stop every running API process, including orphaned ones
 	@pkill -f 'go-build.*/api$$' 2>/dev/null; \
 	 pkill -f 'go run \./cmd/api' 2>/dev/null; \
+	 sleep 1; echo "stopped"
+
+# Serves the frozen contract from fixtures. No Temporal, no Docker, no .env --
+# it exists so the UI can be built before the endpoints it consumes.
+mockapi: ## Run the fixture API for UI development (:8082, no stack needed)
+	MOCK_PORT=$(MOCK_PORT) go run ./cmd/mockapi
+
+mockapi-stop: ## Stop every running mockapi process
+	@pkill -f 'go-build.*/mockapi$$' 2>/dev/null; \
+	 pkill -f 'go run \./cmd/mockapi' 2>/dev/null; \
 	 sleep 1; echo "stopped"
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is

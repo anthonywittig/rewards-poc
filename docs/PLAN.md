@@ -548,6 +548,54 @@ GET    /api/customers/{id}/audit   → history crawl (§6)                      
 The API holds a Temporal Client and nothing else — no database, no cache, no ORM. That is
 the whole argument of the POC and the code should make it obvious at a glance.
 
+### 5.1 The contract is frozen ahead of the endpoints
+
+`CustomerListItem`, `CustomerListResponse`, `AuditEntry` and `AuditResponse` are defined in
+`internal/httpapi/dto.go` **before** the endpoints that return them, so the UI (Phase 8) can be
+built in parallel with Phases 4 and 5 rather than serialised behind them. `cmd/mockapi` serves
+that contract from fixtures:
+
+```sh
+make mockapi     # :8082, no Temporal, no Docker, no .env
+```
+
+Sharing the DTOs means the mock cannot drift from the real API without failing to compile.
+
+Two shape decisions are worth flagging, because both encode a platform constraint rather than a
+preference:
+
+- **`CustomerListItem` is deliberately narrower than `CustomerResponse`.** The list is served by
+  `ListWorkflow`, which returns *search attributes only*, so `LifetimeEarnEvents` is absent by
+  construction rather than by omission.
+- **There is no pagination.** The list returns at most `ListLimit` (5) customers, reports how many
+  matched in total, and tells the user to filter. This follows from `ORDER BY` being rejected
+  ([§12.8](#12-sharp-edges)): with no stable ordering, "page 2 of customers" does not mean
+  anything in particular, so paging would be machinery that cannot be made coherent. Filtering is
+  what the visibility store is actually good at, so the UI pushes people towards it.
+
+  The total comes from `CountWorkflow`, which is a separate API from `ListWorkflow` and — verified
+  against 1.29.7 — honours the same filters:
+
+  ```
+  WorkflowType = 'CustomerRewardsWorkflow'                          count=58
+  WorkflowType = 'CustomerRewardsWorkflow' AND ExecutionStatus = 'Running'  count=36
+  RewardsLevel = 'gold'                                             count=13
+  ```
+
+  So the notice is an exact "Showing 5 of 23 — filter to find additional results". `Total` is
+  `-1` if the count call fails, which degrades the message to "of many" rather than failing the
+  list. Being two queries, `Total` and `Items` can disagree by a row under concurrent writes;
+  that is not worth solving for a number displayed next to the word "filter".
+
+  Two things the UI must not assume: *which* five it gets is unspecified and can differ between
+  identical requests, and sorting them is only sorting the real set when `Complete` is true —
+  otherwise it is sorting a sample.
+
+The fixtures cover the cases a UI built against a freshly-enrolled happy path gets wrong: a
+top-tier customer with no next tier, a customer with an empty timeline, a deactivated customer,
+a truncated audit log, a customer sitting under the points cap so handler rejections are
+reachable, and the ~400 ms visibility lag on newly created customers.
+
 **A closed execution answers Queries perfectly well.** Temporal replays its history to serve
 them, so a deactivated customer returns full state — balance, tier, `LifetimeEarnEvents`, the
 lot. Worth stating because assuming the opposite is easy and the cost is silent: Phase 3
@@ -991,9 +1039,16 @@ Two conclusions fall out of it, and they are what `DATASTORES.md` should lead wi
 
 Vite + React + TypeScript. Three screens:
 
-- **Customer list** — table backed by `ListWorkflow`. Tier filter chips, a status toggle
-  (Running/Canceled), sort by points, and a raw search-attribute query box so we can show the
-  same query working in the Temporal UI. This is where search attributes earn their keep.
+- **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
+  ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status toggle
+  (Running/Canceled), and a raw search-attribute query box so we can show the same query working
+  in the Temporal UI. This is where search attributes earn their keep — and where the design has
+  to be honest that filtering, not browsing, is what the visibility store supports.
+
+  When more matched than fit, render **"Showing 5 of 23 — filter to find additional results"**
+  (or "of many" when `Total` is `-1`). Sorting is offered only when `Complete`; otherwise it
+  would sort five arbitrary rows out of twenty-three and look authoritative while being a
+  sample.
 - **Create customer** — name + email, POSTs, redirects to detail.
 - **Customer detail** — tier badge, points, progress bar to next tier, enrollment date;
   an add-points form showing synchronous success or the rejection message; a Deactivate
