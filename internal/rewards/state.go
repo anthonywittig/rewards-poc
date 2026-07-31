@@ -38,6 +38,31 @@ const (
 	PointsCap       = 100000
 )
 
+// DefaultEarnsPerRun is artificially low so the rollover is easy to watch.
+// Production code would use 0 and let the server decide -- see shouldRoll.
+const DefaultEarnsPerRun = 3
+
+// Worker-level policy, deliberately not part of CustomerState: it is a property
+// of the deployment, not of a customer, and putting it in the payload would
+// freeze each customer at whatever value they enrolled under.
+//
+// CHANGING THIS UNDER RUNNING WORKFLOWS CAUSES NON-DETERMINISM ERRORS.
+// A run whose history already records a continue-as-new after 3 adds will, on
+// replay under a value of 5, not produce that command at that point -- and a
+// command that does not match the recorded event is exactly what the replayer
+// refuses. Entity workflows are long-lived and will outlive a deploy, so this
+// is not a theoretical concern; PLAN.md 12.7. In dev, terminate existing
+// workflows after changing it.
+var earnsPerRun = DefaultEarnsPerRun
+
+// EarnsPerRun returns the configured roll threshold. Zero means "ask the
+// server" rather than "never roll".
+func EarnsPerRun() int { return earnsPerRun }
+
+// SetEarnsPerRun configures the roll threshold. Call once at worker startup,
+// before the worker begins polling -- see the hazard note above.
+func SetEarnsPerRun(n int) { earnsPerRun = n }
+
 // CustomerState is the workflow argument. Everything here has to survive
 // continue-as-new (Phase 2), which is why the counters live in state rather than
 // being recomputed from history: history is reaped, state is not.

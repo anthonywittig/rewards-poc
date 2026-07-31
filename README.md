@@ -6,8 +6,8 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 1.** The workflow runs and is drivable end to end from the `temporal` CLI.
-No HTTP API or UI yet — those are Phases 3 and 8.
+**Status: Phase 2.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
+end to end from the `temporal` CLI. No HTTP API or UI yet — those are Phases 3 and 8.
 
 ## Quick start
 
@@ -52,6 +52,51 @@ make deactivate ID=c-001                          # cancel, not terminate
 ```
 
 `make test` runs the unit tests; they need neither Docker nor a running server.
+
+**If the workflow seems to ignore a code change, check for a stale worker first.** `go run`
+execs its binary out of the Go build cache, at a path containing neither `cmd/worker` nor
+`exe/worker`, so the obvious `pkill` misses it and it keeps serving *old* code against the same
+task queue — silently, and looking exactly like a bug in the workflow:
+
+```sh
+make workers       # should list exactly one
+make worker-stop   # kills them all, including orphans
+```
+
+This cost real debugging time while building Phase 2. Stale *workflows* fail loudly on replay;
+stale *workers* succeed quietly with the wrong logic, which is much worse.
+
+## Continue-as-new
+
+Every 3 successful point-adds, the workflow ends its Run and immediately starts a fresh one
+carrying its state forward. Watch it happen:
+
+```sh
+make enroll ID=roll NAME="Rolly Poly" EMAIL=r@example.com
+for i in 1 2 3 4 5 6 7; do make add ID=roll AMOUNT=100 REASON="add $i"; done
+make status ID=roll     # generation 2, points 700
+```
+
+The balance accumulates across the boundary while `generation` ticks up. `temporal workflow
+list --query "WorkflowId = 'customer-roll'"` shows the chain: one `Running` run and two
+`ContinuedAsNew` ones. The current run's history is under a dozen events, against the ~47 the
+same seven adds accumulate without rolling — which is the entire point, since history has hard
+limits (50k events / 50 MB) and an entity workflow is meant to live for years.
+
+Three is artificially low so the rollover is easy to watch. Production code should let the
+server decide from actual history size:
+
+```sh
+make worker EARNS_PER_RUN=0   # defer to GetContinueAsNewSuggested()
+```
+
+Under that setting the same seven adds leave `generation` at 0 — seven adds are nowhere near
+enough history for the server to suggest rolling, which is precisely why a fixed count is the
+demonstrable one and the server's judgement is the correct one.
+
+**Changing this value under running workflows causes non-determinism errors** — a run whose
+history records a roll after 3 adds will not produce that command at that point when replayed
+under a different threshold. In dev, terminate existing workflows after changing it.
 
 One customer is one long-lived Workflow Execution with the ID `customer-<id>`, which is why
 none of these commands need a lookup table. Points arrive as Updates, status is a Query, and

@@ -974,7 +974,7 @@ tuning in §7.5 is working the row should be there within ~300 ms, and `visibili
 |---|---|---|
 | 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example`, `make verify-config` | **Done.** 20m retention proved impossible; 1h floor plus `make reap` instead — §6.3 |
 | 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
-| 2 | Continue-as-new after 3 adds, carrying totals | Includes the `AllHandlersFinished` guard |
+| 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
 | 3 | Go HTTP API + error mapping | |
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
@@ -1033,15 +1033,26 @@ Things not in the original brief that will come up.
    ES 8 needs 1.18+). Pin both images.
 11. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
     Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
+12. **A stale worker is invisible and looks exactly like a workflow bug.** `go run` execs its
+    binary out of `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker`
+    nor `exe/worker` — so the obvious `pkill -f cmd/worker` leaves it alive and happily polling
+    the same task queue with the *old* code. Cost real debugging time in Phase 2: continue-as-new
+    was correct and unit-tested, but a pre-Phase-2 worker kept winning the tasks, so `generation`
+    stayed 0 and the feature looked broken. Use `make worker-stop` (which matches the cache path)
+    and `make workers` to confirm exactly one is running before concluding anything about
+    workflow behaviour. Worth pairing with the versioning discipline in item 7: stale *workflows*
+    and stale *workers* fail in opposite directions — one errors loudly on replay, the other
+    succeeds quietly with the wrong logic.
 
 **Design**
 
-12. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+13. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-13. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
-    out of scope, but the entity workflow with a durable timer is exactly where they'd go.
-    Worth one paragraph as "what this shape buys you next."
+14. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+    out of scope — and spending is now explicitly *decided against*, not merely deferred
+    ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
+    timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."
 
 ---
 

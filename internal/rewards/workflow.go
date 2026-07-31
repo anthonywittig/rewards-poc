@@ -67,6 +67,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return err
 	}
 
+	// Successful adds in *this* run, as opposed to state.LifetimeEarnEvents
+	// which spans every run. Resets to zero on continue-as-new, by construction:
+	// it is a local, not part of the carried state.
+	earnsThisRun := 0
+
 	// EnrolledAt is set once, on the first run, and carried forward from then on.
 	// workflow.Now() rather than time.Now() -- PLAN.md 12.5.
 	if state.EnrolledAt.IsZero() {
@@ -106,6 +111,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// The only mutation of Points in the system, and it only ever adds.
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
+
+			// Drives continue-as-new. The handler only counts -- the roll itself
+			// happens in the main function, because continue-as-new is not
+			// supported inside an Update handler. PLAN.md 3.5.
+			earnsThisRun++
 
 			// Deterministic and stable across replay, unlike a UUID. Lifetime
 			// event count is monotonic across continue-as-new, so this stays
@@ -162,14 +172,57 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		"generation", state.Generation,
 		"points", state.Points)
 
-	// Phase 1 runs until cancelled. Phase 2 replaces this predicate with the
-	// earns-per-run counter that drives continue-as-new (PLAN.md 3.5); the
-	// cancellation path below is unchanged by that.
-	if err := workflow.Await(ctx, func() bool { return false }); err != nil {
+	// Run until it is time to roll over, or until the customer leaves. Both
+	// exits come out of this Await: a nil error means the roll condition fired,
+	// a non-nil error means cancellation.
+	if err := workflow.Await(ctx, func() bool { return shouldRoll(ctx, earnsThisRun) }); err != nil {
 		return handleLeave(ctx, &state)
 	}
 
-	return nil
+	// An Update accepted just before the roll condition fired is still running.
+	// Rolling now would abort it -- the caller gets an error for points that
+	// were about to be applied. Wait for handlers to drain first. PLAN.md 3.5.
+	//
+	// Two honest caveats:
+	//
+	//  1. This is currently unfalsifiable. The handler does arithmetic and
+	//     returns without ever blocking, so it has always finished by the time
+	//     this is evaluated -- the tests still pass with this Await removed
+	//     (verified by mutation). It is here because Phase 6 makes it real, not
+	//     because Phase 2 proves it.
+	//  2. It covers Update and Signal handlers only. The workflow.Go goroutine
+	//     Phase 6 adds is NOT covered by AllHandlersFinished and needs its own
+	//     drain clause alongside this one, or its notification is silently
+	//     dropped by the roll. PLAN.md 3.7 and 12.6 -- write that test first.
+	if err := workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
+		return handleLeave(ctx, &state)
+	}
+
+	state.Generation++
+
+	logger.Info("continuing as new",
+		"customerId", state.CustomerID,
+		"generation", state.Generation,
+		"earnsThisRun", earnsThisRun,
+		"points", state.Points)
+
+	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
+}
+
+// shouldRoll reports whether this run has done enough and should hand off to a
+// fresh one.
+//
+// Two modes, so both behaviours are demonstrable (PLAN.md 3.5):
+//
+//   - EarnsPerRun > 0 -- roll after exactly that many successful adds.
+//     Artificially low in this POC so the rollover is easy to watch.
+//   - EarnsPerRun == 0 -- defer to the server, which decides based on actual
+//     history size. This is what production code should do.
+func shouldRoll(ctx workflow.Context, earnsThisRun int) bool {
+	if n := EarnsPerRun(); n > 0 {
+		return earnsThisRun >= n
+	}
+	return workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 }
 
 // handleLeave records a graceful departure and closes the execution as Canceled.

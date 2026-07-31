@@ -10,8 +10,10 @@ import (
 
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/workflow"
 )
 
 func TestRewardsSuite(t *testing.T) { suite.Run(t, new(RewardsSuite)) }
@@ -104,6 +106,18 @@ func (s *RewardsSuite) runToCancellation(state rewards.CustomerState) error {
 	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
 	s.Require().True(s.env.IsWorkflowCompleted())
 	return s.env.GetWorkflowError()
+}
+
+// continuedState decodes the payload the workflow handed to its successor run,
+// which is the only way to assert what actually survives a rollover.
+func (s *RewardsSuite) continuedState() rewards.CustomerState {
+	err := s.env.GetWorkflowError()
+	var canErr *workflow.ContinueAsNewError
+	s.Require().True(errors.As(err, &canErr), "expected a continue-as-new, got %v", err)
+
+	var next rewards.CustomerState
+	s.Require().NoError(converter.GetDefaultDataConverter().FromPayloads(canErr.Input, &next))
+	return next
 }
 
 // --- Tier derivation (PLAN.md 3.2) -----------------------------------------
@@ -424,7 +438,9 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 // operations can lower a balance. If a redemption feature ever arrives, this
 // test is the one that should fail first.
 func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
-	adds := []int{10, 250, 1, 1000, 5}
+	// Kept to one run's worth of adds: beyond EarnsPerRun the run rolls over and
+	// further updates belong to the next run, which is Phase 2's concern.
+	adds := []int{10, 250, 1}
 
 	results := make([]*updateResult, len(adds))
 	for i, amount := range adds {
@@ -443,6 +459,116 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 		s.Greater(results[i].value.Balance, prev, "balance must strictly increase on every add")
 		prev = results[i].value.Balance
 	}
+}
+
+// --- Continue-as-new (PLAN.md 3.5) ------------------------------------------
+
+// The roll fires on exactly the Nth add, not before.
+func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
+	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	}
+	// No cancel scheduled: the roll itself is what ends this run.
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	next := s.continuedState()
+	s.Equal(1, next.Generation)
+}
+
+// One short of the threshold, the run is still going -- so the exit really is
+// driven by the counter rather than by anything incidental.
+func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
+	for i := 0; i < rewards.DefaultEarnsPerRun-1; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	}
+	s.cancelAt(time.Duration(rewards.DefaultEarnsPerRun+1) * time.Minute)
+
+	err := s.runToCancellation(newState())
+
+	// Cancelled, not continued-as-new.
+	var canErr *workflow.ContinueAsNewError
+	s.False(errors.As(err, &canErr), "should not have rolled on %d adds", rewards.DefaultEarnsPerRun-1)
+	var canceled *temporal.CanceledError
+	s.True(errors.As(err, &canceled))
+}
+
+// What survives the rollover. This is the part the audit log depends on:
+// history is reaped, the carried payload is not, so anything not in here is
+// gone for good. PLAN.md 6.3.
+func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
+	enrolled := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
+	state := newState()
+	state.EnrolledAt = enrolled
+	state.Generation = 4
+	state.Points = 200
+	state.LifetimeEarnEvents = 9
+
+	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	}
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	next := s.continuedState()
+
+	s.Equal(5, next.Generation, "generation increments exactly once per roll")
+	s.Equal(500, next.Points, "200 carried + 3x100 earned this run")
+	s.Equal(12, next.LifetimeEarnEvents, "9 carried + 3 this run")
+	s.True(next.EnrolledAt.Equal(enrolled), "original enrollment survives untouched")
+	s.Equal("c-001", next.CustomerID)
+	s.Equal("Ada Lovelace", next.Name)
+	s.Equal("ada@example.com", next.Email)
+}
+
+// The per-run counter is a local, so the successor run starts at zero rather
+// than rolling again immediately. Asserted by running the successor's payload
+// through the workflow again and watching it take another full N adds.
+func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
+	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	}
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+	next := s.continuedState()
+
+	// Second run, same customer, one add short of the threshold.
+	env2 := s.NewTestWorkflowEnvironment()
+	env2.SetStartWorkflowOptions(client.StartWorkflowOptions{
+		ID:        rewards.WorkflowID(testCustomerID),
+		TaskQueue: rewards.TaskQueue,
+	})
+	for i := 0; i < rewards.DefaultEarnsPerRun-1; i++ {
+		i := i
+		env2.RegisterDelayedCallback(func() {
+			env2.UpdateWorkflow(rewards.UpdateAddPoints, fmt.Sprintf("v%d", i),
+				&testsuite.TestUpdateCallback{
+					OnAccept: func() {}, OnReject: func(error) {}, OnComplete: func(interface{}, error) {},
+				}, rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
+		}, time.Duration(i+1)*time.Minute)
+	}
+	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.DefaultEarnsPerRun+1)*time.Minute)
+	env2.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, next)
+
+	s.Require().True(env2.IsWorkflowCompleted())
+	var canErr *workflow.ContinueAsNewError
+	s.False(errors.As(env2.GetWorkflowError(), &canErr),
+		"the successor run must start its own count, not inherit a primed one")
+}
+
+// Deactivation beats the roll: a cancel arriving before the threshold takes the
+// departure path rather than continuing as new.
+func (s *RewardsSuite) Test_ContinueAsNew_CancelWinsBeforeThreshold() {
+	s.addPoints(time.Minute, "u0", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	err := s.runToCancellation(newState())
+
+	var canceled *temporal.CanceledError
+	s.True(errors.As(err, &canceled))
 }
 
 // --- Cancellation (PLAN.md 3.6) ---------------------------------------------
