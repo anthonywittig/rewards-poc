@@ -19,7 +19,7 @@ deliverable, not a side effect — see [§8](#8-inspecting-postgres-and-elastics
 | Question | Decision |
 |---|---|
 | Stack | Go worker + Go HTTP API + React/TypeScript (Vite) UI |
-| Visibility store | Postgres + Elasticsearch by default; a `lite` Compose profile drops ES and uses Postgres visibility |
+| Visibility store | Elasticsearch, only. Postgres is persistence only — we care about it for how *workflows* are stored, not as a visibility backend |
 | Audit log durability | Namespace retention set to **20 minutes**; continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice |
 | Deactivate | `CancelWorkflow` (graceful), not Terminate |
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
@@ -73,8 +73,7 @@ internal/httpapi/             handlers, DTOs
 web/                          Vite + React + TS
 deploy/
   docker-compose.yml          full stack (Postgres + ES)
-  docker-compose.lite.yml     override: drop ES, Postgres visibility
-  dynamicconfig/dev.yaml      retention overrides
+  dynamicconfig/dev.yaml      retention + visibility-lag overrides
   bootstrap.sh                namespace + search attribute registration
   inspect/                    canned psql + curl queries for §8
 docs/
@@ -460,12 +459,8 @@ is free.
 
 Two things to call out in the README:
 
-- **Elasticsearch is the memory hog** — see [§7.3](#73-making-elasticsearch-cheap) for how far
-  we can push it down. The `lite` profile (`docker-compose.lite.yml`) drops ES entirely and
-  switches Temporal to Postgres visibility. Custom search attributes still work (Postgres 12+
-  on Temporal 1.20+), so **the application code is identical** — only the Compose file
-  differs. That is the profile for CI and for day-to-day work when you aren't specifically
-  looking at ES.
+- **Elasticsearch is the memory hog**, and there is only one profile, so every stack pays for
+  it. See [§7.3](#73-making-elasticsearch-cheap) for how far it can be pushed down.
 - **A cheaper alternative to a whole second stack is a second namespace** on one stack. It
   gives isolated workflows and search attributes for a fraction of the RAM. Worth documenting
   as the default recommendation, with full stack duplication reserved for testing server
@@ -519,9 +514,9 @@ while workflows keep running perfectly**. The customer list freezes, the detail 
 correct, and nothing logs an obvious error. Temporal's byte-based defaults avoid it; keep
 them.
 
-Realistically this lands ES around 500–700 MB RSS. If that is still too much for running
-several stacks at once, the honest answer is not more ES tuning — it is the `lite` profile,
-with ES brought up only when you are actively demonstrating or inspecting it.
+Realistically this lands ES around 500–700 MB RSS. Since ES is the only visibility store,
+that is the floor per stack — if several stacks at once get tight, the lever is running
+fewer stacks or using a second namespace on one stack (§7.2), not further ES tuning.
 
 (OpenSearch is a supported drop-in alternative, but it is not meaningfully lighter, so it
 isn't worth the substitution here.)
@@ -584,81 +579,76 @@ no lag at all. That is why the create flow redirects to the detail page (§9) �
 workaround for slow indexing, it is reading from the store that actually has the answer.
 Visibility is only needed for the list page, which is inherently a "roughly now" view.
 
-Worth knowing for §8: the `lite` (Postgres) profile still goes through the same visibility
-task queue, so it is not synchronous either — but with no bulk buffering and no refresh step,
-its lag is small enough to be invisible. That difference is exactly why this bug only ever
-shows up in the default profile.
+Worth knowing for [§8](#8-inspecting-postgres-and-elasticsearch): the lag is not a black box.
+The `visibility_tasks` table in Postgres is the queue feeding this pipeline, so the delay can
+be watched draining rather than taken on faith.
 
 ---
 
 ## 8. Inspecting Postgres and Elasticsearch
 
 An explicit goal: understand *how Temporal actually uses* its two stores, not just that it
-does. This is where running both visibility backends pays off, because the same seven search
-attributes are stored in dramatically different ways.
+does. Postgres is interesting here for how it stores **workflows**; Elasticsearch is
+interesting for how it stores the **searchable projection** of them. We are not evaluating
+Postgres as a visibility backend — ES is the visibility store, full stop.
+
+The framing is **persistence versus projection**: Postgres holds the truth about a workflow
+in a form you cannot query, and Elasticsearch holds a queryable view of it that is neither
+complete nor authoritative. Understanding why it is split that way is the goal.
 
 Deliverable is `docs/DATASTORES.md` plus `make psql` / `make es` shortcuts and a handful of
 canned queries in `deploy/inspect/`.
 
-### 8.1 Postgres — persistence
+### 8.1 Postgres — how a workflow is actually stored
 
-Temporal creates two databases: `temporal` (persistence, always used) and
-`temporal_visibility` (only used when ES is off). The tables worth looking at in `temporal`:
+Temporal creates two databases. `temporal` is persistence and is the one we care about;
+`temporal_visibility` gets its schema created by auto-setup but stays empty, because
+Elasticsearch is our visibility store.
 
-| Table | What it shows |
+| Table | What it holds |
 |---|---|
-| `executions` | One row per execution, holding serialized mutable state — our `CustomerState` lives in here as an opaque blob |
-| `current_executions` | Maps workflow ID → current run ID. This is the indirection that makes continue-as-new work |
-| `history_node` / `history_tree` | The actual Event History, stored as **serialized batches of events** |
-| `visibility_tasks` | The async queue that feeds Elasticsearch |
-| `task_queues`, `tasks` | Task queue backlog the worker polls |
-| `timer_tasks`, `transfer_tasks` | Internal scheduling queues |
-| `namespaces` | Namespace config — including the search-attribute name→column mapping |
+| `executions` | One row per run, holding serialized mutable state — our `CustomerState` lives here as an opaque blob |
+| `current_executions` | Maps workflow ID → *current* run ID |
+| `history_node` / `history_tree` | The Event History itself, as serialized batches of events |
+| `buffered_events` | Events accepted but not yet committed to a workflow task |
+| `visibility_tasks` | The async queue feeding Elasticsearch |
+| `transfer_tasks`, `timer_tasks` | Internal scheduling queues |
+| `task_queues`, `tasks` | The backlog the worker polls |
+| `namespaces` | Namespace config, including our retention setting |
 
-Two findings to demonstrate explicitly, because they justify the whole architecture:
+Four things worth demonstrating, because each one explains a decision elsewhere in this plan:
 
 1. **`history_node` is opaque blobs.** You cannot `SELECT` a customer's point balance out of
-   Postgres. The event history is not queryable data — which is precisely *why* a separate
-   visibility store has to exist. Show a `SELECT` against it returning binary, next to the
-   same information rendered by our audit-log crawl.
-2. **`visibility_tasks` drains asynchronously.** Add points and query this table fast enough
-   and you will catch rows in flight. This *is* the read-after-write lag from
-   [§9](#9-web-ui) — not an abstract caveat but a queue you can watch. A canned query that
-   polls its row count while you add points makes the point better than any paragraph.
+   Postgres — the history is serialized event batches, not queryable rows. This is precisely
+   *why* a separate visibility store has to exist at all, and why our audit log has to crawl
+   history through the SDK rather than reading SQL. Show a `SELECT` returning binary next to
+   the same data rendered by the audit crawl.
+2. **`current_executions` is the continue-as-new indirection.** Watch `workflow_id` stay
+   constant while `current_run_id` changes on every third point-add. That single row is what
+   makes "the customer" a stable identity across many runs, and it is what the §6.1 crawl is
+   walking backwards through.
+3. **`visibility_tasks` drains asynchronously.** Add points and poll this table fast enough
+   and you catch rows in flight. This *is* the read-after-write lag from
+   [§7.5](#75-cutting-the-visibility-lag) — not an abstract caveat but a queue you can watch,
+   and a direct way to confirm the flush-interval tuning actually did something.
+4. **Retention deletion is visible at the storage layer.** After a continue-as-new, watch the
+   closed run's rows disappear from `history_node` around the 20-minute mark. That is the
+   audit-log truncation from [§6.3](#63-truncation-is-the-feature) happening in the database
+   — the UI's "showing 7 of 23" message and these vanishing rows are the same event seen from
+   two ends.
 
-### 8.2 Postgres — visibility (the `lite` profile)
+A canned query per finding in `deploy/inspect/`, each one small enough to read in full.
 
-`executions_visibility` has a `search_attributes` JSONB column, plus **pre-allocated,
-generically-named typed columns** populated as `GENERATED ALWAYS AS ... STORED` projections
-out of that JSON:
-
-`Bool01–03`, `Double01–03`, `Int01–03`, `Datetime01–03`, `Text01–03` (TSVECTOR),
-`Keyword01–10`, `KeywordList01–03` — plus a parallel `Temporal`-prefixed set for built-ins.
-
-So our `RewardsLevel` does not exist as a column called `RewardsLevel`. It gets *assigned* to
-something like `Keyword01`, and the logical→physical mapping is held in the namespace config.
-That explains two things the docs mention only in passing:
-
-- Custom search attributes on SQL must be registered per-namespace (the mapping is namespace
-  scoped).
-- Deleting a search attribute frees the mapping **but not the data**, so reusing a name can
-  surface a previous attribute's values. Worth actually reproducing — create, delete, and
-  recreate an attribute and watch stale data appear.
-
-It also explains the hard ceiling: ten Keyword attributes, three Ints, three Datetimes. We
-use one Int (`RewardsPoints`), one more for `RewardsGeneration`, one Datetime, one Text, and
-two Keywords — comfortably inside the budget, but a real program with dozens of attributes
-would hit the wall. Good thing to state, since it is a genuine reason to reach for ES.
-
-### 8.3 Elasticsearch — visibility (default profile)
+### 8.2 Elasticsearch — the visibility projection
 
 One index, `temporal_visibility_v1_dev` by default. One document per Workflow Execution,
 keyed by run ID.
 
-Contrast with §8.2, which is the headline finding: in ES the custom search attributes are
-**real, named fields**. `RewardsLevel` is a keyword field literally called `RewardsLevel`. No
-mapping table, no numbered-column budget, and adding a new attribute is a mapping update
-rather than a scarce-slot allocation.
+The contrast with §8.1 is the point. Postgres stores *what happened*, losslessly and
+unqueryably. ES stores *what is currently true and worth filtering on* — our seven search
+attributes as real named fields (`RewardsLevel` is literally a keyword field called
+`RewardsLevel`) plus the built-ins, and nothing else. No history, no state blob, no audit
+trail. It is a lossy index built for one job.
 
 Canned queries to ship:
 
@@ -682,16 +672,34 @@ curl -s "$ES/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size"
 ```
 
 Also worth capturing: the document for a **closed** (deactivated) customer, and then the same
-query 20 minutes later after retention reaps it — showing that ES is a *projection* of
-persistence, not an independent record, and that it disappears along with the source.
+query 20 minutes later after retention reaps it. ES does not decide to delete that document
+on its own — it goes because the source in Postgres went. That is the projection relationship
+made concrete.
 
-### 8.4 The side-by-side
+### 8.3 Following one write all the way through
 
-The payoff is running the identical `RewardsLevel = "gold"` list-filter against both profiles
-and showing the same result served by a `Keyword01` column in one and a named ES field in the
-other, with the application code untouched. A short table in `DATASTORES.md` comparing
-storage shape, attribute limits, write latency (§7.5), and resource cost is probably the
-single most useful artifact this POC produces for anyone choosing a visibility backend.
+The artifact that ties it together: trace a single `addPoints` call end to end, with a query
+at each hop.
+
+```
+UI click
+  └─▶ Update accepted by the workflow
+        └─▶ history_node          new event batch appended        (§8.1, query 1)
+        └─▶ executions            mutable state blob rewritten
+        └─▶ visibility_tasks      row enqueued                     (§8.1, query 3)
+              └─▶ bulk processor  buffered up to flush interval    (§7.5)
+                    └─▶ ES doc    upserted, searchable after refresh (§8.2)
+```
+
+Two conclusions fall out of it, and they are what `DATASTORES.md` should lead with:
+
+- **The two stores answer different questions.** "What is this customer's balance and how did
+  it get there?" is only answerable from persistence. "Which customers are gold and active?"
+  is only answerable from ES. Neither can substitute for the other, which is why Temporal
+  runs both rather than picking one.
+- **ES is derived and disposable.** Every ES document can be rebuilt from persistence; nothing
+  in persistence can be rebuilt from ES. That is why losing the ES index is an operational
+  annoyance rather than data loss — and why the lag in §7.5 exists at all.
 
 ---
 
@@ -719,8 +727,9 @@ never exactly zero, so the UI should not assume it is. Two rules follow:
 - The **list** page optimistically inserts the new row and re-fetches once shortly after,
   rather than trusting the first response to be complete.
 
-This bug is effectively invisible under the `lite` profile, so it will only ever be caught
-against the default stack — worth testing there deliberately.
+Worth testing deliberately: create a customer and immediately hit the list endpoint. If the
+tuning in §7.5 is working the row should be there within ~300 ms, and `visibility_tasks`
+(§8.1) will show why when it isn't.
 
 ---
 
@@ -734,7 +743,9 @@ against the default stack — worth testing there deliberately.
   workflows are long-lived, so they *will* outlive a deploy, and this is the single highest
   operational risk in the design.
 - **Integration**: `temporal server start-dev` with `--search-attribute` flags, exercising
-  the API end to end. Runs in CI without Docker.
+  the API end to end. Runs in CI without Docker or Elasticsearch — note that `start-dev` uses
+  SQLite visibility, so it will not reproduce the ES lag of §7.5. That behaviour needs the
+  real stack.
 
 ---
 
@@ -748,7 +759,7 @@ against the default stack — worth testing there deliberately.
 | 3 | Go HTTP API + error mapping | |
 | 4 | Search attributes end to end; list + filter | Demo the same query in both UIs |
 | 5 | History crawl + truncation detection | |
-| 6 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, both-profile side-by-side | Best done here — Phases 4–5 have generated data worth looking at |
+| 6 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | Best done here — Phases 4–5 have generated data worth looking at, including reaped runs |
 | 7 | React UI, all three screens | |
 | 8 | Replay test, seed script, README, one cleanup Activity | |
 
