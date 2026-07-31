@@ -244,7 +244,7 @@ export function CustomerListPage() {
             </tr>
           </thead>
           <tbody>
-            {loading && !data ? (
+            {loading && !data && items.length === 0 ? (
               <tr>
                 <td colSpan={6} className="muted">
                   Loading…
