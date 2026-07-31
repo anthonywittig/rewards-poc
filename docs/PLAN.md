@@ -685,7 +685,8 @@ The interesting part, and the reason for the 3-update continue-as-new.
 
 ### 6.1 Walking the run chain
 
-A customer's life spans many Runs sharing one Workflow ID. Newest run first, walk backwards:
+**Done.** A customer's life spans many Runs sharing one Workflow ID. Newest run first, walk
+backwards:
 
 1. `DescribeWorkflowExecution(workflowID, "")` → the current run.
 2. `GetWorkflowHistory(workflowID, runID)` → events for that run.
@@ -694,15 +695,32 @@ A customer's life spans many Runs sharing one Workflow ID. Newest run first, wal
    and the chain is complete.
 4. Reverse to get oldest-first.
 
+Two details this leaves out, both discovered building it:
+
+- **Every run is addressed by an explicit run ID, never by `""`.** Step 2 above is the only
+  place the empty run ID would be convenient, and using it there breaks truncation detection:
+  the server resolves `""` to the latest run, so a request for a reaped predecessor would
+  cheerfully return the *newest* run's events instead of reporting the predecessor as gone.
+  Step 1 exists purely to bootstrap a real run ID for step 2.
+- **`isLongPoll` must be false.** With it true the iterator on a running workflow blocks
+  waiting for events that have not happened yet, so the audit page for an active customer
+  hangs rather than returning what exists now.
+
+**The crawl needs no worker.** Slightly surprising, since it is by far the most expensive read
+in the system, but it only ever talks to the server: history and the carried state come out of
+persistence, not out of a replay. Measured with `make worker-stop`, `GET /audit` answers in
+10 ms while `GET /api/customers/{id}` — which needs a Query — 503s. The one page that looks
+like it should be fragile is the most available thing here.
+
 ### 6.2 Events we care about
 
 | Event | Audit entry |
 |---|---|
 | `WorkflowExecutionStarted` (with empty `ContinuedExecutionRunId`) | Enrolled |
+| `WorkflowExecutionStarted` (with a non-empty one) | generation boundary (render as a subtle divider) |
 | `WorkflowExecutionUpdateAccepted` | the request: update name, `Amount`, `Reason`, update ID |
 | `WorkflowExecutionUpdateCompleted` | the outcome: new balance and level, or failure message |
-| `ActivityTaskScheduled` / `ActivityTaskCompleted` | Promotion notification sent (§3.7) — free, since Activities are history events |
-| `WorkflowExecutionContinuedAsNew` | generation boundary (render as a subtle divider) |
+| `ActivityTaskScheduled` + `ActivityTaskCompleted` | Promotion notification sent (§3.7) |
 | `WorkflowExecutionCancelRequested` | Deactivated |
 
 Accepted and Completed are separate events; pair them via `AcceptedEventId` on the completed
@@ -710,13 +728,63 @@ event to render one row with both the request and its result. Payloads are `Payl
 — decode with the same `DataConverter` the client is configured with, which is why API and
 worker share a Go module.
 
+Three corrections to the table as originally written:
+
+- **The generation boundary is read from the successor, not the predecessor.** The plan listed
+  `WorkflowExecutionContinuedAsNew`, which is the last event of the run being *left*. Both
+  events mark the same instant, but only the successor's `WorkflowExecutionStarted` knows which
+  generation is being entered — and, more to the point, the predecessor is the half that gets
+  reaped. Reading the boundary from the run that still exists is what lets a truncated log
+  still show "generation 33" at the top instead of starting mid-air.
+- **`WorkflowExecutionStarted` carries the whole carried `CustomerState` as its input**, which
+  turns out to be the most useful event in the crawl. It gives the generation and
+  `LifetimeEarnEvents` for free, which is where §6.3's "3 of 21" number comes from — no Query
+  needed, and therefore no worker.
+
+  Note the search attributes on that same event are the *predecessor's* — the workflow upserts
+  its own on its first task. Observed a `RewardsGeneration` of 1 sitting on the started event
+  of the run whose input said generation 2. Read the input, not the attributes.
+- **A notification row needs `ActivityTaskCompleted`, not `ActivityTaskScheduled`.** "Sent"
+  has to mean sent: an Activity that exhausted its retries leaves a Scheduled event and a
+  Failed one, and rendering the first as a delivery would make the audit log lie about the one
+  thing it exists to be believed about. The Scheduled event carries the input, the Completed
+  one carries `ScheduledEventId` — so pair them exactly like the Update halves above.
+
+§3.7 says these rows land "for free". They do not land *quite* for free: the crawl has to know
+the Activity's name to tell a notification from any other Activity a later phase might add, and
+has to decode its argument to get the level. `ActivityNotifyCustomer` and `NotifyRequest` are
+therefore declared in `internal/rewards/notify.go` a phase early, so Phase 6 cannot change the
+shape without the crawler failing to compile. Same trade as `CustomerState.NotifiedLevels`.
+
 ### 6.3 Truncation is the feature
 
 Closed runs get reaped, and the audit log is designed around that rather than pretending it
 won't happen:
 
-- Walking back, a non-empty `ContinuedExecutionRunId` whose `GetWorkflowHistory` returns
-  `NotFound` means history was reaped. Stop and mark the result truncated.
+- Walking back, a non-empty `ContinuedExecutionRunId` whose `GetWorkflowHistory` fails means
+  history was reaped. Stop and mark the result truncated.
+
+  **It is not `NotFound`, which is what this section originally said**, and getting that wrong
+  is not cosmetic — truncation is detected *by this error*, so with the predicted
+  classification the one case §6.3 exists to handle came back as an unmapped 500. Measured:
+
+  | condition | Go type | message |
+  |---|---|---|
+  | run reaped | `*serviceerror.InvalidArgument` | *Requested workflow history not found, may have passed retention period.* |
+  | run ID well-formed, never used | `*serviceerror.InvalidArgument` | identical to the above |
+  | run ID malformed | `*serviceerror.InvalidArgument` | *Invalid RunId.* |
+  | workflow ID never existed | `*serviceerror.NotFound` | *workflow not found for ID: …* |
+
+  So the type alone cannot decide it, and `isHistoryGone` is the one place in the codebase
+  that matches on message text — everywhere else that would be a bug. There is no other
+  signal: from the server's side, "history deleted" and "run ID you made up" are the same
+  situation. That is only tolerable because the crawl exclusively passes run IDs the server
+  itself produced in a `ContinuedExecutionRunId`, which makes the second row unreachable.
+
+  Note the server says *may have passed retention period* even for a run deleted explicitly by
+  `make reap`, where that guess is simply wrong. If a server upgrade changes the wording,
+  truncation stops being recognised and surfaces as a 500 — the right direction to fail in,
+  since a loud error beats a timeline quietly showing fewer rows than the customer has.
 - The carried `CustomerState` gives us ground truth to *quantify* the gap. If
   `LifetimeEarnEvents` is 23 and we could only reconstruct 7 rows, the UI says:
 
@@ -775,8 +843,28 @@ an intact audit log is visible side by side.
   `dynamicconfig/dev.yaml` is genuinely registered, and that on-demand deletion works. Re-run
   it after a server upgrade; if a future version relaxes the floor, check 1 fails loudly and
   we can drop the workaround.
-- Cost: the crawl is O(runs × events) per page view, uncached. Fine at POC scale; note
-  pagination and a cache as future work rather than building them now.
+- Cost: the crawl is O(runs × events) per page view, uncached, and serial — each run only
+  learns its predecessor from the run just read, so the round trips cannot be issued in
+  parallel. **Measured, and cheaper than expected**: a customer with 34 runs and 100 point-adds
+  crawls end to end in ~125 ms, warm or cold. Fine at POC scale; note pagination and a cache as
+  future work rather than building them now.
+
+  There is deliberately **no cap on runs walked**, only a 30 s deadline on the whole request. A
+  cap would have to report its partial result as `truncated`, which in this contract means
+  "history was deleted" — and quietly widening that to "or we gave up" would make the one
+  honest signal in the response dishonest.
+- What a reaped customer looks like from the API, measured end to end:
+
+  | state | `GET /{id}` | `GET /{id}/audit` |
+  |---|---|---|
+  | active, intact history | 200 | 200, `truncated: false` |
+  | active, old generations reaped | 200 | 200, `truncated: true`, e.g. shown 1 of 100 |
+  | deactivated, not yet reaped | 200 | 200, ending in a `deactivated` row |
+  | reaped entirely | 404 | 404 |
+
+  The middle row is the demo: `make reap WF=customer-x` on an *active* customer leaves the
+  running generation and deletes every closed one, so the header still reads 100 lifetime
+  point-adds while the timeline beneath it can only show the one that survives.
 
 ---
 
@@ -1142,8 +1230,8 @@ Findings for §12 live in `web/NOTES.md`.
 | 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
-| 5 | History crawl + truncation detection | |
-| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix |
+| 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
+| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix. The audit crawl already renders notification rows against `rewards.NotifyRequest`; register the Activity under `rewards.ActivityNotifyCustomer` and they appear |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | |
@@ -1297,12 +1385,60 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     encoding is `Proto3` for `history_node.data`, `executions.data` and `executions.state`.
     Useful for anyone writing further SQL against persistence.
 
+**From the Phase 5 history crawl** — measured against server 1.29.7.
+
+25. **A reaped run's history comes back as `InvalidArgument`, not `NotFound`.** The message is
+    *"Requested workflow history not found, may have passed retention period."*, and the same
+    `InvalidArgument` type also covers a malformed run ID (*"Invalid RunId."*), so the type
+    alone cannot decide it. Truncation detection is the one thing in this codebase that has to
+    match on message text. Full table in [§6.3](#63-truncation-is-the-feature).
+
+26. **`GetWorkflowHistory` with an empty run ID silently resolves to the latest run.** Helpful
+    almost everywhere, wrong in a crawl: asking for a reaped predecessor with `""` returns the
+    *newest* run's events rather than reporting the predecessor as gone, so the walk would loop
+    on the same run instead of detecting truncation. Every run is addressed explicitly.
+
+27. **The search attributes on a `WorkflowExecutionStarted` event belong to the previous run.**
+    A run's own attributes are upserted on its first workflow task, so the started event of
+    generation 2 carries `RewardsGeneration: 1`. The event's *input* payload is the carried
+    state and is correct; the attributes on it are a snapshot of the run being left.
+
+28. **The audit crawl is the most available read in the system, and the detail page the least.**
+    Counterintuitive given the crawl is O(runs) and the detail page is one Query — but the
+    crawl only reads persistence, while a Query needs a worker to replay history. With
+    `make worker-stop`: `/audit` answers in 10 ms, `/api/customers/{id}` 503s. Taking
+    `LifetimeEarnEvents` from the newest run's start payload rather than from a Query is what
+    buys this, and it costs nothing.
+
+**From the Phase 8 UI** — found building the React screens against both APIs.
+
+29. **"Status" means two different things, in two different vocabularies.** The visibility
+    query language says `ExecutionStatus = 'Running' | 'Canceled'`; the API's DTOs say
+    `status: "active" | "deactivated"`. Same concept, same English word, no overlap in
+    spelling — and they are not interchangeable in either direction, because one is a Temporal
+    built-in search attribute and the other is our projection of it. A status filter in the UI
+    has to translate. The mismatch is not accidental: a workflow cannot record its own closure
+    ([§3.6](#36-deactivation-via-cancel)), so the API is deriving a rewards-domain word from a
+    platform-domain one.
+
+30. **The Go API sends no CORS headers; only the mock does.** So pointing a browser at it with
+    a cross-origin base URL fails, and `make web` proxies `/api` through Vite instead
+    (`VITE_API_PROXY_TARGET=http://localhost:8081`). The Phase 8 handoff brief claimed the two
+    servers were interchangeable by base URL alone — they are field-for-field identical in
+    *content*, which is what was actually verified, and that was written up as more than it
+    was.
+
+    Left as-is rather than "fixed" by adding permissive CORS: same-origin proxying is the
+    normal Vite setup and the one that survives into production, whereas an unauthenticated API
+    advertising `Access-Control-Allow-Origin: *` is a shape worth not copying out of a POC. The
+    mock has it precisely because it is meant to be hit directly with no stack running.
+
 **Design**
 
-23. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+31. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-24. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+32. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

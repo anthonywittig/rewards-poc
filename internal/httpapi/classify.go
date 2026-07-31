@@ -43,14 +43,6 @@ func isWorkerUnavailable(err error) bool {
 		return true
 	}
 
-	// The same condition, reported differently depending on how long the worker
-	// has been gone -- a query that nobody answers eventually runs out of time
-	// rather than being refused. See queryTimeout for the measurements.
-	var deadline *serviceerror.DeadlineExceeded
-	if errors.As(err, &deadline) {
-		return true
-	}
-
 	// An Update with no worker does not fail -- it blocks -- so it reaches us as
 	// the deadline we imposed in updateTimeout, wrapped in the SDK's own type.
 	// That type also covers client-side cancellation, which would be a caller
@@ -60,7 +52,18 @@ func isWorkerUnavailable(err error) bool {
 	if errors.As(err, &updTimeout) {
 		return true
 	}
-	return errors.Is(err, context.DeadlineExceeded)
+	return isTimeout(err)
+}
+
+// isTimeout reports whether a call ran out of the time we gave it.
+//
+// Both spellings matter: the SDK surfaces a server-side deadline as its own
+// typed error, while a deadline our own context imposed arrives as the stdlib
+// sentinel. Note context.Canceled is deliberately absent -- that is the caller
+// hanging up, and nobody is left to read the response.
+func isTimeout(err error) bool {
+	var deadline *serviceerror.DeadlineExceeded
+	return errors.As(err, &deadline) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // isBusinessRejection reports whether the workflow itself refused the request,
@@ -106,6 +109,50 @@ func isClosedRun(err error) bool {
 	}
 	var notFound *serviceerror.NotFound
 	return errors.As(err, &notFound)
+}
+
+// isHistoryGone reports whether a run's Event History has been deleted --
+// reaped after retention, or removed on demand by `make reap`.
+//
+// PLAN.md 6.3 predicted this arrives as NotFound. It does not, and the
+// difference is not cosmetic: the audit crawl detects truncation by *this
+// error*, so with the predicted classification a truncated log came back as an
+// unmapped 500 instead of the timeline it was designed to serve. Measured
+// against the real server, GetWorkflowHistory answers:
+//
+//	condition                        Go type                          message
+//	------------------------------   ------------------------------   -----------------------------------
+//	run reaped                       *serviceerror.InvalidArgument    "Requested workflow history not
+//	                                                                   found, may have passed retention
+//	                                                                   period."
+//	run ID well-formed, never used   *serviceerror.InvalidArgument    (identical to the above)
+//	run ID malformed                 *serviceerror.InvalidArgument    "Invalid RunId."
+//	workflow ID never existed        *serviceerror.NotFound           "workflow not found for ID: ..."
+//
+// So the type alone cannot decide it, and this is the one place in the codebase
+// that matches on message text -- everywhere else that would be a bug. There is
+// no other signal: "history deleted" and "run ID you made up" are the same error
+// because they are, from the server's side, the same situation.
+//
+// Note the server says "may have passed retention period" even when the run was
+// explicitly deleted, which for `make reap` is a guess and a wrong one. The
+// substring below is chosen from the half of the sentence that is diagnostic
+// rather than speculative.
+//
+// If a server upgrade changes that wording, truncation stops being recognised
+// and starts surfacing as a 500. That is the direction to fail in -- a loud
+// error beats a timeline that quietly shows fewer rows than the customer has,
+// which is precisely the outcome PLAN.md 6.3 exists to prevent.
+func isHistoryGone(err error) bool {
+	var notFound *serviceerror.NotFound
+	if errors.As(err, &notFound) {
+		return true
+	}
+	var invalid *serviceerror.InvalidArgument
+	if !errors.As(err, &invalid) {
+		return false
+	}
+	return strings.Contains(strings.ToLower(invalid.Error()), "retention period")
 }
 
 // mentionsNoPoller reports whether a message names the specific condition the

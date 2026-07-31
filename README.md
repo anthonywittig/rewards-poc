@@ -6,9 +6,10 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 3.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
-either from the `temporal` CLI or over HTTP. No UI yet — that's Phase 8. The customer *list*
-endpoint is Phase 4 and the audit log is Phase 5.
+**Status: Phase 5.** The workflow runs, continues-as-new every 3 point-adds, and is drivable
+either from the `temporal` CLI or over HTTP. The customer list comes straight out of the
+visibility store, and the audit timeline is reconstructed by crawling Event History. No UI yet
+— that's Phase 8; the tier-promotion notification is Phase 6.
 
 ## Quick start
 
@@ -125,10 +126,11 @@ make api        # :8081
 ```
 
 Building a UI and don't want the stack? `make mockapi` serves the same contract from fixtures on
-`:8082` — no Temporal, no Docker, no `.env`. It includes the endpoints that don't exist yet (the
-customer list and the audit timeline), plus a deactivated customer, a truncated audit log, a
-customer sitting under the points cap, and the ~400 ms visibility lag on newly created customers.
-It shares the API's DTOs, so it cannot drift from the real thing without failing to compile.
+`:8082` — no Temporal, no Docker, no `.env`. Every endpoint is now live for real as well, but the
+mock still buys the cases that are awkward to produce on demand: a deactivated customer, a
+truncated audit log, a customer sitting under the points cap, and the ~400 ms visibility lag on
+newly created customers. It shares the API's DTOs, so it cannot drift from the real thing without
+failing to compile.
 
 **The customer list is capped at five rows and has no pagination.** That's a consequence of
 `ORDER BY` not working: with no stable ordering, "page 2" doesn't mean anything in particular, so
@@ -211,6 +213,54 @@ you build anything else on Temporal:
 
 Same underlying condition; fails fast on one API, never on the other.
 
+## The audit log is the Event History
+
+`GET /api/customers/{id}/audit` is the endpoint the whole POC is arranged around. Every other
+read is served by something that behaves like a database — a Query against live state, or the
+visibility index. This one is served by *the log itself*: nothing stores a customer's history
+of point-adds, it is reconstructed by walking back through the run chain and reading the events
+Temporal recorded because it had to in order to run the workflow at all.
+
+```sh
+make audit ID=c-001
+```
+
+```
+enrolled           gen=0 ev=1
+points_added       gen=0 ev=6   +1000 -> 1000 (platinum) 'purchase 1'
+points_added       gen=0 ev=12  +1000 -> 2000 (platinum) 'purchase 2'
+points_added       gen=0 ev=18  +1000 -> 3000 (platinum) 'purchase 3'
+generation_rolled  gen=1 ev=1
+...
+deactivated        gen=2 ev=9
+```
+
+### Truncation is a feature, not an error
+
+Closed runs get reaped, so the log is not durable the way a table would be — and the response
+says so rather than quietly showing less:
+
+```sh
+make reap WF=customer-c-002    # deletes the closed generations, keeps the running one
+make audit ID=c-002
+```
+
+```
+truncated=True shown=1 lifetime=100 runsWalked=1
+```
+
+*"Showing 1 of 100 point events. Earlier history has been deleted."* The header of the detail
+page stays completely correct while the timeline beneath it cannot: the totals ride in the
+continue-as-new payload, which is exactly what §6.3 of the plan is about. Demonstrating the
+limitation is worth more than hiding it.
+
+Two things measured while building this that were not obvious:
+
+- **The crawl needs no worker.** It is the most expensive read here — one round trip per
+  generation, serially — and also the most available, because it only talks to the server.
+  With `make worker-stop`, `/audit` answers in 10 ms while the detail page 503s.
+- **It is cheap.** A customer with 34 runs and 100 point-adds crawls end to end in ~125 ms.
+
 ## The validator/handler split, live
 
 This is the one behaviour worth seeing rather than reading about. Both of these fail, and the
@@ -235,9 +285,12 @@ make add ID=c-002 AMOUNT=11 REASON="over cap"
 ```
 
 That one appends `WorkflowExecutionUpdateAccepted` and `WorkflowExecutionUpdateCompleted`, so
-the denial is permanently recorded and will show up in the audit log built in Phase 5. Which
-is the point: *"why didn't this customer reach platinum?"* has an answer, while *"someone's
-integration sent a negative number 4,000 times"* does not clutter the record.
+the denial is permanently recorded and shows up in the audit log as a `points_rejected` row.
+Which is the point: *"why didn't this customer reach platinum?"* has an answer, while
+*"someone's integration sent a negative number 4,000 times"* does not clutter the record.
+
+Measured on a live customer: two validator rejections left the audit log at 135 rows; one
+handler rejection took it to 136.
 
 The rule of thumb, and where each rejection lives in the code:
 
@@ -245,6 +298,27 @@ The rule of thumb, and where each rejection lives in the code:
 |---|---|---|---|
 | Facts about the **request** | Update validator | No | negative amount, over per-txn max, missing reason |
 | Facts about the **customer** | Update handler | Yes | would exceed the points cap |
+
+## The UI
+
+```sh
+make mockapi     # :8082, fixtures only
+make web         # :5173
+```
+
+Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the mock.
+Against the real stack:
+
+```sh
+make up && make worker && make api
+VITE_API_PROXY_TARGET=http://localhost:8081 make web
+```
+
+It has to be a proxy rather than a cross-origin base URL: the Go API deliberately sends no
+CORS headers, and same-origin proxying is both the normal Vite setup and the one that survives
+into production. Only the mock sets CORS, because it exists to be hit directly with no stack.
+
+See `web/NOTES.md` for the UI's own notes.
 
 ## Points only go up
 
@@ -349,11 +423,20 @@ on-demand deletion works. Worth re-running after any server upgrade.
 
 ```
 cmd/worker/                   the worker process
+cmd/api/                      the HTTP API
+cmd/mockapi/                  the same contract from fixtures, no stack needed
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
   workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
   searchattr.go               typed search attribute keys
+  notify.go                   the notification contract the audit crawl decodes
   workflow_test.go            unit tests (no Docker required)
+internal/httpapi/
+  server.go                   enroll, detail, add points, deactivate, list
+  audit.go                    the Event History crawl and truncation detection
+  classify.go                 error shapes, measured against a real server
+  dto.go                      the wire contract, frozen ahead of the endpoints
+  testdata/                   real run histories, for the crawl's golden tests
 deploy/
   docker-compose.yml          Postgres + Elasticsearch + Temporal + UI
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -239,5 +240,94 @@ func TestUnrelatedFailedPreconditionIsStill503(t *testing.T) {
 	gotCode, gotKind := status(t, mapQueryError(err))
 	if gotCode != http.StatusServiceUnavailable || gotKind != CodeWorkerUnavailable {
 		t.Errorf("got %d/%s, want 503/%s", gotCode, gotKind, CodeWorkerUnavailable)
+	}
+}
+
+// The four answers GetWorkflowHistory gives, transcribed from a real server.
+// PLAN.md 6.3 predicted a single NotFound for the reaped case and got the type
+// wrong; the audit crawl detects truncation by this classification, so a wrong
+// answer here turns a truncated timeline into a 500.
+//
+// The uncomfortable part is that the first two rows are byte-identical, so
+// "history was deleted" and "you invented a run ID" cannot be told apart. That
+// is tolerable only because the crawl exclusively passes run IDs the server
+// itself produced in a ContinuedExecutionRunId, which makes the second row
+// unreachable from our call site.
+func TestIsHistoryGone(t *testing.T) {
+	const reaped = "Requested workflow history not found, may have passed retention period."
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		want bool
+	}{
+		// Same message whether the run aged out or `make reap` deleted it -- the
+		// server guesses at retention either way, and for a deliberate delete
+		// that guess is simply wrong.
+		{"run reaped", serviceerror.NewInvalidArgument(reaped), true},
+		{"workflow never existed", serviceerror.NewNotFound("workflow not found for ID: customer-x"), true},
+
+		// Also InvalidArgument, and emphatically not truncation: a malformed run
+		// ID is a bug in the caller, and swallowing it as "history deleted" would
+		// serve a short timeline instead of reporting the fault.
+		{"malformed run id", serviceerror.NewInvalidArgument("Invalid RunId."), false},
+
+		{"no worker", serviceerror.NewFailedPrecondition("no poller seen for task queue recently"), false},
+		{"transport", serviceerror.NewUnavailable("connection refused"), false},
+		{"nil", nil, false},
+	} {
+		if got := isHistoryGone(tc.err); got != tc.want {
+			t.Errorf("%s: isHistoryGone(%v) = %v, want %v", tc.name, tc.err, got, tc.want)
+		}
+	}
+}
+
+// Raised on PR #13: a crawl that ran out of time reported "the rewards workflow
+// did not respond in time; the worker may be down or overloaded" -- naming a
+// workflow that was never queried and a worker that was never involved.
+//
+// The status is right and stays put; only the attribution was wrong. Anyone
+// following that message restarts a healthy worker and learns nothing, which is
+// the same wrong turn the FailedPrecondition wording sent people down before the
+// message was split from the status.
+func TestMapStoreReadError_TimeoutDoesNotBlameTheWorker(t *testing.T) {
+	for _, err := range []error{
+		context.DeadlineExceeded,
+		serviceerror.NewDeadlineExceeded("context deadline exceeded"),
+		fmt.Errorf("reading history: %w", context.DeadlineExceeded), // wrapped in transit
+	} {
+		mapped := mapStoreReadError(err, "the audit crawl")
+		gotCode, gotKind := status(t, mapped)
+		if gotCode != http.StatusServiceUnavailable || gotKind != CodeWorkerUnavailable {
+			t.Errorf("got %d/%s, want 503/%s", gotCode, gotKind, CodeWorkerUnavailable)
+		}
+
+		var apiErr *apiError
+		asAPIError(mapped, &apiErr)
+		if strings.Contains(strings.ToLower(apiErr.message), "worker") {
+			t.Errorf("timeout on a worker-free read must not mention the worker, got %q",
+				apiErr.message)
+		}
+		if !strings.Contains(apiErr.message, "the audit crawl") {
+			t.Errorf("message should name what timed out, got %q", apiErr.message)
+		}
+	}
+}
+
+// Everything that is not a timeout still goes through the shared classifier, so
+// this mapper adds a case rather than replacing one.
+func TestMapStoreReadError_FallsThroughToCommon(t *testing.T) {
+	gotCode, gotKind := status(t, mapStoreReadError(
+		serviceerror.NewNotFound("workflow not found"), "the customer list"))
+	if gotCode != http.StatusNotFound || gotKind != CodeNotFound {
+		t.Errorf("got %d/%s, want 404/%s", gotCode, gotKind, CodeNotFound)
+	}
+
+	// A genuinely missing worker still says so -- on the endpoints where that is
+	// what happened. This one only fires for reads that cannot involve a worker.
+	_, gotKind = status(t, mapQueryError(
+		serviceerror.NewFailedPrecondition("no poller seen for task queue recently")))
+	if gotKind != CodeWorkerUnavailable {
+		t.Errorf("the Query path's worker diagnosis must survive, got %s", gotKind)
 	}
 }
