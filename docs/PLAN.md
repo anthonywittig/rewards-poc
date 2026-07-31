@@ -507,8 +507,10 @@ What each lever actually buys:
 | `xpack.monitoring.collection.enabled=false`, `xpack.watcher.enabled=false` | Background indexing into system indices we will never read. |
 | `indices.memory.index_buffer_size=5%` | Default is 10% of heap held for indexing buffers. Our write volume is a handful of docs per minute. |
 | `discovery.type=single-node` | Skips cluster bootstrap and quorum machinery. |
-| **`number_of_replicas: 0`** on the visibility index template | On a single node a replica can never be allocated, so the cluster sits at `yellow` forever and you waste an afternoon investigating a non-problem. Also drops per-shard bookkeeping. |
-| `number_of_shards: 1` | Each shard carries fixed segment and translog overhead. Already the ES 7+ default — pin it so it stays true. |
+Note that **shards and replicas need no attention** — Temporal's own visibility index
+template already sets `number_of_shards: 1` and `number_of_replicas: 0` (plus
+`auto_expand_replicas: "0-2"`, which stays at 0 on a single node). So the usual single-node
+"cluster stuck at yellow" trap doesn't apply here; it's already handled upstream.
 
 The absolute-byte watermarks deserve their own note in the README, because the default
 *percentage* watermarks (85/90/95% of disk) are a nasty failure mode on a developer laptop: a
@@ -530,10 +532,62 @@ isn't worth the substitution here.)
 
 1. `temporal operator namespace create --retention ${TEMPORAL_RETENTION}` (tolerate exists)
 2. `temporal operator search-attribute create` for each attribute in §4 (tolerate exists)
-3. Wait for the frontend to report the namespace ready
+3. Lower the visibility index refresh interval (§7.5)
+4. Wait for the frontend to report the namespace ready
 
 Forgetting this step produces an empty customer list with no error, which is a confusing
 first-run experience. It must be wired into `make up`, not documented as a manual step.
+
+### 7.5 Cutting the visibility lag
+
+Elasticsearch visibility is asynchronous, so a newly created or updated customer does not
+appear in `ListWorkflow` results immediately. Out of the box that gap is roughly **1–2
+seconds**, which is very visible in a UI. It has three components, and two of them are ours
+to tune:
+
+| Component | Default | Tunable? |
+|---|---|---|
+| Visibility task processing (history service drains `visibility_tasks`) | single-digit ms | Not worth touching |
+| Bulk processor buffering before the write is sent to ES | **1s** (`worker.ESProcessorFlushInterval`) | Yes — dynamic config |
+| ES index refresh, after which the document becomes searchable | **1s** (ES default for `index.refresh_interval`) | Yes — index setting |
+
+The second one is a Temporal dynamic config setting; the default was raised from 200 ms to 1 s
+in server v1.12 for throughput reasons that do not apply to us. In `dynamicconfig/dev.yaml`:
+
+```yaml
+worker.ESProcessorFlushInterval:
+  - value: 100ms
+```
+
+The third is pure Elasticsearch, and it is the one people miss: **Temporal's visibility index
+template does not set `refresh_interval` at all**, so it inherits the ES default of 1 second.
+Set it explicitly in `bootstrap.sh` after the index exists:
+
+```bash
+curl -XPUT "$ES/temporal_visibility_v1_dev/_settings" \
+  -H 'Content-Type: application/json' \
+  -d '{"index":{"refresh_interval":"200ms"}}'
+```
+
+Together these bring the lag to roughly **200–300 ms** — below the threshold where a user
+notices, and small enough that a single retry on the list page always wins.
+
+**But not to true zero, and it can't be.** ES is a near-real-time search engine; the refresh
+is *what makes* a document searchable, and Temporal's bulk processor exposes no
+`refresh=wait_for` option to force it per write. Driving `refresh_interval` toward zero just
+trades latency for constant segment churn.
+
+So the honest answer has two halves. Tune the above, *and* don't route read-after-write
+through visibility in the first place: `QueryWorkflow` and `DescribeWorkflowExecution` read
+from persistence rather than the visibility store, so they are strongly consistent and have
+no lag at all. That is why the create flow redirects to the detail page (§9) — it is not a
+workaround for slow indexing, it is reading from the store that actually has the answer.
+Visibility is only needed for the list page, which is inherently a "roughly now" view.
+
+Worth knowing for §8: the `lite` (Postgres) profile still goes through the same visibility
+task queue, so it is not synchronous either — but with no bulk buffering and no refresh step,
+its lag is small enough to be invisible. That difference is exactly why this bug only ever
+shows up in the default profile.
 
 ---
 
@@ -636,9 +690,8 @@ persistence, not an independent record, and that it disappears along with the so
 The payoff is running the identical `RewardsLevel = "gold"` list-filter against both profiles
 and showing the same result served by a `Keyword01` column in one and a named ES field in the
 other, with the application code untouched. A short table in `DATASTORES.md` comparing
-storage shape, attribute limits, write consistency (synchronous vs asynchronous), and
-resource cost is probably the single most useful artifact this POC produces for anyone
-choosing a visibility backend.
+storage shape, attribute limits, write latency (§7.5), and resource cost is probably the
+single most useful artifact this POC produces for anyone choosing a visibility backend.
 
 ---
 
@@ -655,11 +708,19 @@ Vite + React + TypeScript. Three screens:
   button with confirmation; and the audit timeline with generation dividers and the
   truncation notice.
 
-**The one UI gotcha that will bite:** Elasticsearch visibility is *asynchronous*. After
-creating a customer, `ListWorkflow` will not include them for a beat. Redirect straight to
-the detail page — which reads via Query and Describe, both strongly consistent — and on the
-list page, poll briefly or optimistically insert. Under the `lite` (Postgres) profile writes
-are synchronous, so this bug is invisible there and will only appear in the default stack.
+**The one UI gotcha that will bite:** Elasticsearch visibility is *asynchronous*, so after
+creating a customer `ListWorkflow` will not include them for a beat. [§7.5](#75-cutting-the-visibility-lag)
+tunes that down to ~200–300 ms, which is small enough to stop being a UX problem — but it is
+never exactly zero, so the UI should not assume it is. Two rules follow:
+
+- Create redirects straight to the **detail** page, which reads via Query and Describe. Those
+  hit persistence rather than the visibility store, so they are strongly consistent regardless
+  of how ES is behaving.
+- The **list** page optimistically inserts the new row and re-fetches once shortly after,
+  rather than trusting the first response to be complete.
+
+This bug is effectively invisible under the `lite` profile, so it will only ever be caught
+against the default stack — worth testing there deliberately.
 
 ---
 
@@ -726,13 +787,15 @@ Things not in the original brief that will come up.
    point for something exposed.
 9. Elasticsearch and Temporal server versions must be compatible (ES 7 needs Temporal 1.7+,
    ES 8 needs 1.18+). Pin both images.
+10. ES visibility lag is tunable to ~200–300 ms but never to zero ([§7.5](#75-cutting-the-visibility-lag)).
+    Anything needing read-after-write must go through Query or Describe, not `ListWorkflow`.
 
 **Design**
 
-10. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+11. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-11. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+12. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope, but the entity workflow with a durable timer is exactly where they'd go.
     Worth one paragraph as "what this shape buys you next."
 
