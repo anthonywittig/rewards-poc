@@ -14,7 +14,8 @@ set -euo pipefail
 # The frontend binds the container's own IP, not 127.0.0.1.
 TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-$(hostname -i):7233}"
 NAMESPACE="${TEMPORAL_NAMESPACE:-rewards}"
-RETENTION="${TEMPORAL_RETENTION:-20m}"
+# 1h is Temporal's enforced minimum, not a preference -- see the create call below.
+RETENTION="${TEMPORAL_RETENTION:-1h}"
 ES_URL="${ES_URL:-http://elasticsearch:9200}"
 ES_INDEX="${ES_INDEX:-temporal_visibility_v1_dev}"
 ES_REFRESH_INTERVAL="${ES_REFRESH_INTERVAL:-200ms}"
@@ -44,10 +45,10 @@ if temporal operator namespace describe \
       | grep -o '"workflowExecutionRetentionTtl"[^,}]*' || true)"
   [ -n "${current}" ] && log "retention now: ${current}"
 else
-  # A 20m retention is below Temporal's 1h default minimum for local
-  # namespaces. If this fails with "retention is not set or too small", the
-  # system.namespaceMinRetentionLocal override in dynamicconfig/dev.yaml did
-  # not take effect.
+  # Temporal enforces a 1h minimum retention and there is no way to lower it on
+  # a released server, so anything shorter fails here with "A valid retention
+  # period is not set on request". See docs/PLAN.md section 6.3; `make reap`
+  # is how we force truncation instead.
   temporal operator namespace create \
     --address "${TEMPORAL_ADDRESS}" \
     --namespace "${NAMESPACE}" \
