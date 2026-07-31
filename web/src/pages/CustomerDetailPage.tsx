@@ -227,11 +227,14 @@ export function CustomerDetailPage() {
                   <input
                     id="amount"
                     type="number"
-                    min={1}
                     required
                     value={amount}
                     onChange={(e) => setAmount(e.target.value)}
                   />
+                  <span className="hint">
+                    Leave validation to the API — try -5 (validator) or a cap-busting
+                    amount on capped customers (handler).
+                  </span>
                 </div>
                 <div className="field" style={{ marginTop: '0.65rem' }}>
                   <label htmlFor="reason">Reason</label>

@@ -31,6 +31,10 @@ export function CustomerListPage() {
 
   useEffect(() => {
     let cancelled = false
+    // Drop the previous filter’s rows immediately so they cannot render under the new query.
+    setData(null)
+    setLoading(true)
+    setError(null)
 
     async function run() {
       setLoading(true)
