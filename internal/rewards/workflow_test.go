@@ -465,7 +465,7 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 
 // The roll fires on exactly the Nth add, not before.
 func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
-	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+	for i := 0; i < rewards.EarnsPerRun; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
@@ -480,17 +480,17 @@ func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
 // One short of the threshold, the run is still going -- so the exit really is
 // driven by the counter rather than by anything incidental.
 func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
-	for i := 0; i < rewards.DefaultEarnsPerRun-1; i++ {
+	for i := 0; i < rewards.EarnsPerRun-1; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
-	s.cancelAt(time.Duration(rewards.DefaultEarnsPerRun+1) * time.Minute)
+	s.cancelAt(time.Duration(rewards.EarnsPerRun+1) * time.Minute)
 
 	err := s.runToCancellation(newState())
 
 	// Cancelled, not continued-as-new.
 	var canErr *workflow.ContinueAsNewError
-	s.False(errors.As(err, &canErr), "should not have rolled on %d adds", rewards.DefaultEarnsPerRun-1)
+	s.False(errors.As(err, &canErr), "should not have rolled on %d adds", rewards.EarnsPerRun-1)
 	var canceled *temporal.CanceledError
 	s.True(errors.As(err, &canceled))
 }
@@ -506,7 +506,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	state.Points = 200
 	state.LifetimeEarnEvents = 9
 
-	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+	for i := 0; i < rewards.EarnsPerRun; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
@@ -528,7 +528,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 // than rolling again immediately. Asserted by running the successor's payload
 // through the workflow again and watching it take another full N adds.
 func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
-	for i := 0; i < rewards.DefaultEarnsPerRun; i++ {
+	for i := 0; i < rewards.EarnsPerRun; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
@@ -541,7 +541,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		ID:        rewards.WorkflowID(testCustomerID),
 		TaskQueue: rewards.TaskQueue,
 	})
-	for i := 0; i < rewards.DefaultEarnsPerRun-1; i++ {
+	for i := 0; i < rewards.EarnsPerRun-1; i++ {
 		i := i
 		env2.RegisterDelayedCallback(func() {
 			env2.UpdateWorkflow(rewards.UpdateAddPoints, fmt.Sprintf("v%d", i),
@@ -550,7 +550,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 				}, rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
 		}, time.Duration(i+1)*time.Minute)
 	}
-	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.DefaultEarnsPerRun+1)*time.Minute)
+	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.EarnsPerRun+1)*time.Minute)
 	env2.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, next)
 
 	s.Require().True(env2.IsWorkflowCompleted())

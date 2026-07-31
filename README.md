@@ -83,20 +83,27 @@ list --query "WorkflowId = 'customer-roll'"` shows the chain: one `Running` run 
 same seven adds accumulate without rolling — which is the entire point, since history has hard
 limits (50k events / 50 MB) and an entity workflow is meant to live for years.
 
-Three is artificially low so the rollover is easy to watch. Production code should let the
-server decide from actual history size:
+**Three is a demo number, not a defensible rule.** It's hardcoded because it makes the rollover
+easy to watch in a terminal — but what actually matters is history *size*, and a count of adds
+is only a proxy for it. Three is wastefully early for small updates and would be far too late
+if each add carried a large payload; the real limits are 50k events and 50 MB per run, neither
+of which is a number of adds.
 
-```sh
-make worker EARNS_PER_RUN=0   # defer to GetContinueAsNewSuggested()
+Production should ask the server, which already tracks the real thing:
+
+```go
+workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 ```
 
-Under that setting the same seven adds leave `generation` at 0 — seven adds are nowhere near
-enough history for the server to suggest rolling, which is precisely why a fixed count is the
-demonstrable one and the server's judgement is the correct one.
+It flips to true as a run approaches those limits, and `GetContinueAsNewSuggestedReasons()`
+says which one. That also removes the hazard below entirely — there's no constant left to
+change.
 
-**Changing this value under running workflows causes non-determinism errors** — a run whose
-history records a roll after 3 adds will not produce that command at that point when replayed
-under a different threshold. In dev, terminate existing workflows after changing it.
+**Changing `EarnsPerRun` breaks running workflows.** A run whose history records a roll after 3
+adds will not produce that command at that point when replayed under a different value, and a
+command that doesn't match the recorded event is what the replayer refuses. Entity workflows
+outlive deploys, so this isn't theoretical. In dev, terminate existing workflows after changing
+it.
 
 One customer is one long-lived Workflow Execution with the ID `customer-<id>`, which is why
 none of these commands need a lookup table. Points arrive as Updates, status is a Query, and

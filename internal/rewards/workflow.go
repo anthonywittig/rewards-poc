@@ -172,10 +172,25 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		"generation", state.Generation,
 		"points", state.Points)
 
-	// Run until it is time to roll over, or until the customer leaves. Both
-	// exits come out of this Await: a nil error means the roll condition fired,
-	// a non-nil error means cancellation.
-	if err := workflow.Await(ctx, func() bool { return shouldRoll(ctx, earnsThisRun) }); err != nil {
+	// Run until it is time to roll over, or until the customer leaves.
+	//
+	// A FIXED COUNT IS THE WRONG RULE FOR PRODUCTION. It is used here because
+	// three adds is easy to demonstrate, not because it is defensible: what
+	// actually matters is history *size*, and a fixed count is only a proxy for
+	// it. Three adds is wastefully early for a customer whose updates are small,
+	// and would be far too late if each add carried a large payload -- the
+	// limits are 50k events / 50 MB per run, and neither is a count of adds.
+	//
+	// The server already tracks the real thing and will say so:
+	//
+	//	workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+	//
+	// which flips to true as a run approaches those limits, and
+	// GetContinueAsNewSuggestedReasons() says which one. Production code should
+	// roll on that and let the server decide, rather than picking a number.
+	// Doing so also sidesteps the versioning hazard on EarnsPerRun: there is no
+	// constant to change, so nothing to break running workflows with.
+	if err := workflow.Await(ctx, func() bool { return earnsThisRun >= EarnsPerRun }); err != nil {
 		return handleLeave(ctx, &state)
 	}
 
@@ -235,22 +250,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		"points", state.Points)
 
 	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
-}
-
-// shouldRoll reports whether this run has done enough and should hand off to a
-// fresh one.
-//
-// Two modes, so both behaviours are demonstrable (PLAN.md 3.5):
-//
-//   - EarnsPerRun > 0 -- roll after exactly that many successful adds.
-//     Artificially low in this POC so the rollover is easy to watch.
-//   - EarnsPerRun == 0 -- defer to the server, which decides based on actual
-//     history size. This is what production code should do.
-func shouldRoll(ctx workflow.Context, earnsThisRun int) bool {
-	if n := EarnsPerRun(); n > 0 {
-		return earnsThisRun >= n
-	}
-	return workflow.GetInfo(ctx).GetContinueAsNewSuggested()
 }
 
 // handleLeave records a graceful departure and closes the execution as Canceled.

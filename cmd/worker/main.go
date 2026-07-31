@@ -7,7 +7,6 @@ package main
 import (
 	"log"
 	"os"
-	"strconv"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
@@ -21,17 +20,6 @@ func main() {
 	// compose network, where "temporal:7233" does not resolve.
 	address := env("TEMPORAL_HOSTPORT", "localhost:7233")
 	namespace := env("TEMPORAL_NAMESPACE", "rewards")
-
-	// Set before the worker starts polling -- see the hazard note on
-	// rewards.SetEarnsPerRun. REWARDS_EARNS_PER_RUN=0 hands the decision to the
-	// server instead, which is what production code should do.
-	if v := os.Getenv("REWARDS_EARNS_PER_RUN"); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil || n < 0 {
-			log.Fatalf("REWARDS_EARNS_PER_RUN must be a non-negative integer, got %q", v)
-		}
-		rewards.SetEarnsPerRun(n)
-	}
 
 	c, err := client.Dial(client.Options{
 		HostPort:  address,
@@ -48,12 +36,8 @@ func main() {
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(rewards.CustomerRewardsWorkflow)
 
-	rollPolicy := "server-suggested"
-	if n := rewards.EarnsPerRun(); n > 0 {
-		rollPolicy = strconv.Itoa(n) + " adds per run"
-	}
-	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new: %s",
-		rewards.TaskQueue, address, namespace, rollPolicy)
+	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
+		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)
 
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)

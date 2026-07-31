@@ -24,7 +24,7 @@ effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
 | Audit log durability | Namespace retention **1 hour** (the platform floor; 20m proved impossible — see [§6.3](#63-truncation-is-the-feature)); continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice. `make reap` forces truncation on demand |
 | Deactivate | `CancelWorkflow` (graceful), not Terminate |
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
-| Continue-as-new | After **3** successful point-add updates (configurable) |
+| Continue-as-new | After **3** successful point-add updates (hardcoded; production should use `GetContinueAsNewSuggested()` — see [§3.5](#35-continue-as-new-after-3-updates)) |
 | Datastore inspection | An explicit POC goal — tooling and docs for looking inside both stores ([§8](#8-inspecting-postgres-and-elasticsearch)) |
 | Activities | Exactly one, `NotifyCustomer` — a stubbed tier-promotion notification ([§3.7](#37-tier-promotion-notifications)) |
 
@@ -307,10 +307,16 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     // addPoints increments earnsThisRun on success
 
     if err := workflow.Await(ctx, func() bool {
-        return earnsThisRun >= cfg.EarnsPerRun
+        return earnsThisRun >= EarnsPerRun
     }); err != nil {
         // Cancelled — graceful departure. Cleanup, if any, needs a
         // disconnected context because ctx is already cancelled.
+        return handleLeave(ctx, &state)
+    }
+    // Await returns nil the moment its condition holds, without checking
+    // the context — so a cancel arriving in the same transition lands
+    // here with err == nil. Departure wins. See §12.9.
+    if ctx.Err() != nil {
         return handleLeave(ctx, &state)
     }
 
@@ -322,16 +328,40 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     }); err != nil {
         return handleLeave(ctx, &state)
     }
+    if ctx.Err() != nil {
+        return handleLeave(ctx, &state)
+    }
 
     state.Generation++
     return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 ```
 
-`EarnsPerRun = 3` is artificially low to make the demo observable. Note in the README that
-production code would instead use `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`, which
-lets the server decide based on actual history size. Make the constant configurable so both
-behaviours are demonstrable.
+#### A fixed count is the wrong rule, and we use it anyway
+
+`EarnsPerRun = 3` is a hardcoded constant, chosen because three adds is easy to demonstrate in
+a terminal — not because it is defensible. What actually bounds a run is history **size**, and
+a count of adds is only a proxy for it: three is wastefully early for small updates and would
+be far too late if each add carried a large payload. The real limits are 50k events and 50 MB
+per run, and neither is a number of adds.
+
+The server already tracks the real thing:
+
+```go
+workflow.GetInfo(ctx).GetContinueAsNewSuggested()
+```
+
+which flips to true as a run approaches those limits, with
+`GetContinueAsNewSuggestedReasons()` reporting which one. **Production should roll on that**,
+and the POC should say so at the call site rather than leaving a magic 3 to be cargo-culted.
+
+An earlier version of Phase 2 made the threshold configurable — env var, worker-level setter,
+zero meaning "ask the server" — so both behaviours were demonstrable. That was removed. It
+bought a demo of the correct behaviour at the cost of a mutable knob on a value that is baked
+into recorded history, which is precisely the shape that causes the non-determinism in
+[§12.10](#12-sharp-edges). One hardcoded constant with a comment explaining what production
+should do instead is both simpler and harder to misuse than a switch inviting people to change
+it at runtime.
 
 ### 3.6 Deactivation via cancel
 
@@ -655,8 +685,6 @@ COMPOSE_PROJECT_NAME=rewards-${STACK_NAME}
 
 TEMPORAL_NAMESPACE=rewards
 TEMPORAL_RETENTION=1h
-EARNS_PER_RUN=3
-MAX_POINTS_PER_TXN=1000
 
 TEMPORAL_GRPC_PORT=7233
 TEMPORAL_UI_PORT=8080

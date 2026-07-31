@@ -17,12 +17,6 @@ GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers test enroll status add deactivate
 
-# Continue-as-new after this many adds. 0 defers to the server's own suggestion,
-# which is what production code should do; 3 makes the rollover watchable.
-# Changing this under running workflows causes non-determinism errors -- see the
-# hazard note on rewards.SetEarnsPerRun.
-EARNS_PER_RUN ?= 3
-
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
 # separate container by several seconds per invocation.
@@ -80,7 +74,6 @@ test: ## Run the Go unit tests
 
 worker: $(ENV) ## Run the workflow worker in the foreground (Ctrl-C to stop)
 	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
-	  REWARDS_EARNS_PER_RUN=$(EARNS_PER_RUN) \
 	  go run ./cmd/worker
 
 # `go run` execs the compiled binary out of /root/.cache/go-build/<hash>/worker,
