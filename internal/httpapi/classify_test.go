@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
@@ -183,15 +184,60 @@ func TestMapUpdateError_TimeoutIsWorkerUnavailable(t *testing.T) {
 	}
 }
 
-func TestIsRolloverAbort(t *testing.T) {
-	if isRolloverAbort(nil) {
-		t.Error("nil is not an abort")
+// The closed-run error is ambiguous by nature: a rollover and a deactivation
+// produce the identical NotFound, because in both cases the addressed run really
+// has completed. isClosedRun only detects that much; deciding which situation it
+// is requires asking the server what is running now.
+func TestIsClosedRun(t *testing.T) {
+	if isClosedRun(nil) {
+		t.Error("nil is not a closed run")
 	}
 	// A rejection is the workflow answering, not the run disappearing.
-	if isRolloverAbort(temporal.NewApplicationError("reason is required", "")) {
-		t.Error("a business rejection must not be treated as a rollover abort")
+	if isClosedRun(temporal.NewApplicationError("reason is required", "")) {
+		t.Error("a business rejection must not be treated as a closed run")
 	}
-	if !isRolloverAbort(errors.New("workflow execution already completed")) {
-		t.Error("expected the completed-run wording to be recognised")
+	// Observed for both a rolled-over run and a deactivated customer.
+	if !isClosedRun(serviceerror.NewNotFound("workflow execution already completed")) {
+		t.Error("expected NotFound to be recognised as a closed run")
+	}
+	// An untyped error carrying similar words is not evidence of anything --
+	// matching on the message is what sent "please retry" to callers adding
+	// points to a departed customer.
+	if isClosedRun(errors.New("workflow execution already completed")) {
+		t.Error("message text alone must not classify a closed run")
+	}
+}
+
+// A 503 should only blame the worker when the server actually named it.
+// FailedPrecondition covers more than a missing poller, and sending someone to
+// check `make worker` while their worker is healthy wastes their time.
+func TestWorkerUnavailableMessage(t *testing.T) {
+	noPoller := serviceerror.NewFailedPrecondition("no poller seen for task queue recently, worker may be down")
+	if got := workerUnavailableMessage(noPoller); !strings.Contains(got, "make worker") {
+		t.Errorf("measured no-poller case should name the worker, got %q", got)
+	}
+
+	other := serviceerror.NewFailedPrecondition("namespace is in a bad state")
+	got := workerUnavailableMessage(other)
+	if strings.Contains(got, "make worker") {
+		t.Errorf("an unrelated FailedPrecondition must not blame the worker, got %q", got)
+	}
+	if !strings.Contains(got, "namespace is in a bad state") {
+		t.Errorf("the server's own words should survive, got %q", got)
+	}
+
+	timeout := serviceerror.NewDeadlineExceeded("context deadline exceeded")
+	if got := workerUnavailableMessage(timeout); !strings.Contains(got, "did not respond in time") {
+		t.Errorf("timeout should report a timeout, got %q", got)
+	}
+}
+
+// Whatever the wording, the status stays 503: these are transient server-side
+// conditions, not caller mistakes.
+func TestUnrelatedFailedPreconditionIsStill503(t *testing.T) {
+	err := serviceerror.NewFailedPrecondition("namespace is in a bad state")
+	gotCode, gotKind := status(t, mapQueryError(err))
+	if gotCode != http.StatusServiceUnavailable || gotKind != CodeWorkerUnavailable {
+		t.Errorf("got %d/%s, want 503/%s", gotCode, gotKind, CodeWorkerUnavailable)
 	}
 }

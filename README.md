@@ -143,6 +143,7 @@ Every failure comes back as `{"error":{"code":"...","message":"..."}}` with a st
 | 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
 | 409 | `already_exists` | enrolling a customer who is already active |
+| 409 | `deactivated` | adding points to a customer who has left |
 | 409 | `rollover_race` | the workflow rolled over twice while applying one request |
 | 422 | `rejected` | the workflow refused it — see the split below |
 | 503 | `worker_unavailable` | nothing is polling the task queue |

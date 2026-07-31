@@ -32,7 +32,12 @@ import (
 // whose native message ("no poller seen for task queue recently, worker may be
 // down") deserves to reach the client intact rather than as a 500. PLAN.md 12.4.
 func isWorkerUnavailable(err error) bool {
-	// "no poller seen for task queue recently, worker may be down".
+	// FailedPrecondition is Temporal's "cannot do this right now", of which
+	// "no poller seen for task queue recently, worker may be down" is only one
+	// instance. Treating the whole type as 503-is-retryable is right -- these are
+	// transient server-side conditions, not caller mistakes -- but claiming the
+	// worker specifically is not, which is why the message is chosen separately
+	// in workerUnavailableMessage rather than assumed here.
 	var failedPre *serviceerror.FailedPrecondition
 	if errors.As(err, &failedPre) {
 		return true
@@ -74,35 +79,42 @@ func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	return appErr, true
 }
 
-// isRolloverAbort reports whether an Update was aborted because the run it
-// targeted continued-as-new underneath it.
+// isClosedRun reports whether an Update failed because the run it targeted is no
+// longer open. Observed as *serviceerror.NotFound carrying "workflow execution
+// already completed".
 //
-// NOT captured empirically, unlike everything else in this file. Reproducing it
-// needs an Update in flight at the instant a run rolls, and attempts to force
-// that window open did not land it. The matching below is therefore a
-// best-effort guess at the wording and may simply never fire -- in which case
-// the request surfaces as a 500 rather than being retried. Recorded as an
-// exposure in PLAN.md 12.13 rather than presented as verified.
-func isRolloverAbort(err error) bool {
+// This is deliberately NOT called "isRolloverAbort", which is what an earlier
+// version got wrong. The error is ambiguous, and the same NotFound arises from
+// two situations that need opposite responses:
+//
+//	continue-as-new  -- the old run closed, a successor is running   -> retry
+//	deactivation     -- the customer cancelled, nothing is running   -> refuse
+//
+// Nothing in the error distinguishes them, because in both cases the run the
+// update addressed really has completed. Matching on the message alone sent
+// "please retry" to callers adding points to a departed customer, where no
+// number of retries can ever succeed. Resolving it requires asking the server
+// what is running now -- see updateWithRolloverRetry.
+func isClosedRun(err error) bool {
 	if err == nil {
 		return false
 	}
+	// A business rejection is the workflow answering, not the run disappearing.
 	var appErr *temporal.ApplicationError
 	if errors.As(err, &appErr) {
-		// A rejection carries a workflow-authored message; it is not an abort.
 		return false
 	}
-	return containsAny(err.Error(),
-		"workflow execution already completed",
-		"update was aborted",
-		"UpdateAborted",
-	)
+	var notFound *serviceerror.NotFound
+	return errors.As(err, &notFound)
 }
 
-func containsAny(s string, subs ...string) bool {
-	l := strings.ToLower(s)
-	for _, sub := range subs {
-		if strings.Contains(l, strings.ToLower(sub)) {
+// mentionsNoPoller reports whether a message names the specific condition the
+// worker-unavailable 503 claims. Used to decide how *confidently* to word that
+// response, never to decide the status code.
+func mentionsNoPoller(msg string) bool {
+	l := strings.ToLower(msg)
+	for _, sub := range []string{"no poller", "no workers", "worker may be down"} {
+		if strings.Contains(l, sub) {
 			return true
 		}
 	}

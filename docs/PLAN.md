@@ -1058,6 +1058,16 @@ Things not in the original brief that will come up.
 2. An Update in flight when a run rolls over gets aborted; the client must retry against the
    new run. With `EarnsPerRun = 3` this race is *frequent* — every third add can hit it. The
    API must retry transparently or the demo looks broken.
+
+   **The error that reports it is ambiguous, and getting this wrong is easy.** An Update whose
+   run has closed comes back as `*serviceerror.NotFound` carrying *"workflow execution already
+   completed"* — and that is the same error, byte for byte, whether the run closed because it
+   continued-as-new or because the customer deactivated. It has to be: in both cases the run
+   really did complete. The two need opposite responses (retry vs refuse), so **the error alone
+   cannot decide**. Ask the server what is running now: a successor execution means a rollover,
+   no open execution means a departed customer. Matching the message instead shipped
+   "please retry" to callers adding points to a deactivated customer, where retrying can never
+   succeed — caught by review on PR #6.
 3. Update dedup via `UpdateID` is scoped to a single run, so it does **not** survive
    continue-as-new. A retry that straddles a rollover can double-apply. The UI should send a
    UUID per click, and we should document that per-run dedup is not sufficient for real money.
@@ -1108,6 +1118,13 @@ Things not in the original brief that will come up.
     that a ~30 ms idempotent read is cheap to repeat and the error could not be pinned down.
     Recorded here because the *class* is real even though this instance is not reliably
     reproducible, and because "not scheduled yet" will look like a bug to whoever meets it next.
+
+    A related caution from the same phase: **the update-side rollover retry has never been
+    observed firing.** Sequential adds complete before the next begins, so the roll finishes in
+    the gap and no update is ever in flight across it. The retry is now correct *if* it fires —
+    it disambiguates via Describe rather than by message, per item 2 — but "correct and
+    unexercised" is what it is, and the same was true of two guards in §3.5. Phase 8's UI, which
+    can issue overlapping adds from a browser, is the first thing likely to exercise it.
 
 **Operational**
 

@@ -243,46 +243,75 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// updateWithRolloverRetry sends the Update, and sends it again if the run rolled
-// over while it was in flight.
+// updateWithRolloverRetry sends the Update, and sends it again if the run it
+// addressed closed because of continue-as-new.
 //
 // This is not defensive coding for a rare event. Continue-as-new fires every 3
-// adds, so a client that keeps adding points will hit this regularly -- the
-// aborted update is the *expected* outcome of racing a rollover, and without a
+// adds, so a client that keeps adding points will hit it regularly -- an update
+// losing its run is the *expected* outcome of racing a rollover, and without a
 // transparent retry the demo looks broken roughly every third click. PLAN.md 12.2.
 //
-// Retrying is safe here because an aborted update did not run: the run it
-// targeted ended before applying it. Note this does not generalise -- the retry
-// carries the same UpdateID, but Update dedup is scoped to a run, so the ID
-// buys nothing across the boundary. It is safe because of the abort semantics,
-// not because of the ID. PLAN.md 12.3.
+// The subtlety is that "the run you addressed has closed" arrives as one
+// ambiguous NotFound covering two opposite situations: a rollover, where a
+// successor is already running and retrying is exactly right, and a
+// deactivation, where nothing is running and retrying can never succeed. So we
+// ask the server which it is rather than guessing from the message -- an extra
+// Describe, only ever on the error path.
+//
+// Retrying is safe because the update did not run: the run it targeted closed
+// before applying it. That safety comes from the abort semantics, not from the
+// UpdateID -- Update dedup is scoped to a run, so the ID buys nothing across the
+// boundary. PLAN.md 12.3.
 func (s *Server) updateWithRolloverRetry(
 	ctx context.Context, wfID string, req AddPointsRequest,
 ) (rewards.AddPointsResult, error) {
 	const attempts = 2
 
-	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
 		res, err := s.sendUpdate(ctx, wfID, req)
 		if err == nil {
 			return res, nil
 		}
-		lastErr = err
-
-		if !isRolloverAbort(err) {
+		if !isClosedRun(err) {
 			return rewards.AddPointsResult{}, mapUpdateError(err)
 		}
-		s.log.Info("update aborted by continue-as-new, retrying against the new run",
+
+		// The run is gone. Is a successor running, or is the customer?
+		running, describeErr := s.hasRunningExecution(ctx, wfID)
+		if describeErr != nil {
+			return rewards.AddPointsResult{}, mapQueryError(describeErr)
+		}
+		if !running {
+			return rewards.AddPointsResult{}, &apiError{
+				http.StatusConflict, CodeDeactivated,
+				"customer is deactivated; re-enroll them before adding points",
+			}
+		}
+
+		s.log.Info("update lost its run to continue-as-new, retrying against the successor",
 			"workflowId", wfID, "attempt", attempt)
 	}
 
-	// Retried and still racing. Honest 409 rather than a retry loop that could
-	// chase a busy customer indefinitely.
-	s.log.Warn("update still racing continue-as-new after retry", "workflowId", wfID, "error", lastErr)
+	// Two rollovers inside one request. Possible under sustained load at three
+	// adds per run; an honest 409 beats a retry loop that could chase a busy
+	// customer indefinitely.
+	s.log.Warn("update lost its run twice in a row", "workflowId", wfID)
 	return rewards.AddPointsResult{}, &apiError{
 		http.StatusConflict, CodeRolloverRace,
 		"the customer's workflow rolled over while applying this request; please retry",
 	}
+}
+
+// hasRunningExecution reports whether the workflow ID currently has an open
+// execution. Used only to disambiguate a closed run, so its cost lands on the
+// error path alone.
+func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, error) {
+	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
+	if err != nil {
+		return false, err
+	}
+	return desc.GetWorkflowExecutionInfo().GetStatus() ==
+		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
 // queryTimeout bounds how long a Query may wait for a worker.

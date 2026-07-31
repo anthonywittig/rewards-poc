@@ -1,12 +1,14 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/client"
 )
 
 // Stable machine-readable error codes. Clients should switch on these rather
@@ -18,6 +20,7 @@ const (
 	CodeRejected          = "rejected"
 	CodeWorkerUnavailable = "worker_unavailable"
 	CodeRolloverRace      = "rollover_race"
+	CodeDeactivated       = "deactivated"
 	CodeInternal          = "internal"
 )
 
@@ -105,7 +108,7 @@ func classifyCommon(err error) error {
 	// PLAN.md 12.4.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
-			"no worker is polling the rewards task queue, or it is not responding; is `make worker` running?"}
+			workerUnavailableMessage(err)}
 	}
 
 	var unavailable *serviceerror.Unavailable
@@ -115,4 +118,23 @@ func classifyCommon(err error) error {
 	}
 
 	return err // becomes a logged 500
+}
+
+// workerUnavailableMessage picks how confidently to word a 503.
+//
+// The status is the same either way -- all of these are transient server-side
+// conditions worth retrying -- but the *message* should only name the worker
+// when the server actually said so. FailedPrecondition covers more than a
+// missing poller, and telling someone to check `make worker` while their worker
+// is fine sends them down the wrong path.
+func workerUnavailableMessage(err error) string {
+	if mentionsNoPoller(err.Error()) {
+		return "no worker is polling the rewards task queue; is `make worker` running?"
+	}
+	var deadline *serviceerror.DeadlineExceeded
+	var updTimeout *client.WorkflowUpdateServiceTimeoutOrCanceledError
+	if errors.As(err, &deadline) || errors.As(err, &updTimeout) || errors.Is(err, context.DeadlineExceeded) {
+		return "the rewards workflow did not respond in time; the worker may be down or overloaded"
+	}
+	return "temporal cannot serve this request right now: " + err.Error()
 }

@@ -32,6 +32,19 @@ type AddPointsRequest struct {
 // Status comes from the execution rather than from workflow state: a cancelled
 // execution is a deactivated customer, and the workflow cannot report its own
 // closure. PLAN.md 3.6.
+//
+// Assembled from two reads -- Describe for liveness, Query for state -- and a
+// continue-as-new can land between them. When it does, Points and Generation
+// come from the successor run while RunID still names its predecessor. At three
+// adds per run that window is small but genuinely reachable.
+//
+// Left that way deliberately. Pinning the Query to the RunID from Describe would
+// make the response internally consistent, but a Query against a run that has
+// just rolled fails -- so the endpoint would start erroring during exactly the
+// rollovers it is supposed to survive, trading a cosmetic mismatch for a real
+// outage. Generation is the field to trust for "which run": it is read in the
+// same snapshot as the balance. RunID is advisory, useful for pasting into the
+// Temporal UI, and may lag by one run.
 type CustomerResponse struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
@@ -45,7 +58,8 @@ type CustomerResponse struct {
 	Generation         int `json:"generation"`
 
 	Status string `json:"status"` // "active" | "deactivated"
-	RunID  string `json:"runId"`
+	// Advisory, and may lag the rest of this struct by one run -- see above.
+	RunID string `json:"runId"`
 }
 
 // AddPointsResponse is what a successful add returns.
