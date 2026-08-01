@@ -18,7 +18,7 @@ API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers api api-stop test enroll status add deactivate reactivate \
-        inspect inspect-pg inspect-es write-trace audit web web-build seed reset
+        inspect inspect-pg inspect-es write-trace audit web seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -169,11 +169,11 @@ api-stop: ## Stop every running API process, including orphaned ones
 	 pkill -f 'go run \./cmd/api' 2>/dev/null; \
 	 sleep 1; echo "stopped"
 
-web: ## Run the Vite UI (proxies /api to make api on :8081 by default)
-	cd web && npm run dev
-
-web-build: ## Typecheck and build the UI
-	cd web && npm run build
+# One target from a cold checkout: installs dependencies, typechecks and builds
+# (so a type error stops here rather than after the dev server is already up),
+# then serves. Ctrl-C to stop.
+web: ## Install, typecheck/build, and run the Vite UI (proxies /api to :8081)
+	cd web && npm install && npm run build && npm run dev
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.
