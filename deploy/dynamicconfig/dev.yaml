@@ -1,7 +1,7 @@
 # Temporal dynamic config -- DEVELOPMENT ONLY.
 #
-# Both settings make this POC's behaviour observable on a laptop; neither is a
-# good production value. Both are checked by `make verify-config`, which fails
+# These settings make this POC's behaviour observable on a laptop; none is a
+# good production value. All are checked by `make verify-config`, which fails
 # if a server upgrade stops recognising the key -- an unregistered key is
 # silently ignored.
 #
@@ -20,3 +20,13 @@ history.retentionTimerJitterDuration:
 # bootstrap.sh sets it explicitly.
 worker.ESProcessorFlushInterval:
   - value: 100ms
+
+# Search attribute definitions are cached, so for the first ~60s after
+# bootstrap.sh registers them the server still answers from the old set and
+# every UpsertSearchAttributes fails the workflow task with
+# "BadSearchAttributes: search attribute CustomerId is not defined". `make up`
+# seeds seconds after bootstrapping, which lands squarely inside that window.
+# Reading through the cache costs a lookup per read and is documented as a
+# development-only setting.
+system.forceSearchAttributesCacheRefreshOnRead:
+  - value: true

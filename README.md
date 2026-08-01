@@ -296,6 +296,14 @@ make api-logs
 Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic, so
 rebuild before concluding anything about workflow behaviour.
 
+**`BadSearchAttributes: search attribute CustomerId is not defined` in the worker log, right
+after a fresh `make up`?** The server caches search attribute definitions, so for about a minute
+after `bootstrap.sh` registers them every `UpsertSearchAttributes` fails the workflow task —
+enrollment succeeds, then every add points fails with a 500. `dev.yaml` sets
+`system.forceSearchAttributesCacheRefreshOnRead` to read through the cache, which is why you
+should not see it; if you do, check that the dynamic config is mounted (`make verify-config`).
+See [FINDINGS](docs/FINDINGS.md#registering-a-search-attribute-does-not-make-it-usable).
+
 **A 503 `worker_unavailable` usually means nothing is polling the task queue** — check
 `make ps` and run `make worker` if it isn't up. (The same code also covers a slow or unreachable
 Temporal, because it is the contract's only 503 — so if the worker is running, look at the rest

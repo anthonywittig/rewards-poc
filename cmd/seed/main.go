@@ -126,7 +126,9 @@ func main() {
 		os.Exit(1)
 	}
 
-	fmt.Printf("\n  %s/api/customers\n", base)
+	// Not base: in the compose one-shot that is an address on the compose
+	// network, which is no use to whoever is reading this.
+	fmt.Printf("\n  %s/api/customers\n", env("API_PUBLIC_BASE", base))
 	fmt.Printf("  make audit ID=ada\n")
 	fmt.Printf("  make reap WF=customer-capped     # then `make audit ID=capped` for a truncated log\n")
 }
