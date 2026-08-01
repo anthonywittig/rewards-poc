@@ -1,7 +1,8 @@
 # Web UI notes (Phase 8)
 
-Local README for the Vite app. Project-level README is owned by Phase 9 — do not
-edit it from this phase. Draft paragraph for the integrator:
+Local README for the Vite app. These are Phase 8 handoff notes, kept for the
+record — the draft paragraph below has since landed in the project README, and
+the correction finding 1 asks for has landed in PLAN.md §9.
 
 > The React UI lives in `web/`. Run `make api` then `make web` (Vite on
 > `:5173`; `/api` is proxied to the API on `:8081`). Override with
@@ -15,6 +16,7 @@ edit it from this phase. Draft paragraph for the integrator:
    email, but `EnrollRequest` requires `customerId` and the workflow ID is
    `customer-<id>`. The UI auto-slugs from the name and lets you edit it. Worth
    a one-line correction in §9 so the create screen matches the frozen contract.
+   *(Done — §9 now lists the `customerId` field.)*
 
 2. **Status chips map to `RewardsActive`, not `ExecutionStatus`.** Soft-inactive
    customers stay `Running`, so the list query uses `RewardsActive = true|false`

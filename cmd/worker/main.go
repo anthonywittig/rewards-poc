@@ -15,6 +15,11 @@ import (
 )
 
 func main() {
+	// Command-line arguments are deliberately ignored: configuration is env
+	// vars only. `make worker` passes a trailing stack=<name> argument so this
+	// stack's process is identifiable in ps output -- pkill matches command
+	// lines, not env vars, and worker-stop/workers scope on that marker.
+
 	// Default to the host-published port rather than the compose-internal one:
 	// the worker normally runs on the host via `make worker`, outside the
 	// compose network, where "temporal:7233" does not resolve.

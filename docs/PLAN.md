@@ -51,9 +51,10 @@ instead.
 └───────────────┘
 ```
 
-Five services in Compose plus the Temporal Web UI. `api` and `worker` are separate binaries
-in one Go module so they share the workflow/state types — the API needs the same structs to
-decode history payloads.
+Four services in Compose — Postgres, Elasticsearch, the Temporal server, and the Temporal Web
+UI; the `worker`, `api`, and `web` processes run on the host via `make`. `api` and `worker`
+are separate binaries in one Go module so they share the workflow/state types — the API needs
+the same structs to decode history payloads.
 
 **All rewards state transitions are pure functions of workflow state** — no Activity is
 needed to compute a balance or a tier. That is exactly the "Temporal as a data store"
@@ -67,21 +68,24 @@ where the boundary actually sits.
 ```
 cmd/worker/main.go            worker process
 cmd/api/main.go               HTTP API process
+cmd/seed/main.go              demo data, via the API rather than around it
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
   workflow.go                 CustomerRewardsWorkflow
   workflow_test.go            unit tests via testsuite
+  replay_test.go              deploy rehearsal against recorded histories (§10)
   searchattr.go               typed search attribute keys
-  activities.go               NotifyCustomer (the only Activity)
-internal/history/
+  notify.go / notifier.go     notification contract, promotion detection (§3.7)
+  activity.go                 NotifyCustomer (the only Activity)
+internal/httpapi/             handlers, DTOs, error mapping
   audit.go                    multi-run history crawl → audit entries
-internal/httpapi/             handlers, DTOs
 web/                          Vite + React + TS
 deploy/
   docker-compose.yml          full stack (Postgres + ES)
   dynamicconfig/dev.yaml      retention jitter + visibility-lag overrides
   bootstrap.sh                namespace + search attribute registration
   reap.sh                     force-delete closed executions (§6.3)
+  reset.sh                    delete every customer workflow (make reset)
   inspect/
     verify-config.sh          platform assumption checks
     pg-*.sql / es-*.sh        canned queries for §8
@@ -278,8 +282,10 @@ program the honest answer differs by reason:
 So we use both phases for what each is good at:
 
 - **Validator** (leaves no history) — `Amount <= 0`, `Amount > MaxPointsPerTxn`, empty reason.
-- **Handler returning an error** (both events recorded) — one business rule: reject if the add
-  would push `Points` past `PointsCap`.
+- **Handler returning an error** (both events recorded) — two business rules: reject if the
+  add would push `Points` past `PointsCap`, and reject adds to a soft-deactivated customer
+  ([§3.6](#36-soft-deactivation)). Both depend on accumulated customer state, which is what
+  earns them a place in history.
 
 #### Why this is more than a stylistic choice
 
@@ -699,10 +705,11 @@ preference:
   identical requests, and sorting them is only sorting the real set when `Complete` is true —
   otherwise it is sorting a sample.
 
-The fixtures cover the cases a UI built against a freshly-enrolled happy path gets wrong: a
-top-tier customer with no next tier, a customer with an empty timeline, a deactivated customer,
-a truncated audit log, a customer sitting under the points cap so handler rejections are
-reachable, and the ~400 ms visibility lag on newly created customers.
+The mock's fixtures covered the cases a UI built against a freshly-enrolled happy path gets
+wrong: a top-tier customer with no next tier, a customer with an empty timeline, a deactivated
+customer, a truncated audit log, a customer sitting under the points cap so handler rejections
+are reachable, and the ~400 ms visibility lag on newly created customers. The seed set
+(`cmd/seed`) now reproduces the same cases against the real API.
 
 **A soft-deactivated execution answers Queries perfectly well** — it is still Running, and the
 Query returns full state including `Active: false`, balance, tier, and `LifetimeEarnEvents`.
@@ -729,6 +736,7 @@ at:
 |---|---|---|
 | Malformed or incomplete request | 400 | validated in the handler, before Temporal |
 | Update rejected by validator or handler | 422 + message | `*temporal.ApplicationError` — see below |
+| Add to a soft-deactivated customer | 409 + `deactivated` | `*temporal.ApplicationError` with type `Deactivated` |
 | Customer already exists and is running | 409 | `*serviceerror.WorkflowExecutionAlreadyStarted` |
 | Workflow not found / history reaped | 404 | `*serviceerror.NotFound` |
 | No worker polling | 503 + "worker unavailable" | `FailedPrecondition`, `DeadlineExceeded`, or our own timeout |
@@ -741,6 +749,9 @@ than expected — no message matching is needed to separate a business rejection
 which was the thing most likely to go wrong here. Both map to 422 carrying `appErr.Message()`,
 which excludes the SDK's `(type: ..., retryable: ...)` suffix. The caller cannot tell the two
 apart, which is the intent of [§3.4](#34-validation--and-a-deliberate-split), not a limitation.
+(The third handler rejection, type `Deactivated`, is the exception: it maps to 409 with code
+`deactivated`, because it reports membership state rather than a problem with the add —
+[§3.6](#36-soft-deactivation).)
 
 **Timeouts are load-bearing on both read paths**, and were sized from measurement rather than
 taste:
@@ -857,7 +868,9 @@ won't happen:
   | workflow ID never existed | `*serviceerror.NotFound` | *workflow not found for ID: …* |
 
   So the type alone cannot decide it, and `isHistoryGone` is the one place in the codebase
-  that matches on message text — everywhere else that would be a bug. There is no other
+  where message text decides an outcome — the only other text match, `mentionsNoPoller`,
+  merely picks the wording of a 503 whose status is already decided. Anywhere else that
+  would be a bug. There is no other
   signal: from the server's side, "history deleted" and "run ID you made up" are the same
   situation. That is only tolerable because the crawl exclusively passes run IDs the server
   itself produced in a `ContinuedExecutionRunId`, which makes the second row unreachable.
@@ -958,7 +971,9 @@ Goal: `make up` on a laptop, no cloud, and several independent stacks side by si
 ### 7.1 Services
 
 `postgres` (persistence), `elasticsearch` (visibility), `temporal` (auto-setup image),
-`temporal-ui`, `worker`, `api`, `web`.
+`temporal-ui`. The `worker`, `api`, and `web` processes are not Compose services — they run
+on the host (`make worker` / `make api` / `make web`), which is why the worker defaults to
+`localhost:7233`.
 
 Use `temporalio/auto-setup` with `DB=postgres12`, `ENABLE_ES=true`, `ES_SEEDS=elasticsearch`
 — it creates schemas and installs the ES index template for us.
@@ -969,8 +984,7 @@ Compose can't do arithmetic, so rather than a port-offset scheme, `.env` names e
 explicitly and `COMPOSE_PROJECT_NAME` isolates containers, networks, and named volumes:
 
 ```dotenv
-STACK_NAME=alpha
-COMPOSE_PROJECT_NAME=rewards-${STACK_NAME}
+COMPOSE_PROJECT_NAME=rewards-alpha
 
 TEMPORAL_NAMESPACE=rewards
 TEMPORAL_RETENTION=1h
@@ -985,9 +999,10 @@ ES_PORT=9200
 ES_JAVA_OPTS=-Xms256m -Xmx256m
 ```
 
-A second stack is `cp .env.example .env.beta`, bump `STACK_NAME` and every port, then
-`make up ENV=.env.beta`. Named volumes are project-prefixed automatically, so data isolation
-is free.
+A second stack is `cp .env.example .env.beta`, bump `COMPOSE_PROJECT_NAME` and every port,
+then `make up ENV=.env.beta`. Named volumes are project-prefixed automatically, so data
+isolation is free. The UI follows too: `make web ENV=.env.beta` serves on beta's `WEB_PORT`
+(`strictPort`, so a port clash fails loudly) and points at beta's API and Temporal UI.
 
 Two things to call out in the README:
 
@@ -1311,10 +1326,10 @@ browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
   recorded by the Phase 5 worker, so replaying them is a rehearsal of that deploy. Note the
   replayer needs `OriginalExecution` or it invents a workflow ID and fails misleadingly
   ([§12.35](#12-sharp-edges)).
-- **Integration**: `temporal server start-dev` with `--search-attribute` flags, exercising
-  the API end to end. Runs in CI without Docker or Elasticsearch — note that `start-dev` uses
-  SQLite visibility, so it will not reproduce the ES lag of §7.5. That behaviour needs the
-  real stack.
+- **Integration** *(planned, never built — there is no CI in this repo)*: `temporal server
+  start-dev` with `--search-attribute` flags, exercising the API end to end. Would run in CI
+  without Docker or Elasticsearch — note that `start-dev` uses SQLite visibility, so it would
+  not reproduce the ES lag of §7.5. That behaviour needs the real stack.
 
 ---
 
@@ -1597,7 +1612,8 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     `RewardsActive = true` (and still exclude `ContinuedAsNew`). `ExecutionStatus` alone cannot
     answer "is this customer still in the program?"
 
-30. **The Go API sends no CORS headers; only the mock does.** So pointing a browser at it with
+30. **The Go API sends no CORS headers** (the since-removed mock was the only server that
+    did). So pointing a browser at it with
     a cross-origin base URL fails, and `make web` proxies `/api` through Vite instead
     (`VITE_API_PROXY_TARGET=http://localhost:8081`). The Phase 8 handoff brief claimed the two
     servers were interchangeable by base URL alone — they are field-for-field identical in
