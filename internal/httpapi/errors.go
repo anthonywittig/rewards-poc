@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
+
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
 )
@@ -84,13 +86,15 @@ func mapQueryError(err error) error {
 // unable to tell them apart -- which is exactly right for the API too. What
 // matters is separating a *business* rejection from an *infrastructure* failure,
 // because only the first is the caller's fault.
+//
+// Deactivated is the exception: it is a business answer, but it is a 409 with
+// its own code so clients can offer re-enrollment rather than treating it like
+// a bad amount.
 func mapUpdateError(err error) error {
-	// Checked before the common classifier: a rejection is the workflow
-	// answering, and must never be reported as an outage.
 	if appErr, ok := isBusinessRejection(err); ok {
-		// appErr.Message() is the workflow's own words without the SDK's
-		// "(type: ..., retryable: ...)" suffix, which is exactly what belongs
-		// in a 422 body.
+		if appErr.Type() == rewards.ErrTypeDeactivated {
+			return &apiError{http.StatusConflict, CodeDeactivated, appErr.Message()}
+		}
 		return &apiError{http.StatusUnprocessableEntity, CodeRejected, appErr.Message()}
 	}
 	return classifyCommon(err)

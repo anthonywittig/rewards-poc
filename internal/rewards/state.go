@@ -119,9 +119,14 @@ type CustomerState struct {
 	Generation         int `json:"generation"`
 
 	// Levels already notified about, so an at-least-once Activity delivery does
-	// not re-notify after a replay. Unused until Phase 6; carried now so the
-	// state shape does not change once workflows are running.
+	// not re-notify after a replay.
 	NotifiedLevels []string `json:"notifiedLevels,omitempty"`
+
+	// Set when the customer leaves; cleared on re-enrollment. Zero value
+	// (false) means active, which is also what continue-as-new payloads from
+	// before this field existed correctly mean -- an inverted Active bool
+	// would have marked every rolled-over customer inactive on deploy.
+	Deactivated bool `json:"deactivated,omitempty"`
 }
 
 // Level derives the tier from a balance: the highest rung the balance reaches,

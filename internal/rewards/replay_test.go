@@ -215,3 +215,54 @@ func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
 			"update this test and PLAN.md 12.11")
 	}
 }
+
+// The departure half of the gate, which nothing covered until soft
+// deactivation made it reachable.
+//
+// A customer enrolled before Phase 6 can still be deactivated today: their run
+// is live, it has no Version marker, and the deactivate Update arrives as new
+// history on top of it. The gate has to keep that Update from arming the
+// departure notice, because the Activity would go into history that a later
+// replay -- still resolving to DefaultVersion, still finding no marker -- would
+// decline to produce. That is a wedge, appended to a customer at the very moment
+// they leave.
+//
+// testdata/pre-marker-deactivated.json is that run: no marker, no Activities,
+// an addPoints that crosses gold, and a deactivate. Recorded by running the
+// current workflow with the GetVersion call replaced by a bare `false`, which
+// produces exactly the events a pre-Phase-6 customer would have -- the replayer
+// sees recorded events, not how they were made.
+//
+// Until Phase 6's cancellation path was removed this was covered incidentally,
+// because pre-notification-deactivated.json ends in a cancel and the departure
+// notice hung off it. Soft deactivation moved the departure onto an Update and
+// took the coverage with it -- caught by mutation, not by noticing.
+func TestReplay_PreMarkerRunCanStillBeDeactivated(t *testing.T) {
+	h := loadHistory(t, "pre-marker-deactivated.json")
+
+	// The fixture only means something if it really is marker-free and
+	// Activity-free; otherwise this passes for the wrong reason.
+	for _, e := range h.GetEvents() {
+		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
+			t.Fatal("fixture has a Version marker; recapture it without the GetVersion call")
+		}
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
+			t.Fatalf("fixture already schedules %s; recapture it with notifications off",
+				a.GetActivityType().GetName())
+		}
+	}
+	var sawDeactivate bool
+	for _, e := range h.GetEvents() {
+		if u := e.GetWorkflowExecutionUpdateAcceptedEventAttributes(); u != nil &&
+			u.GetAcceptedRequest().GetInput().GetName() == rewards.UpdateDeactivate {
+			sawDeactivate = true
+		}
+	}
+	if !sawDeactivate {
+		t.Fatal("fixture carries no deactivate Update, so it cannot test the departure gate")
+	}
+
+	if err := replay(t, h); err != nil {
+		t.Errorf("a pre-marker customer cannot be deactivated without wedging: %v", err)
+	}
+}

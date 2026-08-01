@@ -4,13 +4,25 @@
 // exactly the path a user does -- including the rollover retry and the error
 // mapping. If the API is wrong, the seed notices.
 //
-// The customers deliberately mirror cmd/mockapi's fixtures, name for name, so
-// the UI can be pointed at either backend and show the same people. That makes
-// "does this behave the same against the real thing?" a question you answer by
-// changing a port rather than by reading two lists.
+//	make seed     # needs `make up`, `make worker`, `make api`
+//	make reset    # for a clean slate; see below
 //
-//	make seed          # needs `make up`, `make worker`, `make api`
-//	make seed FRESH=1  # deactivate existing customers first
+// Read-then-create, never modify. It looks each customer up first and only
+// enrolls the ones that are missing; anyone who already exists is checked
+// against the intended balance and left alone. Two reasons for that shape:
+//
+//   - Deactivation is soft (PLAN.md 3.6), so enrolling an existing customer
+//     *reactivates* them with their points intact. A seeder that enrolled
+//     blindly would flip the deliberately-deactivated fixture back to active,
+//     and then stack a second set of adds on top of the balance it kept.
+//   - That is not hypothetical. It is what this program did until the soft
+//     deactivation change landed, when `FRESH=1` -- which deactivated and
+//     re-enrolled to get a clean slate -- started leaving `ada` at 1280 points
+//     and 14 earn events instead of 640 and 7.
+//
+// So `FRESH=1` is gone: under soft deactivation there is no API call that
+// resets a customer, because that is rather the point of it. The only true
+// clean slate is deleting the executions, which is `make reset`.
 package main
 
 import (
@@ -83,7 +95,11 @@ func cappedAdds() []int {
 
 func main() {
 	base := env("API_BASE", "http://localhost:8081")
-	fresh := os.Getenv("FRESH") != ""
+	if os.Getenv("FRESH") != "" {
+		log.Fatal("FRESH=1 no longer does anything: deactivation is soft, so re-enrolling\n" +
+			"restores a customer's points rather than resetting them. For a clean slate:\n" +
+			"  make reset && make seed")
+	}
 
 	if err := ping(base); err != nil {
 		log.Fatalf("no API at %s: %v\nis `make api` running (and `make up` and `make worker`)?", base, err)
@@ -97,37 +113,32 @@ func main() {
 	})
 
 	start := time.Now()
-	seeded := 0
+	created, matched, wrong := 0, 0, 0
 	for _, c := range set {
-		if fresh {
-			if err := replace(base, c.id); err != nil {
-				log.Printf("  %-10s SKIPPED: %v", c.id, err)
-				continue
-			}
+		switch status, err := ensure(base, c); {
+		case err != nil:
+			wrong++
+			log.Printf("  %-10s FAILED: %v", c.id, err)
+		case status == "":
+			created++
+			fmt.Printf("  %-10s created   %-4d adds  %s\n", c.id, len(c.adds), c.why)
+		default:
+			matched++
+			fmt.Printf("  %-10s %s\n", c.id, status)
 		}
-		if err := seed(base, c); err != nil {
-			log.Printf("  %-10s SKIPPED: %v", c.id, err)
-			continue
-		}
-		seeded++
-		fmt.Printf("  %-10s %-4d adds  %s\n", c.id, len(c.adds), c.why)
 	}
 
 	// Counted rather than assumed. Printing len(set) unconditionally made a run
 	// where every customer already existed -- the common case on a second
 	// invocation -- look like a complete success, which is the one thing a seed
 	// script must never do.
-	fmt.Printf("\nseeded %d of %d customers in %s\n",
-		seeded, len(set), time.Since(start).Round(time.Millisecond))
+	fmt.Printf("\n%d created, %d already correct, %d wrong, of %d in %s\n",
+		created, matched, wrong, len(set), time.Since(start).Round(time.Millisecond))
 
-	if seeded < len(set) {
-		hint := "Already enrolled? `make seed FRESH=1` replaces them."
-		if fresh {
-			// Suggesting FRESH=1 to someone already running it is the kind of
-			// advice that wastes an afternoon.
-			hint = "FRESH=1 was set, so these are real failures rather than conflicts."
-		}
-		fmt.Printf("\n%d skipped. %s\n", len(set)-seeded, hint)
+	if wrong > 0 {
+		fmt.Printf("\nSome customers do not match the intended dataset. Deactivation is soft,\n" +
+			"so there is no way to reset them through the API. For a clean slate:\n" +
+			"  make reset && make seed\n")
 		os.Exit(1)
 	}
 
@@ -136,56 +147,62 @@ func main() {
 	fmt.Printf("  make reap WF=customer-capped     # then `make audit ID=capped` for a truncated log\n")
 }
 
-// replace deactivates an existing customer and waits for the execution to
-// actually close.
+// ensure creates the customer if absent, and otherwise checks the one that is
+// already there against what this dataset intends.
 //
-// The wait is the whole point. DELETE is a cancellation *request*: it returns as
-// soon as the server accepts it, but the workflow then runs handleLeave --
-// draining the notifier and sending a departure notification -- before the
-// execution closes. Enrollment uses a fail-on-conflict policy, so enrolling into
-// that window returns "already enrolled and active" and FRESH=1 silently fails
-// to do the one thing it exists for.
-//
-// Measured against the real stack: DELETE returned in 13ms, the execution closed
-// 75ms later. Phase 6 widened that window by putting an Activity in the
-// departure path, which is exactly the sort of thing that turns a latent race
-// into a reliable one. Raised on PR #16, where FRESH=1 skipped 8 of 9 customers.
-//
-// Polling rather than sleeping a fixed interval: the window depends on how long
-// the notification Activity takes, and a constant would be either slow or wrong.
-func replace(base, id string) error {
-	if err := do(http.MethodDelete, base+"/api/customers/"+id, nil, nil); err != nil {
-		if isNotFound(err) {
-			return nil // nothing to replace is a fine outcome for a replace
-		}
-		return err
+// Returns an empty status for "created", a description for "already correct",
+// and an error when an existing customer does not match -- which is a real
+// failure rather than a skip, because the seed's whole job is to leave the stack
+// in a known state and it has just found that it is not in one.
+func ensure(base string, c customer) (string, error) {
+	cur, err := fetch(base, c.id)
+	switch {
+	case err == nil:
+		return check(c, cur)
+	case !isNotFound(err):
+		return "", err
 	}
 
-	deadline := time.Now().Add(closeTimeout)
-	for {
-		var c struct {
-			Status string `json:"status"`
-		}
-		err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c)
-		switch {
-		case err == nil && c.Status != "active":
-			return nil // closed, which is what we were waiting for
-		case isNotFound(err):
-			return nil // reaped entirely; closed enough
-		case err != nil:
-			// Anything else -- a 503 from a stopped worker, most likely -- means
-			// we cannot tell whether it closed. Treating that as "closed" would
-			// send us on to enroll, which fails with "already enrolled and
-			// active" and points at the wrong problem entirely.
-			return fmt.Errorf("cannot confirm deactivation: %w", err)
-		}
-
-		if time.Now().After(deadline) {
-			return fmt.Errorf("still running %s after deactivating; is the worker keeping up?",
-				closeTimeout)
-		}
-		time.Sleep(closePoll)
+	// Absent: enroll and apply the adds.
+	if err := create(base, c); err != nil {
+		return "", err
 	}
+	return "", nil
+}
+
+// check compares an existing customer with what the dataset asks for.
+//
+// Deliberately does not try to repair a mismatch. Points only go up (PLAN.md
+// 3.1) so a balance that is too high cannot be corrected, and one that is too
+// low would need adds whose reasons and timing would not match the rest --
+// producing a customer that looks seeded but has an audit log that disagrees.
+func check(c customer, cur customerState) (string, error) {
+	want := 0
+	for _, a := range c.adds {
+		want += a
+	}
+	wantStatus := "active"
+	if c.deactivate {
+		wantStatus = "deactivated"
+	}
+
+	if cur.Points != want || cur.Status != wantStatus {
+		return "", fmt.Errorf("exists with %d points/%s, dataset wants %d/%s",
+			cur.Points, cur.Status, want, wantStatus)
+	}
+	return fmt.Sprintf("already correct at %d points (%s)", cur.Points, cur.Status), nil
+}
+
+// customerState is the subset of CustomerResponse the seed checks against.
+type customerState struct {
+	Points int    `json:"points"`
+	Status string `json:"status"`
+}
+
+func fetch(base, id string) (customerState, error) {
+	var c customerState
+	err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c)
+	return c, err
 }
 
 // isNotFound reports whether the API said the customer does not exist, as
@@ -195,15 +212,7 @@ func isNotFound(err error) bool {
 	return errors.As(err, &he) && he.status == http.StatusNotFound
 }
 
-// How long to wait for a cancelled execution to close, and how often to look.
-// The observed window is well under a second; the bound is generous because
-// exceeding it means something is actually wrong rather than merely slow.
-const (
-	closeTimeout = 15 * time.Second
-	closePoll    = 25 * time.Millisecond
-)
-
-func seed(base string, c customer) error {
+func create(base string, c customer) error {
 	err := do(http.MethodPost, base+"/api/customers", map[string]string{
 		"customerId": c.id, "name": c.name, "email": c.email,
 	}, nil)

@@ -31,9 +31,8 @@ const (
 // deliverPromotion runs NotifyCustomer for the customer's current unannounced
 // tier, if any, and records success in NotifiedLevels.
 //
-// Callers should run this on a disconnected context when a cancel may be in
-// flight: a promotion already earned is not unmade by the customer leaving a
-// moment later.
+// Callers run this from the workflow main loop so the Update handler never
+// awaits the Activity.
 func deliverPromotion(ctx workflow.Context, state *CustomerState) {
 	note, ok := promotionFor(state)
 	if !ok {

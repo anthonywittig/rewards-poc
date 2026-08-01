@@ -16,11 +16,8 @@ UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
 GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
-# The mock needs no env file at all -- that is the point of it.
-MOCK_PORT ?= 8082
-
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate \
+        worker worker-stop workers api api-stop test enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web web-build seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -172,17 +169,7 @@ api-stop: ## Stop every running API process, including orphaned ones
 	 pkill -f 'go run \./cmd/api' 2>/dev/null; \
 	 sleep 1; echo "stopped"
 
-# Serves the frozen contract from fixtures. No Temporal, no Docker, no .env --
-# it exists so the UI can be built before the endpoints it consumes.
-mockapi: ## Run the fixture API for UI development (:8082, no stack needed)
-	MOCK_PORT=$(MOCK_PORT) go run ./cmd/mockapi
-
-mockapi-stop: ## Stop every running mockapi process
-	@pkill -f 'go-build.*/mockapi$$' 2>/dev/null; \
-	 pkill -f 'go run \./cmd/mockapi' 2>/dev/null; \
-	 sleep 1; echo "stopped"
-
-web: ## Run the Vite UI (make mockapi first; VITE_API_PROXY_TARGET points at the real API)
+web: ## Run the Vite UI (proxies /api to make api on :8081 by default)
 	cd web && npm run dev
 
 web-build: ## Typecheck and build the UI
@@ -217,8 +204,16 @@ add: $(ENV) ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: $(ENV) ## Leave the program -- cancel, not terminate (make deactivate ID=c-001)
-	@$(TCLI) workflow cancel --workflow-id customer-$(ID)
+deactivate: $(ENV) ## Soft-leave the program (make deactivate ID=c-001)
+	@$(TCLI) workflow update execute \
+	  --workflow-id customer-$(ID) \
+	  --name deactivate
+
+reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAME="Ada" EMAIL=ada@example.com)
+	@$(TCLI) workflow update execute \
+	  --workflow-id customer-$(ID) \
+	  --name reactivate \
+	  --input '{"name":"$(or $(NAME),Ada Lovelace)","email":"$(or $(EMAIL),$(ID)@example.com)"}'
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed
@@ -230,9 +225,12 @@ audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
 	  || { echo "no API on :$(API_PORT) -- is 'make api' running?" >&2; exit 1; }
 
-# Fills a running stack with the same customers cmd/mockapi serves from
-# fixtures, so the UI shows the same people whichever backend it points at.
-# Drives the HTTP API rather than the Temporal client, so seeding exercises the
-# path a user takes -- rollover retries and error mapping included.
-seed: $(ENV) ## Seed demo customers (make seed FRESH=1 to replace existing ones)
-	API_BASE=http://localhost:$(API_PORT) FRESH=$(FRESH) go run ./cmd/seed
+# Fills a running stack with a demo dataset, driving the HTTP API rather than
+# the Temporal client so seeding exercises the path a user takes -- rollover
+# retries and error mapping included.
+#
+# Read-then-create: it only enrolls customers who are missing, and reports any
+# existing one whose balance disagrees with the dataset. Deactivation is soft,
+# so nothing here can reset a customer -- `make reset` is the clean slate.
+seed: $(ENV) ## Seed demo customers (idempotent; `make reset` first for a clean slate)
+	API_BASE=http://localhost:$(API_PORT) go run ./cmd/seed

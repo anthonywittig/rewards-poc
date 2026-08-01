@@ -645,15 +645,10 @@ the whole argument of the POC and the code should make it obvious at a glance.
 ### 5.1 The contract is frozen ahead of the endpoints
 
 `CustomerListItem`, `CustomerListResponse`, `AuditEntry` and `AuditResponse` are defined in
-`internal/httpapi/dto.go` **before** the endpoints that return them, so the UI (Phase 8) can be
-built in parallel with Phases 4 and 5 rather than serialised behind them. `cmd/mockapi` serves
-that contract from fixtures:
-
-```sh
-make mockapi     # :8082, no Temporal, no Docker, no .env
-```
-
-Sharing the DTOs means the mock cannot drift from the real API without failing to compile.
+`internal/httpapi/dto.go` **before** the endpoints that return them, so the UI (Phase 8) could be
+built in parallel with Phases 4 and 5 rather than serialised behind them. (A fixture `mockapi`
+served that contract during the parallel build; it has since been removed — the real API is the
+only server.)
 
 Two shape decisions are worth flagging, because both encode a platform constraint rather than a
 preference:
@@ -925,6 +920,7 @@ an intact audit log is visible side by side.
   | active, intact history | 200 | 200, `truncated: false` |
   | active, old generations reaped | 200 | 200, `truncated: true`, e.g. shown 1 of 100 |
   | deactivated, not yet reaped | 200 | 200, ending in a `deactivated` row |
+  | re-enrolled after leaving | 200 | 200, `deactivated` then `reactivated`, balance carried through |
   | reaped entirely | 404 | 404 |
 
   The middle row is the demo: `make reap WF=customer-x` on an *active* customer leaves the
@@ -1220,12 +1216,13 @@ Two conclusions fall out of it, and they are what `DATASTORES.md` should lead wi
 
 ## 9. Web UI
 
-Vite + React + TypeScript in `web/`. **Done** — three screens against `make mockapi`
-(and the same base URL against `make api`).
+Vite + React + TypeScript in `web/`. **Done** — three screens against the real API
+(`make api` + Vite proxy).
 
 - **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
   ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status toggle
-  (Running/Canceled via `ExecutionStatus`), and a raw search-attribute query box so we can show
+  (Running/Canceled was the early visibility vocabulary; soft-inactive uses `RewardsActive`),
+  and a raw search-attribute query box so we can show
   the same query working in the Temporal UI. This is where search attributes earn their keep —
   and where the design has to be honest that filtering, not browsing, is what the visibility
   store supports.
@@ -1257,12 +1254,11 @@ never exactly zero, so the UI should not assume it is. Two rules follow:
 
 Worth testing deliberately: create a customer and immediately hit the list endpoint. If the
 tuning in §7.5 is working the row should be there within ~300 ms, and `visibility_tasks`
-(§8.1) will show why when it isn't. The mock reproduces the lag at 400 ms.
+(§8.1) will show why when it isn't.
 
-Run: `make mockapi` then `make web` (Vite on `:5173`; `/api` proxied to the mock).
-`VITE_API_PROXY_TARGET=http://localhost:8081 make web` points at the real API — the Go
-server does not send CORS headers, so a cross-origin `VITE_API_BASE` fails in the browser.
-Findings for §12 live in `web/NOTES.md`.
+Run: `make api` then `make web` (Vite on `:5173`; `/api` proxied to `:8081` by default).
+The Go server does not send CORS headers, so a cross-origin `VITE_API_BASE` fails in the
+browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
 
 ---
 
@@ -1303,7 +1299,7 @@ Findings for §12 live in `web/NOTES.md`.
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
 | 6 | `NotifyCustomer` Activity: unannounced-tier detection, main-loop delivery, `NotifiedLevels` dedup and retry, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
-| 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
+| 8 | React UI, all three screens | **Done.** See `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | **Done.** The replay test caught Phase 6 as a breaking change for every running customer, fixed with `GetVersion` — [§12.11](#12-sharp-edges) |
 
 Phases 1–2 are the substance and Phase 7 is the other headline deliverable; the rest is
@@ -1682,7 +1678,15 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     Anything that deactivates and then re-enrolls has to wait, because enrollment fails on
     conflict ([§3.6](#36-deactivation-via-cancel)) and 60 ms is plenty of window. `make seed
     FRESH=1` did not, and skipped 8 of 9 customers with *"already enrolled and active"* — the
-    one thing `FRESH=1` exists to prevent. Raised on PR #16.
+    one thing `FRESH=1` existed to prevent. Raised on PR #16.
+
+    **Both the race and the flag are now moot**, which is worth recording rather than deleting.
+    Soft deactivation ([§3.6](#36-deactivation-via-cancel)) means the workflow never closes, so
+    there is no window to race — and no way to reset a customer through the API at all, since
+    re-enrolling restores their points. `FRESH=1` was removed; `make reset` is the clean slate.
+    The finding survives because the property it describes does: an operation that returns once
+    a *request* is accepted has not finished, and code that reads state straight afterwards is
+    racing something.
 
     Worth noticing *why* it became reliable rather than rare: putting an Activity in the
     departure path turned a window measured in microseconds into one measured in tens of

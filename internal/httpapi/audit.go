@@ -261,6 +261,53 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p, paired := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
+			// Membership changes: leaving and rejoining. Both are Updates now,
+			// so both are read the same way -- and both report whether they
+			// changed anything, because both are idempotent by design (a repeat
+			// DELETE, a re-enroll of someone already active). Only a real
+			// transition belongs on the timeline; a no-op that wrote an Update
+			// pair to history did not change the customer's membership and
+			// would read as a second departure or a second rejoin.
+			//
+			// A *failed* one is dropped rather than rendered as a rejection
+			// row, unlike a failed addPoints. That is not leniency: both
+			// handlers stage their change and commit only once the search
+			// attribute upsert is issued, so an Update that returned an error
+			// genuinely applied nothing. There is no half-state to disclose.
+			if paired && (p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate) {
+				if a.GetOutcome().GetFailure() != nil {
+					continue
+				}
+				// Undecodable payload defaults to "changed", keeping the older
+				// rule that a row history clearly contains is shown rather
+				// than dropped on a decoding technicality.
+				kind, changed := AuditDeactivated, true
+				if p.name == rewards.UpdateDeactivate {
+					var res rewards.DeactivateResult
+					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+						changed = res.Changed
+					}
+				} else {
+					kind = AuditReactivated
+					var res rewards.ReactivateResult
+					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+						changed = res.Changed
+					}
+				}
+				if !changed {
+					continue
+				}
+				out.entries = append(out.entries, AuditEntry{
+					Kind:       kind,
+					At:         p.at,
+					Generation: out.startState.Generation,
+					RunID:      runID,
+					EventID:    p.eventID,
+					RequestID:  p.updateID,
+				})
+				continue
+			}
+
 			// A future Update handler must not render as a point-add. An
 			// unpaired completion (name unknown) is still shown: dropping a row
 			// that history clearly contains would be the worse failure.
@@ -350,18 +397,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				RunID:         runID,
 				EventID:       e.GetEventId(),
 				NotifiedLevel: req.Level,
-			})
-
-		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
-			// The request, not WorkflowExecutionCanceled, because this is the
-			// moment the customer asked. The two are a workflow task apart and
-			// the second only exists if the workflow shut down cleanly.
-			out.entries = append(out.entries, AuditEntry{
-				Kind:       AuditDeactivated,
-				At:         e.GetEventTime().AsTime(),
-				Generation: out.startState.Generation,
-				RunID:      runID,
-				EventID:    e.GetEventId(),
 			})
 		}
 	}

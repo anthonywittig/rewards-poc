@@ -32,6 +32,7 @@ declare -A SEARCH_ATTRS=(
   [RewardsPoints]=Int
   [RewardsEnrolledAt]=Datetime
   [RewardsGeneration]=Int
+  [RewardsActive]=Bool
 )
 
 echo "==> Namespace '${NAMESPACE}' (retention ${RETENTION})"

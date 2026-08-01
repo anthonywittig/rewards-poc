@@ -55,8 +55,13 @@ make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase   # basic
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make deactivate ID=c-001                          # cancel, not terminate
+make deactivate ID=c-001                          # soft leave; the workflow keeps running
+make reactivate ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com   # rejoin, balance intact
+make status ID=c-001                              # still 500 points, gold
 ```
+
+Re-enrollment takes the name and email it is given, so pass them unless you mean to change
+them — the target's defaults are a convenience for throwaway IDs, not a no-op.
 
 `make test` runs the unit tests; they need neither Docker nor a running server.
 
@@ -114,11 +119,18 @@ it.
 
 One customer is one long-lived Workflow Execution with the ID `customer-<id>`, which is why
 none of these commands need a lookup table. Points arrive as Updates, status is a Query, and
-deactivation is a cancellation.
+so is leaving: deactivation is an Update that sets a flag, not a cancellation.
 
-**Re-enrolling a deactivated customer starts them over at zero.** The workflow ID is free once
-the execution closes, so enrollment succeeds — but it is a genuinely new enrollment, not a
-restoration. That is a decision, not an oversight; see §3.6 of the plan.
+**Re-enrolling a deactivated customer restores their balance.** Leaving is soft — the execution
+stays Running with `deactivated` set — so the workflow ID is still occupied and re-enrollment is
+an Update against the same execution rather than a fresh Start. Points, tier and
+`lifetimeEarnEvents` are all still there, and the timeline shows a `deactivated` row followed by
+a `reactivated` one. See §3.6 of the plan.
+
+Two consequences worth knowing. A customer who was *cancelled* out of band (`temporal workflow
+cancel`) is genuinely closed, and re-enrolling them does start over at zero — that is the ops
+path, not the product one. And membership no longer lives in `ExecutionStatus`: it is the
+`RewardsActive` search attribute, which is what the list and its filter chips read.
 
 ## The HTTP API
 
@@ -129,12 +141,8 @@ make worker
 make api        # :8081
 ```
 
-Building a UI and don't want the stack? `make mockapi` serves the same contract from fixtures on
-`:8082` — no Temporal, no Docker, no `.env`. Every endpoint is now live for real as well, but the
-mock still buys the cases that are awkward to produce on demand: a deactivated customer, a
-truncated audit log, a customer sitting under the points cap, and the ~400 ms visibility lag on
-newly created customers. It shares the API's DTOs, so it cannot drift from the real thing without
-failing to compile.
+Building the UI? With the stack up, run `make api` and `make web` — Vite proxies
+`/api` to `:8081` by default.
 
 **The customer list is capped at five rows and has no pagination.** That's a consequence of
 `ORDER BY` not working: with no stable ordering, "page 2" doesn't mean anything in particular, so
@@ -150,7 +158,7 @@ table, no local index. The `?q=` parameter is passed to Temporal essentially as 
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
 curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"        # Text, partial
-curl -sG localhost:8081/api/customers --data-urlencode "q=ExecutionStatus = 'Canceled'" # deactivated
+curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsActive = false"       # deactivated
 ```
 
 **The same query works unchanged in the Temporal UI**, which is the point of registering search
@@ -195,7 +203,7 @@ Every failure comes back as `{"error":{"code":"...","message":"..."}}` with a st
 |---|---|---|
 | 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
-| 409 | `already_exists` | enrolling a customer who is already active |
+| 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |
 | 409 | `rollover_race` | the workflow rolled over twice while applying one request |
 | 422 | `rejected` | the workflow refused it — see the split below |
@@ -306,17 +314,11 @@ The rule of thumb, and where each rejection lives in the code:
 ## The UI
 
 ```sh
-make mockapi     # :8082, fixtures only
-make web         # :5173
-```
-
-Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the mock.
-Against the real stack:
-
-```sh
 make up && make worker && make api
-VITE_API_PROXY_TARGET=http://localhost:8081 make web
+make web         # :5173 — /api proxied to :8081
 ```
+
+Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the real API.
 
 It has to be a proxy rather than a cross-origin base URL: the Go API deliberately sends no
 CORS headers, and same-origin proxying is both the normal Vite setup and the one that survives
@@ -456,17 +458,22 @@ simplifies the workaround away.
 
 ```sh
 make seed            # needs make up + make worker + make api
-make seed FRESH=1    # replace existing customers
+make reset && make seed   # for a clean slate
 ```
 
-Nine customers matching `cmd/mockapi`'s fixtures name for name, so the UI shows the same people
-whichever backend it points at. It drives the HTTP API rather than the Temporal client, so
-seeding exercises the path a user takes — rollover retries and error mapping included.
+Nine customers covering the cases a demo needs: every tier, an empty timeline, a deactivated
+customer, and one just under the points cap. It drives the HTTP API rather than the Temporal
+client, so seeding exercises the path a user takes — rollover retries and error mapping included.
 
-`FRESH=1` deactivates before re-enrolling, and waits for each execution to actually close first.
-That wait is load-bearing: `DELETE` returns once the cancellation is *accepted*, but the
-workflow then runs its departure notification before closing — 13 ms to return, 75 ms to close —
-and enrollment fails on conflict, so without the wait `FRESH=1` skipped 8 of 9 customers.
+**Read-then-create, and idempotent.** It looks each customer up first, enrolls only the missing
+ones, and reports any existing customer whose balance disagrees with the dataset rather than
+trying to repair it — points only go up, so a balance that is too high cannot be corrected.
+
+There is deliberately no "replace" flag. Deactivation is soft, so enrolling an existing customer
+*reactivates* them with their points intact; a flag that deactivated and re-enrolled to get a
+clean slate would stack a second set of adds on the balance it kept. That is not hypothetical —
+it is what `FRESH=1` started doing when soft deactivation landed, leaving `ada` at 1280 points
+instead of 640. The only real clean slate is deleting the executions: `make reset`.
 
 `capped` is the interesting one: 100 adds to land just under the points cap, which makes handler
 rejections reachable and produces ~33 generations. Follow it with `make reap WF=customer-capped`
@@ -559,11 +566,10 @@ on-demand deletion works. Worth re-running after any server upgrade.
 ```
 cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
-cmd/mockapi/                  the same contract from fixtures, no stack needed
 cmd/seed/                     demo data, via the API rather than around it
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
-  workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
+  workflow.go                 CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
   notifier.go                 promotion detection and delivery, run from the main loop
@@ -572,7 +578,7 @@ internal/rewards/
   replay_test.go              deploy rehearsal against recorded histories
   testdata/                   real histories, including pre-Phase-6 ones
 internal/httpapi/
-  server.go                   enroll, detail, add points, deactivate, list
+  server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
   classify.go                 error shapes, measured against a real server
   dto.go                      the wire contract, frozen ahead of the endpoints
