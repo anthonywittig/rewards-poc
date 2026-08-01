@@ -40,13 +40,14 @@ type Activities struct {
 	Notifier Notifier
 }
 
-// NotifyCustomer is the only Activity in the system. PLAN.md 3.7.
+// NotifyCustomer is the only Activity in the system.
+// FINDINGS.md#tier-promotion-notifications.
 //
 // The default delivery is a stub -- production would inject a Notifier that
 // calls an email or push provider -- but everything around it is real: it is
 // scheduled by workflow code, retried by the platform, and recorded in Event
 // History, which is what makes the audit timeline pick up "notification sent"
-// rows for free (PLAN.md 6.2).
+// rows for free (FINDINGS.md#events-the-crawl-reads).
 //
 // IdempotencyKey is passed through and, by the stub, ignored -- which is the
 // honest shape for a stub: Activities are at-least-once, so a worker crash

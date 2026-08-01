@@ -9,7 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Notification delivery. PLAN.md 3.7.
+// Notification delivery. FINDINGS.md#tier-promotion-notifications.
 //
 // The half that decides *what* to send -- rewards.PromotionFor,
 // rewards.DepartureNotice -- is plain domain logic and lives in the parent

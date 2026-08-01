@@ -1,4 +1,4 @@
--- §8.1 finding 1: history_node is opaque blobs.
+-- finding 1: history_node is opaque blobs.
 -- You cannot SELECT a customer's balance out of Postgres. The Event History is
 -- serialized Proto3 batches, not queryable rows — which is why a separate
 -- visibility store exists, and why the audit log crawls history through the SDK.

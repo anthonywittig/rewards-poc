@@ -15,8 +15,9 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Replay tests: the highest-value tests in this repo, and the ones PLAN.md 10
-// calls the single biggest operational risk in the design.
+// Replay tests: the highest-value tests in this repo, and the ones
+// FINDINGS.md#versioning-is-the-real-risk calls the single biggest operational
+// risk in the design.
 //
 // A customer's workflow runs forever. It *will* outlive a deploy. When a worker
 // picks up a task for a run that started weeks ago, it replays that run's
@@ -130,11 +131,12 @@ func TestReplay_HistoryRecordedByTheCurrentWorkflow(t *testing.T) {
 
 // The trap, pinned.
 //
-// worker.ReplayWorkflowHistory documents OriginalExecution as "optional", and
-// for most workflows it is. For any workflow that reads its own ID it is not:
-// the replayer substitutes "ReplayId", so CustomerRewardsWorkflow's enrollment
-// check (which exists because the workflow is the only integrity boundary --
-// PLAN.md 3.1) rejects the payload and the run emits no commands at all.
+// worker.ReplayWorkflowHistory documents OriginalExecution as "optional", and for
+// most workflows it is. For any workflow that reads its own ID it is not: the
+// replayer substitutes "ReplayId", so CustomerRewardsWorkflow's enrollment check
+// (which exists because the workflow is the only integrity boundary --
+// FINDINGS.md#the-workflow-is-the-integrity-boundary) rejects the payload and the
+// run emits no commands at all.
 //
 // The failure is doubly misleading. It reports nondeterminism, so it looks like
 // a versioning problem; and it names whichever event happened to come first
@@ -178,7 +180,8 @@ func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 // two commits.
 //
 // The remedy is operational, and the affected executions are findable, because
-// GetVersion upserts TemporalChangeVersion (PLAN.md 12.36):
+// GetVersion upserts TemporalChangeVersion
+// (FINDINGS.md#getversion-writes-two-events):
 //
 //	WorkflowType = 'CustomerRewardsWorkflow'
 //	  AND ExecutionStatus = 'Running'
@@ -213,7 +216,7 @@ func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
 
 	if err := replay(t, h); err == nil {
 		t.Fatal("these histories now replay -- a way to rescue them has been found; " +
-			"update this test and PLAN.md 12.11")
+			"update this test and FINDINGS.md#versioning-is-the-real-risk")
 	}
 }
 

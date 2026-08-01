@@ -1,4 +1,4 @@
--- §8.1 finding 3: visibility_tasks is the async queue feeding Elasticsearch.
+-- finding 3: visibility_tasks is the async queue feeding Elasticsearch.
 -- At rest it is usually empty — the worker drains it within the flush interval
 -- (~ESProcessorFlushInterval, see dynamicconfig/dev.yaml). To catch a row in
 -- flight, poll this query in a tight loop while another terminal runs

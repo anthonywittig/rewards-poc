@@ -1,4 +1,4 @@
--- §8.1 finding 2: current_executions is the continue-as-new indirection.
+-- finding 2: current_executions is the continue-as-new indirection.
 -- workflow_id stays constant ("the customer"); current run_id flips every time
 -- a run continues-as-new. That single row is the stable identity the §6.1
 -- audit crawl walks backwards through.

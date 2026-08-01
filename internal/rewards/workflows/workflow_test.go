@@ -74,9 +74,10 @@ func newState() rewards.CustomerState {
 }
 
 // updateResult captures how an Update actually resolved. The three outcomes are
-// distinct and the distinction is the whole point of PLAN.md 3.4: rejected means
-// the validator refused and nothing was written to history; completed-with-error
-// means the handler ran and the failure *is* recorded.
+// distinct and the distinction is the whole point of
+// FINDINGS.md#the-validatorhandler-split: rejected means the validator refused and
+// nothing was written to history; completed-with-error means the handler ran and
+// the failure *is* recorded.
 type updateResult struct {
 	rejected  error
 	completed error
@@ -217,7 +218,7 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	s.Equal(2, status.LifetimeEarnEvents)
 }
 
-// --- Validator rejections (PLAN.md 3.4) -------------------------------------
+// --- Validator rejections (FINDINGS.md#the-validatorhandler-split) ---------
 
 // Each of these is refused before the handler runs, so nothing is written to
 // Event History at all. The unit test can only observe the rejection itself;
@@ -268,7 +269,7 @@ func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 	s.Equal(rewards.MaxPointsPerTxn, ok.value.Balance)
 }
 
-// --- Handler-side business rejection (PLAN.md 3.4) --------------------------
+// --- Handler-side business rejection (FINDINGS.md#the-validatorhandler-split) ---
 
 // The points cap is enforced in the handler, so unlike the validator cases this
 // attempt is accepted, runs, and its failure is recorded in history -- which is
@@ -302,7 +303,7 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	s.Equal(8, status.LifetimeEarnEvents)
 }
 
-// --- getStatus query (PLAN.md 3.3) ------------------------------------------
+// --- getStatus query (FINDINGS.md#handlers) --------------------------------
 
 func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
@@ -469,7 +470,7 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 	}
 }
 
-// --- Continue-as-new (PLAN.md 3.5) ------------------------------------------
+// --- Continue-as-new (FINDINGS.md#continue-as-new) -------------------------
 
 // The roll fires on exactly the Nth add, not before.
 func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
@@ -506,7 +507,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 
 // What survives the rollover. This is the part the audit log depends on:
 // history is reaped, the carried payload is not, so anything not in here is
-// gone for good. PLAN.md 6.3.
+// gone for good. FINDINGS.md#truncation-detection.
 func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	enrolled := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
 	state := newState()
@@ -565,7 +566,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		"the successor run must start its own count, not inherit a primed one")
 }
 
-// --- Soft deactivation (PLAN.md 3.6) ----------------------------------------
+// --- Soft deactivation (FINDINGS.md#soft-deactivation) ---------------------
 
 // Soft-deactivate keeps the workflow running with the balance intact;
 // reactivate clears the flag and restores the same points.
@@ -746,7 +747,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_SendsDepartureNotice() {
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted))
 }
 
-// --- Tier promotion notifications (PLAN.md 3.7) -----------------------------
+// --- Tier promotion notifications (FINDINGS.md#tier-promotion-notifications) ---
 
 // notifyCalls records what the mocked Activity was actually asked to send.
 type notifyCalls struct {
@@ -798,12 +799,13 @@ func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Dura
 	return calls
 }
 
-// A promotion landing on the *third* add is the ordinary case at
-// EarnsPerRun = 3, and it is precisely when the run wants to continue as new.
-// The main loop drains needsNotify before rolling, so the promotion is sent in
-// this run and NotifiedLevels rides into the successor. (The earlier
-// workflow.Go design needed an explicit notifier.idle() guard for the same
-// reason -- PLAN.md 12.6 -- and this test failed without it.)
+// A promotion landing on the *third* add is the ordinary case at EarnsPerRun = 3,
+// and it is precisely when the run wants to continue as new. The main loop drains
+// needsNotify before rolling, so the promotion is sent in this run and
+// NotifiedLevels rides into the successor. (The earlier workflow.Go design needed
+// an explicit notifier.idle() guard for the same reason --
+// FINDINGS.md#allhandlersfinished-covers-handlers-not-goroutines -- and this test
+// failed without it.)
 func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
 	calls := s.mockNotify(50 * time.Millisecond)
 
@@ -872,9 +874,9 @@ func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
 // Honest about what this is. Points only go up, so a customer cannot fall out of
 // gold and climb back in, which means the state below is not reachable by any
 // sequence of legal operations today -- it is constructed. The guard is here
-// because Activities are at-least-once and because the day a spend or expiry
-// path lands, this is the check that stops a customer being congratulated twice.
-// PLAN.md 3.7.
+// because Activities are at-least-once and because the day a spend or expiry path
+// lands, this is the check that stops a customer being congratulated twice.
+// FINDINGS.md#tier-promotion-notifications.
 func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 	calls := s.mockNotify(0)
 
@@ -893,7 +895,8 @@ func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 }
 
 // Departure reuses the same Activity, which is why there is no separate cleanup
-// Activity in the design. PLAN.md 3.7. Product leave is soft-deactivate.
+// Activity in the design. FINDINGS.md#tier-promotion-notifications. Product leave
+// is soft-deactivate.
 func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	calls := s.mockNotify(0)
 

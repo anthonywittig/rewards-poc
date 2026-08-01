@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Pins the platform behaviour the plan depends on. docs/PLAN.md section 6.4
-# flagged these as needing empirical verification before anything is built on
-# top of them; this is that verification, kept as a script so it can be re-run
-# after a server upgrade.
+# Pins the platform behaviour the design depends on -- the 1h retention floor,
+# that every dynamicconfig key is genuinely registered, and that on-demand
+# deletion works. Kept as a script so it can be re-run after a server upgrade.
+# See docs/FINDINGS.md#retention-has-a-one-hour-floor.
 #
 # Run inside the temporal container: make verify-config
 #
@@ -36,7 +36,8 @@ probe_retention() {
 }
 
 if probe_retention 59m a; then
-  fail "59m was accepted -- the 1h floor has been relaxed. Revisit docs/PLAN.md 6.3;"
+  fail "59m was accepted -- the 1h floor has been relaxed. Revisit"
+  echo "        docs/FINDINGS.md#retention-has-a-one-hour-floor;"
   echo "        a shorter retention would let us drop the 'make reap' workaround."
 else
   pass "59m rejected (1h floor still enforced, as expected)"

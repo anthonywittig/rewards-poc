@@ -6,7 +6,7 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
-// --- Tier derivation (PLAN.md 3.2) -----------------------------------------
+// --- Tier derivation (FINDINGS.md#tiers-are-derived-never-stored) ----------
 //
 // Pure-function boundaries. Cheap to assert exhaustively, and these are the
 // numbers a stakeholder will ask about. They need no test environment, which is

@@ -21,9 +21,12 @@ Two conclusions to keep:
 2. **ES is derived and disposable.** Every ES document can be rebuilt from
    persistence; nothing in persistence can be rebuilt from ES. Losing the index
    is an operational annoyance, not data loss — and that is also why visibility
-   lag exists at all ([PLAN.md §7.5](PLAN.md#75-cutting-the-visibility-lag)).
+   lag exists at all ([FINDINGS.md](FINDINGS.md#visibility-lag)).
 
 The rest of this doc is how to *see* that for yourself against the local stack.
+Everything below was measured against Temporal server **1.29.7** with
+Elasticsearch **7.17.27** and `ENABLE_ES=true`; what it established is recorded
+in [FINDINGS.md](FINDINGS.md).
 
 ---
 
@@ -86,8 +89,8 @@ make inspect-pg Q=history-blob ID=inspect
 You get `blob_bytes`, `data_encoding = Proto3`, and a hex prefix — not points,
 not tier, not a reason string. The customer's balance is not a SQL column. That
 is exactly why a separate visibility store has to exist, and why the audit log
-([PLAN.md §6](PLAN.md#6-audit-log-by-crawling-history)) walks history through
-the SDK's `GetWorkflowHistory` rather than querying Postgres.
+([FINDINGS.md](FINDINGS.md#the-history-crawl)) walks history through the SDK's
+`GetWorkflowHistory` rather than querying Postgres.
 
 Join hint used by the canned query: `history_node.tree_id = executions.run_id`.
 
@@ -113,8 +116,9 @@ make inspect-pg Q=visibility-tasks
 At rest the table is empty. Poll it in a tight loop while another terminal runs
 `make add`, or use `make write-trace`, and you catch a Proto3 row in flight for
 a few tens of milliseconds. **That row is the read-after-write lag** from
-§7.5 — not an abstract caveat, a queue you can watch. Confirming
-`worker.ESProcessorFlushInterval` did something is the same observation.
+[FINDINGS.md](FINDINGS.md#visibility-lag) — not an abstract caveat, a queue you
+can watch. Confirming `worker.ESProcessorFlushInterval` did something is the
+same observation.
 
 ### 4. Retention / `make reap` is visible at the storage layer
 
@@ -129,7 +133,7 @@ Closed runs lose their `executions` and `history_node` rows once delete
 propagates (~25–40s; deletion is async). The Running run is untouched because
 `reap.sh` filters `ExecutionStatus != "Running"`. The UI's "showing 7 of 23"
 truncation notice and these vanishing rows are the same event from two ends
-([PLAN.md §6.3](PLAN.md#63-truncation-is-the-feature)).
+([FINDINGS.md](FINDINGS.md#truncation-detection)).
 
 ---
 
@@ -153,8 +157,11 @@ make inspect-es Q=indices
 
 A customer who continued-as-new twice shows **three** hits for the same
 `WorkflowId` (two `ContinuedAsNew` + one `Running`) until `make reap` removes
-the closed ones. List UIs that want "one row per customer" must filter to
-`ExecutionStatus = "Running"` (and treat canceled customers as a separate case).
+the closed ones. List UIs that want "one row per customer" must exclude
+rolled-over generations with `ExecutionStatus != "ContinuedAsNew"` — *not*
+`ExecutionStatus = "Running"`, which silently drops enrollments that failed
+validation and any ops-closed run
+([FINDINGS.md](FINDINGS.md#visibility-indexes-runs-not-customers)).
 
 ### Sorting: ES can, Temporal ListWorkflow cannot
 
@@ -166,22 +173,27 @@ temporal workflow list --query 'RewardsLevel = "gold" ORDER BY RewardsPoints DES
 → ORDER BY clause is not supported
 ```
 
-So the limitation in [PLAN.md §4](PLAN.md#4-search-attributes) is in Temporal's
-visibility query language / frontend, **not** in Elasticsearch. For this POC,
-fetch the filtered set and sort in the API.
+So the limitation in [FINDINGS.md](FINDINGS.md#order-by-is-not-supported) is in
+Temporal's visibility query language / frontend, **not** in Elasticsearch. For
+this POC, fetch the filtered set and sort in the API.
 
-### Closed customers, then reap
+### Closed generations, then reap
 
 ```sh
-make deactivate ID=leave
-make inspect-es Q=closed ID=leave     # ExecutionStatus=Canceled
-make reap WF=customer-leave
+make inspect-es Q=closed ID=inspect    # ContinuedAsNew docs + the Running one
+make reap WF=customer-inspect
 # wait ~30s
-make inspect-es Q=closed ID=leave     # hits.total = 0
+make inspect-es Q=closed ID=inspect    # only the Running doc survives
 ```
 
-ES does not decide to delete that document on its own — it goes because the
-source execution in Postgres went. Projection relationship, made concrete.
+ES does not decide to delete those documents on its own — they go because the
+source executions in Postgres went. Projection relationship, made concrete.
+
+Note this demo uses **rolled-over generations**, not a departed customer.
+Deactivation is soft ([FINDINGS.md](FINDINGS.md#soft-deactivation)): the
+execution stays `Running` with `RewardsActive: false`, so it is neither closed
+nor reapable. Only an ops-level cancel or terminate produces a closed run for a
+customer who left.
 
 **Caveat:** `_cat/indices` `docs.count` can stay inflated after deletes until
 Lucene merges drop soft-deleted docs (`docs.deleted` in the canned indices
@@ -203,7 +215,7 @@ make add / UpdateWorkflow(addPoints)
   └─▶ history_node          new event batch appended        (inspect-pg Q=history-blob)
   └─▶ executions            mutable state blob rewritten
   └─▶ visibility_tasks      row enqueued briefly            (inspect-pg Q=visibility-tasks)
-        └─▶ bulk processor  buffered up to flush interval   (PLAN §7.5)
+        └─▶ bulk processor  buffered up to flush interval   (FINDINGS: visibility lag)
               └─▶ ES doc    upserted, searchable after refresh (inspect-es Q=customer)
 ```
 
@@ -219,7 +231,7 @@ catching it is probabilistic at our flush settings, which is itself the lesson.
 | Question | Where to look |
 |---|---|
 | Current balance / tier (authoritative) | Workflow Query (`make status` / API) |
-| Event-by-event audit | History crawl via SDK (Phase 5), not SQL |
+| Event-by-event audit | History crawl via SDK, not SQL |
 | Filter gold + running | ES / `ListWorkflow` |
 | Sort by points | Client-side (or raw ES); not `ListWorkflow ORDER BY` |
 | Why list lags after create | `visibility_tasks` + ES refresh interval |
@@ -227,41 +239,20 @@ catching it is probabilistic at our flush settings, which is itself the lesson.
 
 ---
 
-## Findings for PLAN.md
+## Schema notes for further SQL
 
-Measured against Temporal server **1.29.7** + Elasticsearch **7.17.27** with
-`ENABLE_ES=true`. These are spliced into [`PLAN.md`](PLAN.md) §8 and §12 (items
-17–22); kept here as the inspection notebook that produced them.
+Useful if you write queries beyond the canned ones. All observed on 1.29.7.
 
-1. **No `temporal_visibility` Postgres database when ES is the visibility
-   store.** With `ENABLE_ES=true`, auto-setup creates only `temporal`. An earlier
-   draft of §8.1 claimed `temporal_visibility` "gets its schema created by
-   auto-setup but stays empty" — that describes Postgres-visibility setups, not
-   this one. Corrected in §8.1 / §12.19.
+- `history_node.tree_id` equals `executions.run_id` for these entity workflows —
+  that is the join the canned SQL uses.
+- `data_encoding` is `Proto3` for `history_node.data`, `executions.data` and
+  `executions.state`. There is no text representation to fall back on.
+- `run_id` is `bytea` in Postgres. `encode(run_id, 'hex')` yields the UUID
+  without dashes; Elasticsearch stores the same UUID *with* dashes, so
+  cross-store comparisons need one or the other normalised.
+- `visibility_tasks` is empty at rest, so a `SELECT count(*)` after a write
+  reports 0 even though the queue was used. Poll alongside the write.
 
-2. **One ES document per run, not per workflow ID.** After continue-as-new,
-   `WorkflowId = customer-X` returns every retained generation
-   (`ContinuedAsNew` + `Running`). List UIs must filter on `ExecutionStatus`
-   (and reap closed gens) or they double-count customers. In §4 / §8.2 / §12.17.
-
-3. **`ORDER BY` fails in Temporal visibility queries but works in raw ES.**
-   Confirmed: `ListWorkflow` / `temporal workflow list` reject `ORDER BY` for
-   custom and built-in attributes; the same sort on
-   `temporal_visibility_v1_dev` succeeds. The §4 limitation is the visibility
-   *query language*, not Elasticsearch's inability to sort. §12.18.
-
-4. **`visibility_tasks` is empty at rest and only briefly non-empty under
-   write.** Catching a row needs a tight poll alongside an Update (see
-   `make write-trace`). A single `SELECT count(*)` after the fact usually
-   reports 0 even though the queue was used — §8.1.3 / §12.20.
-
-5. **`_cat/indices` `docs.count` lags behind deletes.** After `make reap`,
-   search/`_count` go to zero for the deleted runs while `_cat/indices` can
-   still show a higher `docs.count` until merges clear soft-deletes. Inspect
-   demos should use `_search`/`_count` for "gone?", and optionally show
-   `docs.deleted`. §12.21.
-
-6. **`history_node.tree_id` equals `executions.run_id`** for these entity
-   workflows (join used by the canned SQL). Encoding is `Proto3` for
-   `history_node.data`, `executions.data`, and `executions.state` on 1.29.7.
-   §12.22.
+What these inspections established about Temporal's behaviour more broadly —
+runs-vs-customers in visibility, `ORDER BY`, the read-after-write lag — is
+recorded in [FINDINGS.md](FINDINGS.md).

@@ -9,7 +9,8 @@ import (
 
 // ValidateEnrollment checks a starting payload against the workflow ID it was
 // started under. The workflow is the only integrity boundary in this design
-// (PLAN.md 3.1), so this is where a bad enrollment is refused.
+// (FINDINGS.md#the-workflow-is-the-integrity-boundary), so this is where a bad
+// enrollment is refused.
 //
 // It takes the workflow ID as a string rather than a workflow.Context so it
 // stays a plain function: the workflow package supplies

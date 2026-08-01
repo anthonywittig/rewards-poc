@@ -2,7 +2,7 @@
 //
 // It holds a Temporal Client and nothing else -- no database, no cache, no ORM.
 // That is the entire argument of this POC, so the absence should be obvious at a
-// glance rather than buried. See PLAN.md 5.
+// glance rather than buried. See FINDINGS.md#the-http-api.
 package httpapi
 
 import "time"
@@ -17,10 +17,11 @@ type EnrollRequest struct {
 // AddPointsRequest is the body of POST /api/customers/{id}/points.
 //
 // RequestID is the caller's idempotency key and becomes the Temporal Update ID.
-// The UI should send a fresh UUID per click. Worth knowing what that does and
-// does not buy: Update dedup is scoped to a single Run, so it does not survive
+// The UI should send a fresh UUID per click. Worth knowing what that does and does
+// not buy: Update dedup is scoped to a single Run, so it does not survive
 // continue-as-new, and a retry that straddles a rollover can still double-apply.
-// Adequate for points, not for money. PLAN.md 12.3.
+// Adequate for points, not for money.
+// FINDINGS.md#update-dedup-does-not-survive-continue-as-new.
 type AddPointsRequest struct {
 	Amount    int    `json:"amount"`
 	Reason    string `json:"reason"`
@@ -66,7 +67,7 @@ type CustomerResponse struct {
 // No "promoted" flag: the workflow does not report one, and deriving it here
 // would mean reading the balance before the add, which races every other add in
 // flight. Tier-crossing detection belongs inside the handler where it is
-// atomic -- that is Phase 6 (PLAN.md 3.7).
+// atomic -- that is Phase 6 (FINDINGS.md#tier-promotion-notifications).
 type AddPointsResponse struct {
 	Balance int    `json:"balance"`
 	Level   string `json:"level"`
@@ -107,12 +108,12 @@ type CustomerListItem struct {
 // ListLimit caps GET /api/customers. There is no pagination.
 //
 // A deliberate simplification, and one the platform pushes towards: Temporal
-// rejects ORDER BY (PLAN.md 12.8), so a paginated list would hand back
-// arbitrary pages of an unordered set — page 2 of "customers" means nothing in
-// particular. Rather than build paging that cannot be made coherent, the list
-// returns a small fixed slice, says how many matched in total, and tells the
-// user to filter. Filtering is the operation the visibility store is actually
-// good at.
+// rejects ORDER BY (FINDINGS.md#order-by-is-not-supported), so a paginated list
+// would hand back arbitrary pages of an unordered set — page 2 of "customers"
+// means nothing in particular. Rather than build paging that cannot be made
+// coherent, the list returns a small fixed slice, says how many matched in total,
+// and tells the user to filter. Filtering is the operation the visibility store is
+// actually good at.
 const ListLimit = 5
 
 // CustomerListResponse is the body of GET /api/customers.
@@ -136,7 +137,7 @@ const ListLimit = 5
 //     anything that assumes otherwise.
 //   - **Results lag writes.** Elasticsearch visibility is asynchronous,
 //     ~200-300ms after tuning and never zero, so a just-created customer may be
-//     missing from both Items and Total. PLAN.md 7.5 and 9.
+//     missing from both Items and Total. FINDINGS.md#visibility-lag and 9.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
 	// The cap that was applied, echoed so the UI does not hardcode it.
@@ -172,7 +173,7 @@ const (
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
-// Event History (PLAN.md 6.2).
+// Event History (FINDINGS.md#events-the-crawl-reads).
 //
 // A single flat struct with omitempty rather than a polymorphic union, because
 // it crosses the wire as JSON and TypeScript narrows on Kind perfectly well.
@@ -186,8 +187,8 @@ const (
 //	deactivated        At, RunID
 //
 // Note points_rejected only ever covers *handler*-side rejections. A validator
-// rejection writes nothing to history at all, so it is invisible here by
-// design -- that asymmetry is the whole point of PLAN.md 3.4.
+// rejection writes nothing to history at all, so it is invisible here by design --
+// that asymmetry is the whole point of FINDINGS.md#the-validatorhandler-split.
 type AuditEntry struct {
 	Kind       AuditEntryKind `json:"kind"`
 	At         time.Time      `json:"at"`
@@ -211,7 +212,7 @@ type AuditEntry struct {
 // Truncation is a first-class part of this contract, not an error case. Closed
 // runs get reaped, so the crawl walks backwards until history is gone and then
 // says so -- and the carried CustomerState is what lets it *quantify* the gap
-// rather than silently showing less. PLAN.md 6.3.
+// rather than silently showing less. FINDINGS.md#truncation-detection.
 //
 // The UI renders "Showing 7 of 23 point events. Earlier history has been
 // deleted." from ShownEarnEvents and LifetimeEarnEvents. Note the header of the

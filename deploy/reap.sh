@@ -2,8 +2,8 @@
 # Force-delete closed Workflow Executions, immediately.
 #
 # Why this exists: the plan wanted a 20-minute namespace retention so that
-# audit-log truncation (docs/PLAN.md section 6.3) would be observable in a
-# coffee break. Temporal enforces a 1h minimum retention on released servers, so
+# audit-log truncation (docs/FINDINGS.md#truncation-detection) would be
+# observable in a coffee break. Temporal enforces a 1h minimum retention on released servers, so
 # waiting for natural reaping is impractical during a demo. This produces the
 # same end state on demand -- delete a closed run's data, then watch the audit
 # log report that it can no longer see that far back.

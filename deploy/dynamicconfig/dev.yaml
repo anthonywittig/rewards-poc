@@ -9,7 +9,7 @@
 # and the `system.namespaceMinRetentionLocal` key that would lower it exists only
 # on unreleased main -- 1.29.7 logs `unregistered key` and ignores it. So
 # retention is pinned at the 1h floor and truncation is demonstrated on demand
-# with `make reap` instead. See docs/PLAN.md section 6.3.
+# with `make reap` instead. See docs/FINDINGS.md#retention-has-a-one-hour-floor.
 
 # --- Retention ------------------------------------------------------------------
 # Deletion of a closed execution's data is jittered, landing somewhere in
@@ -25,7 +25,7 @@ history.retentionTimerJitterDuration:
 # Elasticsearch visibility is asynchronous. Out of the box the gap between a
 # workflow changing and it appearing in ListWorkflows is roughly 1-2s, which is
 # very visible in a UI. Two of the three contributing components are tunable;
-# this is the Temporal-side one (docs/PLAN.md section 7.5).
+# this is the Temporal-side one (docs/FINDINGS.md#visibility-lag).
 #
 # The default was raised from 200ms to 1s in server v1.12 for throughput reasons
 # that do not apply to a stack holding tens of workflows.

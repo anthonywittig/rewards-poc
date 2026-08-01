@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §8.2: one customer's visibility document(s).
+# one customer's visibility document(s).
 # One ES doc per *run*, not per workflow ID — so a customer who has
 # continued-as-new twice shows three hits (two ContinuedAsNew + one Running)
 # until make reap removes the closed ones.

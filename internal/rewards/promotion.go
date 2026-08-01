@@ -36,13 +36,14 @@ import "slices"
 //     they are told where they are -- but it makes "retried on the next add"
 //     narrower than it sounds.
 //
-// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup
-// on the way in, and the at-least-once guard PLAN.md 3.7 asks for on the way
-// out. Previously the monotonic balance did the deduplication and this was
-// belt-and-braces.
+// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup on
+// the way in, and the at-least-once guard FINDINGS.md#tier-promotion-notifications
+// asks for on the way out. Previously the monotonic balance did the deduplication
+// and this was belt-and-braces.
 //
-// Tiers are derived rather than stored (PLAN.md 3.2), so this needs no extra
-// state to work out.
+// Tiers are derived rather than stored
+// (FINDINGS.md#tiers-are-derived-never-stored), so this needs no extra state to
+// work out.
 func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 	// Walk the ladder from the top down and stop at the first rule the balance
 	// satisfies. Top-down is the "only the tier they are at" decision above
@@ -88,7 +89,8 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 }
 
 // DepartureNotice is the same Activity reused for "this customer left", which is
-// why there is no separate cleanup Activity. PLAN.md 3.7.
+// why there is no separate cleanup Activity.
+// FINDINGS.md#tier-promotion-notifications.
 func DepartureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,

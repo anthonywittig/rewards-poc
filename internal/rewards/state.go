@@ -1,7 +1,7 @@
 // Package rewards is the domain layer for the customer rewards Entity Workflow:
 // the state it carries, the Update/Query contract every caller speaks, and the
 // rules -- tiers, enrollment validity, which promotion is owed -- expressed as
-// plain functions over that state. See docs/PLAN.md section 3.
+// plain functions over that state. See docs/FINDINGS.md#workflow-design.
 //
 // It deliberately contains no workflow or Activity code. Those live in the two
 // sub-packages, and the split is structural rather than cosmetic:
@@ -31,14 +31,16 @@ const TaskQueue = "rewards"
 const WorkflowTypeName = "CustomerRewardsWorkflow"
 
 // WorkflowIDPrefix makes the workflow ID derivable from the customer ID alone,
-// which is what lets every later operation skip a lookup table. See PLAN.md 3.
+// which is what lets every later operation skip a lookup table. See
+// FINDINGS.md#workflow-design.
 const WorkflowIDPrefix = "customer-"
 
 // WorkflowID returns the deterministic workflow ID for a customer.
 func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID }
 
-// Tier thresholds. Tiers are derived from these, never stored -- see PLAN.md 3.2
-// for the trade-off that choice carries.
+// Tier thresholds. Tiers are derived from these, never stored -- see
+// FINDINGS.md#tiers-are-derived-never-stored for the trade-off that choice
+// carries.
 const (
 	GoldThreshold     = 500
 	PlatinumThreshold = 1000
@@ -84,7 +86,7 @@ var tiers = []tier{
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so
 // breaching it leaves no trace in Event History; PointsCap is enforced in the
 // *handler*, so breaching it is recorded. That split is the point of the
-// exercise, not an accident -- see PLAN.md 3.4.
+// exercise, not an accident -- see FINDINGS.md#the-validatorhandler-split.
 const (
 	MaxPointsPerTxn = 1000
 	PointsCap       = 100000
@@ -95,32 +97,33 @@ const (
 // continue-as-new itself for what production should do instead.
 //
 // It is also a floor rather than an exact count. The main loop delivers any
-// pending promotion before it rolls, and the handler keeps accepting adds for
-// the duration of that Activity -- measured at 4 adds in the rolling run when a
-// tier crossing lands in it, against exactly 3 when none does. The number
-// survived the rewrite from a drain goroutine to main-loop delivery unchanged,
-// which is what you would expect: the cause is the Activity's round trip rather
-// than the structure around it. PLAN.md 12.32.
+// pending promotion before it rolls, and the handler keeps accepting adds for the
+// duration of that Activity -- measured at 4 adds in the rolling run when a tier
+// crossing lands in it, against exactly 3 when none does. The number survived the
+// rewrite from a drain goroutine to main-loop delivery unchanged, which is what
+// you would expect: the cause is the Activity's round trip rather than the
+// structure around it. FINDINGS.md#earnsperrun-is-a-floor-not-an-exact-count.
 //
 // CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history already records a
 // roll after 3 adds will, on replay under a different value, not produce that
-// command at that point, and a command that does not match the recorded event
-// is exactly what the replayer refuses. Entity workflows outlive deploys, so
-// this is not theoretical; PLAN.md 12.10. In dev, terminate existing workflows
-// after changing it.
+// command at that point, and a command that does not match the recorded event is
+// exactly what the replayer refuses. Entity workflows outlive deploys, so this is
+// not theoretical; FINDINGS.md#versioning-is-the-real-risk. In dev, terminate
+// existing workflows after changing it.
 const EarnsPerRun = 3
 
 // CustomerState is the workflow argument. Everything here has to survive
 // continue-as-new (Phase 2), which is why the counters live in state rather than
-// being recomputed from history: history is reaped, state is not.
-// See PLAN.md 3.1 and 6.3.
+// being recomputed from history: history is reaped, state is not. See
+// FINDINGS.md#the-workflow-is-the-integrity-boundary and 6.3.
 type CustomerState struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
 	Email      string `json:"email"`
 
 	// Points only ever increase. There is no spending, redemption, expiry or
-	// adjustment in this POC and none is planned -- see PLAN.md 3.1.
+	// adjustment in this POC and none is planned -- see
+	// FINDINGS.md#the-workflow-is-the-integrity-boundary.
 	//
 	// That is why there is no separate lifetime total: with a monotonic balance,
 	// "points now" and "points ever earned" are the same number, and carrying
@@ -131,7 +134,8 @@ type CustomerState struct {
 	// Set on the very first run and carried forward untouched thereafter.
 	EnrolledAt time.Time `json:"enrolledAt"`
 	// Count of successful adds, ever. Not derivable from Points once history is
-	// reaped, and PLAN.md 6.3 needs it to quantify audit-log truncation.
+	// reaped, and FINDINGS.md#truncation-detection needs it to quantify audit-log
+	// truncation.
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
 
