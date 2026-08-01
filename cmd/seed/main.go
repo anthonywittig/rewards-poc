@@ -1,29 +1,12 @@
-// Command seed fills a running stack with a demo dataset.
-//
-// It drives the HTTP API rather than the Temporal client, so seeding exercises
-// exactly the path a user does -- including the rollover retry and the error
-// mapping. If the API is wrong, the seed notices.
+// Command seed fills a running stack with a demo dataset, driving the HTTP API
+// rather than the Temporal client.
 //
 //	make seed     # needs `make up`, `make worker`, `make api`
-//	make reset    # for a clean slate; see below
+//	make reset    # the only true clean slate
 //
-// Read-then-create, never modify. It looks each customer up first and only
-// enrolls the ones that are missing; anyone who already exists is checked
-// against the intended balance and left alone. Two reasons for that shape:
-//
-//   - Deactivation is soft (FINDINGS.md#soft-deactivation), so enrolling an
-//     existing customer *reactivates* them with their points intact. A seeder
-//     that enrolled
-//     blindly would flip the deliberately-deactivated fixture back to active,
-//     and then stack a second set of adds on top of the balance it kept.
-//   - That is not hypothetical. It is what this program did until the soft
-//     deactivation change landed, when `FRESH=1` -- which deactivated and
-//     re-enrolled to get a clean slate -- started leaving `ada` at 1280 points
-//     and 14 earn events instead of 640 and 7.
-//
-// So `FRESH=1` is gone: under soft deactivation there is no API call that
-// resets a customer, because that is rather the point of it. The only true
-// clean slate is deleting the executions, which is `make reset`.
+// Read-then-create, never modify: deactivation is soft
+// (FINDINGS.md#soft-deactivation), so re-enrolling an existing customer
+// reactivates them with their points intact rather than resetting them.
 package main
 
 import (
@@ -39,21 +22,16 @@ import (
 )
 
 // customer is one seeded record. Points are reached by repeated adds, since
-// that is the only way points ever enter the system -- there is no back door,
-// which is rather the point of the design.
+// that is the only way points ever enter the system.
 type customer struct {
 	id, name, email string
-	// adds is the sequence of point-adds to apply, in order. Chosen so tier
-	// crossings and continue-as-new boundaries land where the demo wants them.
-	adds []int
-	// deactivate closes the customer at the end.
-	deactivate bool
-	why        string
+	adds            []int
+	deactivate      bool
+	why             string
 }
 
-// Six active-or-notable customers per tier (basic < 500, gold < 1000,
-// platinum ≥ 1000). That fills the tier filter and pushes the unfiltered list
-// well past ListLimit so the "Showing 5 of N" notice renders.
+// Six customers per tier (basic < 500, gold < 1000, platinum >= 1000), which
+// fills the tier filter and pushes the unfiltered list past ListLimit.
 var seedSet = []customer{
 	// --- basic ----------------------------------------------------------------
 	{
@@ -100,12 +78,8 @@ var seedSet = []customer{
 }
 
 // cappedAdds takes a customer to 99,960 points: high enough that any add over
-// 40 gets a *handler* rejection, which -- unlike a validator rejection -- leaves
-// an audit row. Reaching it organically takes 100 adds, which is exactly why the
-// UI's rejection rendering goes untested without a seeded customer like this.
-//
-// It also produces ~33 generations, so `make reap WF=customer-capped` gives an
-// audit log truncated to a handful of rows out of hundreds.
+// 40 gets a handler rejection, which -- unlike a validator rejection -- leaves
+// an audit row.
 func cappedAdds() []int {
 	adds := make([]int, 0, 100)
 	for i := 0; i < 99; i++ {
@@ -144,10 +118,6 @@ func main() {
 		}
 	}
 
-	// Counted rather than assumed. Printing len(set) unconditionally made a run
-	// where every customer already existed -- the common case on a second
-	// invocation -- look like a complete success, which is the one thing a seed
-	// script must never do.
 	fmt.Printf("\n%d created, %d already correct, %d wrong, of %d in %s\n",
 		created, matched, wrong, len(set), time.Since(start).Round(time.Millisecond))
 
@@ -167,9 +137,7 @@ func main() {
 // already there against what this dataset intends.
 //
 // Returns an empty status for "created", a description for "already correct",
-// and an error when an existing customer does not match -- which is a real
-// failure rather than a skip, because the seed's whole job is to leave the stack
-// in a known state and it has just found that it is not in one.
+// and an error when an existing customer does not match.
 func ensure(base string, c customer) (string, error) {
 	cur, err := fetch(base, c.id)
 	switch {
@@ -179,20 +147,15 @@ func ensure(base string, c customer) (string, error) {
 		return "", err
 	}
 
-	// Absent: enroll and apply the adds.
 	if err := create(base, c); err != nil {
 		return "", err
 	}
 	return "", nil
 }
 
-// check compares an existing customer with what the dataset asks for.
-//
-// Deliberately does not try to repair a mismatch. Points only go up
-// (FINDINGS.md#points-only-go-up) so a balance that is too high cannot be
-// corrected, and one that is too
-// low would need adds whose reasons and timing would not match the rest --
-// producing a customer that looks seeded but has an audit log that disagrees.
+// check compares an existing customer with what the dataset asks for. It
+// deliberately does not repair a mismatch: points only go up
+// (FINDINGS.md#points-only-go-up).
 func check(c customer, cur customerState) (string, error) {
 	want := 0
 	for _, a := range c.adds {
@@ -241,8 +204,7 @@ func create(base string, c customer) error {
 		body := map[string]any{
 			"amount": amount,
 			"reason": fmt.Sprintf("seed purchase %d", i+1),
-			// A fresh idempotency key per add, as the UI sends. Deterministic
-			// here so a re-run is traceable rather than random.
+			// Idempotency key, deterministic so a re-run is traceable.
 			"requestId": fmt.Sprintf("seed-%s-%03d", c.id, i+1),
 		}
 		if err := do(http.MethodPost, base+"/api/customers/"+c.id+"/points", body, nil); err != nil {
@@ -268,9 +230,7 @@ func ping(base string) error {
 	return nil
 }
 
-// do sends a request and turns a non-2xx into the API's own error message,
-// which is more useful than a status code -- and demonstrates that the error
-// contract is usable by something other than the UI.
+// do sends a request and turns a non-2xx into the API's own error message.
 func do(method, url string, body, out any) error {
 	var rdr io.Reader
 	if body != nil {
@@ -311,8 +271,7 @@ func do(method, url string, body, out any) error {
 }
 
 // httpError carries the status alongside the API's own words, so callers can
-// tell "this customer does not exist" from "the API could not answer" -- a
-// distinction replace() depends on and a bare error string cannot express.
+// tell "this customer does not exist" from "the API could not answer".
 type httpError struct {
 	status  int
 	code    string

@@ -1,7 +1,4 @@
 // Command worker runs the Temporal worker that hosts CustomerRewardsWorkflow.
-//
-// It reads the same TEMPORAL_* variables as the rest of the stack, so a plain
-// `make worker` alongside `make up` is all that is needed. See README.
 package main
 
 import (
@@ -17,14 +14,8 @@ import (
 )
 
 func main() {
-	// Command-line arguments are deliberately ignored: configuration is env
-	// vars only. `make worker` passes a trailing stack=<name> argument so this
-	// stack's process is identifiable in ps output -- pkill matches command
-	// lines, not env vars, and worker-stop/workers scope on that marker.
-
-	// Default to the host-published port rather than the compose-internal one:
-	// the worker normally runs on the host via `make worker`, outside the
-	// compose network, where "temporal:7233" does not resolve.
+	// Defaults to the host-published port: the worker normally runs on the host,
+	// outside the compose network, where "temporal:7233" does not resolve.
 	address := env("TEMPORAL_HOSTPORT", "localhost:7233")
 	namespace := env("TEMPORAL_NAMESPACE", "rewards")
 
@@ -33,8 +24,6 @@ func main() {
 		Namespace: namespace,
 	})
 	if err != nil {
-		// The overwhelmingly likely cause during development is that the stack
-		// is not up yet, so say so rather than surfacing a bare gRPC error.
 		log.Fatalf("unable to connect to Temporal at %s (namespace %q): %v\n"+
 			"is the stack running? try `make up`", address, namespace, err)
 	}
@@ -43,16 +32,9 @@ func main() {
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
 
-	// Activities are registered as a struct, which is where dependency injection
-	// happens: whatever an Activity needs to reach the outside world is assembled
-	// here, once, and every exported method on the struct becomes an Activity
-	// named for the method. NotifyCustomer therefore registers as
-	// "NotifyCustomer" -- which is what rewards.ActivityNotifyCustomer holds, what
-	// the workflow schedules by, and what the audit crawl matches on to render
-	// notification rows.
-	//
-	// LogNotifier is the POC's delivery. A real provider is a different value
-	// here and no change anywhere else.
+	// Every exported method on the struct registers as an Activity named for the
+	// method, which is what rewards.ActivityNotifyCustomer and the audit crawl
+	// match on.
 	w.RegisterActivity(&activities.Activities{
 		Notifier: activities.LogNotifier{},
 	})
