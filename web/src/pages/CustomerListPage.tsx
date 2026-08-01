@@ -116,11 +116,12 @@ export function CustomerListPage() {
     return rows
   }, [data, shown, pending, sortKey, sortDir, query])
 
-  // Blank rows so the body holds its height instead of collapsing to a single
-  // “Loading…” row.
-  const placeholders = loading
-    ? Math.max((loaded?.res.items.length ?? 0) - items.length, items.length ? 0 : 1)
-    : 0
+  // Blank rows so the body holds its height instead of collapsing. A query that
+  // returned nothing left the one-line “no match” row behind rather than data
+  // rows, so its stand-in has to be that shape or the empty table bounces too.
+  const previousRows = loaded?.res.items.length ?? 0
+  const placeholders = loading ? Math.max(previousRows - items.length, 0) : 0
+  const emptyPlaceholder = loading && placeholders === 0 && items.length === 0
 
   const incompleteNotice = useMemo(() => {
     if (!shown || shown.complete) return null
@@ -248,6 +249,15 @@ export function CustomerListPage() {
 
       <div className="table-wrap" aria-busy={loading}>
         <table>
+          {/* Pinned widths — see table-layout: fixed. Must sum to 100%. */}
+          <colgroup>
+            <col style={{ width: '38%' }} />
+            <col style={{ width: '12%' }} />
+            <col style={{ width: '11%' }} />
+            <col style={{ width: '13%' }} />
+            <col style={{ width: '18%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
           <thead>
             <tr>
               <SortableTh
@@ -320,6 +330,12 @@ export function CustomerListPage() {
                 <td />
               </tr>
             ))}
+            {emptyPlaceholder ? (
+              // Same single-line, full-width shape as the “no match” row above.
+              <tr className="row-placeholder">
+                <td colSpan={6}>Loading…</td>
+              </tr>
+            ) : null}
           </tbody>
         </table>
       </div>
