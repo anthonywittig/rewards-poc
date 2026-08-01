@@ -22,7 +22,7 @@ For how Temporal uses Postgres and Elasticsearch underneath, see
 - [Workflow design](#workflow-design) — the integrity boundary, tiers, the validator/handler
   split, continue-as-new, notifications, soft deactivation
 - [Search attributes and visibility](#search-attributes-and-visibility) — the registered set,
-  runs-vs-customers, ORDER BY, visibility lag
+  runs-vs-customers, ORDER BY, prefix search, visibility lag
 - [The HTTP API](#the-http-api) — error classification, timeouts, the rollover race,
   pagination
 - [The history crawl](#the-history-crawl) — walking the run chain, events read, truncation
@@ -507,7 +507,7 @@ Registered once at bootstrap, before any workflow starts, using the typed API
 |---|---|---|
 | `CustomerId` | Keyword | at start, re-asserted each run |
 | `CustomerEmail` | Keyword | at start |
-| `CustomerName` | Text | at start (tokenized → partial match) |
+| `CustomerName` | Text | at start (tokenized → word-prefix search) |
 | `RewardsLevel` | Keyword | on every balance change |
 | `RewardsPoints` | Int | on every balance change |
 | `RewardsEnrolledAt` | Datetime | at start of each run, from carried state |
@@ -572,7 +572,7 @@ against `temporal_visibility_v1_dev` directly (`make inspect-es Q=gold-running`)
 cannot ask for it through the supported API.
 
 What still works, and is enough: equality and range filters on custom attributes
-(`RewardsPoints >= 500`), `Text` partial match on `CustomerName`, `Keyword` exact match on
+(`RewardsPoints >= 500`), word-prefix search on `CustomerName` (below), `Keyword` exact match on
 `CustomerEmail`, `RewardsActive` for active-vs-deactivated, and `ExecutionStatus` to exclude
 rolled-over generations. Results come back in the server's default order (most recent first).
 
@@ -581,6 +581,40 @@ sorting when the full filtered result set fits in one page. Sorting a page of an
 paginated list sorts the wrong thing. For a POC with tens of customers, fetch the filtered set
 and sort in the API. The honest answer is that Temporal's visibility store is a filter index,
 not a reporting database.
+
+### Prefix search works on a Text attribute, with three catches
+
+`STARTS_WITH` is documented for `Keyword`, but server 1.29.7 accepts it on `Text` too, and there
+it does what a search box wants: a prefix match against each *token*, so `lovel` finds
+Ada Lovelace. That is what the customer list's name box builds, one clause per word typed —
+which also fixes an OR that surprised us. All verified against the real stack:
+
+| Query | Matches |
+|---|---|
+| `CustomerName = 'lovelace'` | Ada Lovelace |
+| `CustomerName = 'lovel'` | — whole tokens only |
+| `CustomerName = 'ada turing'` | Ada Lovelace **and** Alan Turing — `=` ORs its words |
+| `CustomerName STARTS_WITH 'lovel'` | Ada Lovelace |
+| `CustomerName STARTS_WITH 'ada lov'` | — the literal is one prefix, not two |
+| `… STARTS_WITH 'ada' AND … STARTS_WITH 'lov'` | Ada Lovelace |
+
+The catches, all of them consequences of `STARTS_WITH` matching the stored token directly
+rather than being run through the analyzer the way `=` is:
+
+- **It is case-sensitive.** The standard analyzer lowercased the tokens at index time and
+  nothing lowercases the prefix, so `Lovel` matches nothing. Lowercase before you send it.
+- **The literal is a single prefix.** `'ada lov'` is looked up as one token beginning with
+  "ada lov", and tokens have no spaces. Split the input and AND one clause per word — which is
+  also the behaviour you want, since it narrows as the user types where `=` widens.
+- **Split the input the way the analyzer did.** The standard tokenizer breaks on punctuation
+  but keeps intra-word apostrophes: `Mary-Jane` is two tokens, `O'Brien` is one. Splitting on
+  whitespace alone leaves `mary-jane` matching nothing.
+
+One thing that does not work at all: **an apostrophe cannot be put into a query literal.**
+Neither `\'` nor `''` round-trips — `CustomerName = 'o''brien'` and `CustomerName = 'o\'brien'`
+both return zero against a document ES itself matches on `o'brien`. Prefix search happens to
+have an out, since a shorter prefix is still a correct prefix: cut the term at the apostrophe
+and search `o`, which matches more rather than nothing.
 
 ### Visibility lag
 
