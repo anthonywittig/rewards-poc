@@ -52,6 +52,15 @@ type ReactivateRequest struct {
 	Email string `json:"email"`
 }
 
+// ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
+// re-enrollment from a no-op against a customer who was already active. The API
+// needs that to tell a restore (200) from a duplicate enrollment (409), and the
+// audit crawl needs it so a no-op does not draw a rejoin row.
+type ReactivateResult struct {
+	Changed bool           `json:"changed"`
+	Status  CustomerStatus `json:"status"`
+}
+
 // CustomerStatus is the getStatus Query result.
 type CustomerStatus struct {
 	CustomerID string    `json:"customerId"`
@@ -175,13 +184,23 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		if state.Deactivated {
 			return DeactivateResult{Changed: false}, nil
 		}
-		state.Deactivated = true
-		needsDeparture = true
-		// Fail the Update if visibility cannot record Active=false -- otherwise
-		// the list falls back to ExecutionStatus=Running and shows them active.
-		if err := upsertSearchAttributes(ctx, &state); err != nil {
+
+		// Staged on a copy and committed only once the upsert is issued, so a
+		// failed Update really did change nothing. Mutating first and returning
+		// the error would leave the customer deactivated, the departure notice
+		// armed, and addPoints 409ing -- while the caller was told it failed.
+		//
+		// The upsert has to be part of that: if visibility cannot record
+		// Active=false the list falls back to ExecutionStatus=Running and shows
+		// them active, so a leave visibility never saw is not a leave.
+		next := state
+		next.Deactivated = true
+		if err := upsertSearchAttributes(ctx, &next); err != nil {
 			return DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 		}
+		state = next
+		needsDeparture = true
+
 		logger.Info("customer deactivated",
 			"customerId", state.CustomerID,
 			"points", state.Points,
@@ -192,27 +211,38 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	}
 
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, UpdateReactivate,
-		func(ctx workflow.Context, req ReactivateRequest) (CustomerStatus, error) {
+		func(ctx workflow.Context, req ReactivateRequest) (ReactivateResult, error) {
+			// Not an error: re-enrolling an active customer is a duplicate, and
+			// the API turns Changed=false into the 409 it owes them. Reported
+			// rather than applied, so a racing enroll cannot quietly overwrite a
+			// live customer's name and email with a second signup's.
 			if !state.Deactivated {
-				return statusOf(&state), nil // already active; points untouched
+				return ReactivateResult{Changed: false, Status: statusOf(&state)}, nil
 			}
 			if strings.TrimSpace(req.Email) == "" {
-				return CustomerStatus{}, temporal.NewNonRetryableApplicationError(
+				return ReactivateResult{}, temporal.NewNonRetryableApplicationError(
 					"email is required", ErrTypeInvalidEnrollment, nil)
 			}
+
+			// Staged and committed exactly as deactivate does, and for the same
+			// reason: a failed upsert must not leave the customer reactivated
+			// under a name and email the caller was told did not take.
+			next := state
 			if name := strings.TrimSpace(req.Name); name != "" {
-				state.Name = name
+				next.Name = name
 			}
-			state.Email = strings.TrimSpace(req.Email)
-			state.Deactivated = false
-			if err := upsertSearchAttributes(ctx, &state); err != nil {
-				return CustomerStatus{}, fmt.Errorf("upsert search attributes: %w", err)
+			next.Email = strings.TrimSpace(req.Email)
+			next.Deactivated = false
+			if err := upsertSearchAttributes(ctx, &next); err != nil {
+				return ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
+			state = next
+
 			logger.Info("customer reactivated",
 				"customerId", state.CustomerID,
 				"points", state.Points,
 				"level", Level(state.Points))
-			return statusOf(&state), nil
+			return ReactivateResult{Changed: true, Status: statusOf(&state)}, nil
 		},
 		workflow.UpdateHandlerOptions{
 			Validator: func(ctx workflow.Context, req ReactivateRequest) error {
@@ -234,6 +264,13 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 
 	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
 	// earn count -- see the longer note that used to live here, and PLAN.md 3.5.
+	// An Await error here is a cancellation, and cancellation is no longer a
+	// product path -- leaving is the deactivate Update, which keeps the run
+	// alive. What is left is an operator running `temporal workflow cancel`, so
+	// we return it and let the execution close as Canceled, without draining
+	// handlers or sending a departure notice. The SDK may log an
+	// unfinished-handler warning on the way out; that is the honest report of
+	// what an out-of-band cancel does to an in-flight Update.
 	for {
 		if err := workflow.Await(ctx, func() bool {
 			return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun

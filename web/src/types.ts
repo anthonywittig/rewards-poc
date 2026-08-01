@@ -94,6 +94,7 @@ export type AuditEntryKind =
   | 'notification_sent'
   | 'generation_rolled'
   | 'deactivated'
+  | 'reactivated'
 
 export interface AuditEntry {
   kind: AuditEntryKind

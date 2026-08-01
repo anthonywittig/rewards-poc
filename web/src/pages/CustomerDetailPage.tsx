@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import {
   addPoints,
   deactivateCustomer,
+  enrollCustomer,
   getAudit,
   getCustomer,
   newRequestId,
@@ -32,6 +33,9 @@ export function CustomerDetailPage() {
   const [confirmLeave, setConfirmLeave] = useState(false)
   const [leaveBusy, setLeaveBusy] = useState(false)
   const [leaveError, setLeaveError] = useState<unknown>(null)
+
+  const [rejoinBusy, setRejoinBusy] = useState(false)
+  const [rejoinError, setRejoinError] = useState<unknown>(null)
 
   useEffect(() => {
     if (!id) return
@@ -128,6 +132,31 @@ export function CustomerDetailPage() {
       }
     } finally {
       if (requestedId === id) setPointsBusy(false)
+    }
+  }
+
+  // Re-enrollment is the same POST /api/customers a new signup uses -- the
+  // server sees the ID is taken and inactive, and reactivates instead of
+  // starting. Sending the name and email we already hold keeps the button a
+  // one-click restore rather than a second trip through the enroll form.
+  async function onReactivate() {
+    if (!customer) return
+    const requestedId = customer.customerId
+    setRejoinBusy(true)
+    setRejoinError(null)
+    try {
+      await enrollCustomer({
+        customerId: requestedId,
+        name: customer.name,
+        email: customer.email,
+      })
+      if (requestedId !== id) return
+      await refresh()
+    } catch (err) {
+      if (requestedId !== id) return
+      setRejoinError(err)
+    } finally {
+      if (requestedId === id) setRejoinBusy(false)
     }
   }
 
@@ -267,8 +296,20 @@ export function CustomerDetailPage() {
               <h2>Deactivated</h2>
               <p className="warn-copy">
                 This customer has left the program. Points cannot be added.
-                Re-enrolling the same customer ID restores their prior balance.
+                Re-enrolling restores their {customer.points.toLocaleString()}{' '}
+                point balance — the workflow is still running, so nothing was lost.
               </p>
+              <div className="form-actions">
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  disabled={rejoinBusy}
+                  onClick={() => void onReactivate()}
+                >
+                  {rejoinBusy ? 'Re-enrolling…' : 'Re-enroll'}
+                </button>
+              </div>
+              <ErrorBanner error={rejoinError} />
             </section>
           )}
 

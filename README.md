@@ -51,8 +51,13 @@ make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase   # basic
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make deactivate ID=c-001                          # cancel, not terminate
+make deactivate ID=c-001                          # soft leave; the workflow keeps running
+make reactivate ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com   # rejoin, balance intact
+make status ID=c-001                              # still 500 points, gold
 ```
+
+Re-enrollment takes the name and email it is given, so pass them unless you mean to change
+them — the target's defaults are a convenience for throwaway IDs, not a no-op.
 
 `make test` runs the unit tests; they need neither Docker nor a running server.
 
@@ -110,11 +115,18 @@ it.
 
 One customer is one long-lived Workflow Execution with the ID `customer-<id>`, which is why
 none of these commands need a lookup table. Points arrive as Updates, status is a Query, and
-deactivation is a cancellation.
+so is leaving: deactivation is an Update that sets a flag, not a cancellation.
 
-**Re-enrolling a deactivated customer starts them over at zero.** The workflow ID is free once
-the execution closes, so enrollment succeeds — but it is a genuinely new enrollment, not a
-restoration. That is a decision, not an oversight; see §3.6 of the plan.
+**Re-enrolling a deactivated customer restores their balance.** Leaving is soft — the execution
+stays Running with `deactivated` set — so the workflow ID is still occupied and re-enrollment is
+an Update against the same execution rather than a fresh Start. Points, tier and
+`lifetimeEarnEvents` are all still there, and the timeline shows a `deactivated` row followed by
+a `reactivated` one. See §3.6 of the plan.
+
+Two consequences worth knowing. A customer who was *cancelled* out of band (`temporal workflow
+cancel`) is genuinely closed, and re-enrolling them does start over at zero — that is the ops
+path, not the product one. And membership no longer lives in `ExecutionStatus`: it is the
+`RewardsActive` search attribute, which is what the list and its filter chips read.
 
 ## The HTTP API
 
@@ -142,7 +154,7 @@ table, no local index. The `?q=` parameter is passed to Temporal essentially as 
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
 curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"        # Text, partial
-curl -sG localhost:8081/api/customers --data-urlencode "q=ExecutionStatus = 'Canceled'" # deactivated
+curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsActive = false"       # deactivated
 ```
 
 **The same query works unchanged in the Temporal UI**, which is the point of registering search
@@ -187,7 +199,7 @@ Every failure comes back as `{"error":{"code":"...","message":"..."}}` with a st
 |---|---|---|
 | 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
-| 409 | `already_exists` | enrolling a customer who is already active |
+| 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |
 | 409 | `rollover_race` | the workflow rolled over twice while applying one request |
 | 422 | `rejected` | the workflow refused it — see the split below |
@@ -470,14 +482,14 @@ cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
-  workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
+  workflow.go                 CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
   notifier.go                 the drain goroutine and the continue-as-new guard
   activity.go                 NotifyCustomer -- the only side effect in the system
   workflow_test.go            unit tests (no Docker required)
 internal/httpapi/
-  server.go                   enroll, detail, add points, deactivate, list
+  server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
   classify.go                 error shapes, measured against a real server
   dto.go                      the wire contract, frozen ahead of the endpoints

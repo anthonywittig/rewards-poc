@@ -71,6 +71,8 @@ type updateResult struct {
 	rejected  error
 	completed error
 	value     rewards.AddPointsResult
+	left      rewards.DeactivateResult
+	rejoined  rewards.ReactivateResult
 }
 
 func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
@@ -82,10 +84,22 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 			if err != nil {
 				return
 			}
-			// addPoints returns AddPointsResult; deactivate returns nil;
-			// reactivate returns CustomerStatus. Only decode when present.
-			if res, ok := v.(rewards.AddPointsResult); ok {
+			// The test env hands back the concrete value the handler returned,
+			// and there are three of them now. Enumerated rather than
+			// type-asserted to one, so a handler that starts returning
+			// something else fails here instead of silently leaving the
+			// assertion reading a zero value -- which for DeactivateResult and
+			// ReactivateResult means Changed=false, the answer half these tests
+			// are trying to distinguish.
+			switch res := v.(type) {
+			case rewards.AddPointsResult:
 				r.value = res
+			case rewards.DeactivateResult:
+				r.left = res
+			case rewards.ReactivateResult:
+				r.rejoined = res
+			default:
+				s.Failf("unexpected update result", "got %T", v)
 			}
 		},
 	}
@@ -605,10 +619,134 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 
 	s.Require().NoError(deact.rejected)
 	s.Require().NoError(deact.completed)
+	s.True(deact.left.Changed, "the first leave is a real transition")
 	s.False(statusAfterLeave.Active, "soft leave must mark inactive")
 	s.Equal(600, statusAfterLeave.Points, "points must survive deactivation")
 	s.True(statusAfterRejoin.Active, "re-enroll must reactivate")
 	s.Equal(600, statusAfterRejoin.Points, "re-enroll must restore the prior balance")
+}
+
+// Both membership Updates are idempotent, and both have to *say* so: the API
+// turns a repeat DELETE into 204 and a duplicate enrollment into 409 on the
+// strength of Changed, and the audit timeline draws a row only when it is true.
+// Reporting Changed=true for a no-op would show a customer leaving twice.
+func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
+	s.mockNotify(0)
+
+	first := s.deactivateAt(time.Minute, "leave-1")
+	second := s.deactivateAt(2*time.Minute, "leave-2")
+	s.stopAt(3 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Require().NoError(first.completed)
+	s.Require().NoError(second.completed)
+	s.True(first.left.Changed, "the first leave is a real transition")
+	s.False(second.left.Changed, "the second changed nothing")
+}
+
+// Re-enrolling someone who never left is a duplicate signup, and the handler
+// reports rather than applies it. Applying would let a second signup silently
+// overwrite a live customer's name and email -- the enroll endpoint depends on
+// Changed=false to turn this into the 409 it owes the caller.
+func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
+	s.mockNotify(0)
+
+	rejoin := s.reactivateAt(time.Minute, "rejoin", rewards.ReactivateRequest{
+		Name: "Mallory", Email: "mallory@example.com",
+	})
+	status := s.queryStatusAt(2 * time.Minute)
+	s.stopAt(3 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Require().NoError(rejoin.completed)
+	s.False(rejoin.rejoined.Changed, "an active customer was not reactivated")
+	s.Equal("Ada Lovelace", status.Name, "a duplicate enroll must not rename the customer")
+	s.Equal("ada@example.com", status.Email, "nor take over their email")
+	s.True(status.Active)
+}
+
+// Re-enrollment takes the new name and email -- the customer signed up again,
+// possibly with different details -- while leaving everything that makes the
+// balance meaningful alone.
+func (s *RewardsSuite) Test_Reactivate_AdoptsNewContactDetailsAndKeepsCounters() {
+	s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave")
+	rejoin := s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
+		Name: "Ada King", Email: "ada.king@example.com",
+	})
+	status := s.queryStatusAt(4 * time.Minute)
+	s.stopAt(5 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Require().NoError(rejoin.completed)
+	s.True(rejoin.rejoined.Changed)
+	s.Equal("Ada King", status.Name)
+	s.Equal("ada.king@example.com", status.Email)
+	s.Equal(600, status.Points, "re-enrollment is not a reset")
+	s.Equal(1, status.LifetimeEarnEvents, "nor does it forget how the balance was earned")
+	s.Equal(rewards.LevelGold, status.Level)
+}
+
+// A rejoined customer can earn again. Without this, "restore the balance" would
+// be a display-only claim: the handler's deactivated guard reads the same flag
+// reactivate clears, so a clear that did not take shows up here as a 409.
+func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
+	s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave")
+	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
+		Name: "Ada Lovelace", Email: "ada@example.com",
+	})
+	after := s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.stopAt(5 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Require().NoError(after.rejected)
+	s.Require().NoError(after.completed, "a rejoined customer must be able to earn again")
+	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
+}
+
+// Leaving does not re-announce a tier on the way back. NotifiedLevels is carried
+// through the round trip, so a customer who was congratulated for gold before
+// leaving is not congratulated for it again on re-enrollment.
+func (s *RewardsSuite) Test_Reactivate_DoesNotRenotifyACarriedLevel() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave")
+	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
+		Name: "Ada Lovelace", Email: "ada@example.com",
+	})
+	s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.stopAt(5 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"gold was announced before the customer left; rejoining is not a new promotion")
+}
+
+// The departure notice is armed by the transition, not by the request, so an
+// idempotent repeat does not send a second one. The customer left once.
+func (s *RewardsSuite) Test_SoftDeactivate_RepeatSendsOneDepartureNotice() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave-1")
+	s.deactivateAt(3*time.Minute, "leave-2")
+	s.stopAt(4 * time.Minute)
+
+	_ = s.runUntilStopped(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted),
+		"a repeat DELETE must not notify the customer a second time")
 }
 
 // addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.

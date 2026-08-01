@@ -261,18 +261,44 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p, paired := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
-			if paired && p.name == rewards.UpdateDeactivate {
+			// Membership changes: leaving and rejoining. Both are Updates now,
+			// so both are read the same way -- and both report whether they
+			// changed anything, because both are idempotent by design (a repeat
+			// DELETE, a re-enroll of someone already active). Only a real
+			// transition belongs on the timeline; a no-op that wrote an Update
+			// pair to history did not change the customer's membership and
+			// would read as a second departure or a second rejoin.
+			//
+			// A *failed* one is dropped rather than rendered as a rejection
+			// row, unlike a failed addPoints. That is not leniency: both
+			// handlers stage their change and commit only once the search
+			// attribute upsert is issued, so an Update that returned an error
+			// genuinely applied nothing. There is no half-state to disclose.
+			if paired && (p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate) {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				// Idempotent repeat DELETE still completes an Update; only a
-				// Changed leave belongs on the timeline.
-				var res rewards.DeactivateResult
-				if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) && !res.Changed {
+				// Undecodable payload defaults to "changed", keeping the older
+				// rule that a row history clearly contains is shown rather
+				// than dropped on a decoding technicality.
+				kind, changed := AuditDeactivated, true
+				if p.name == rewards.UpdateDeactivate {
+					var res rewards.DeactivateResult
+					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+						changed = res.Changed
+					}
+				} else {
+					kind = AuditReactivated
+					var res rewards.ReactivateResult
+					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+						changed = res.Changed
+					}
+				}
+				if !changed {
 					continue
 				}
 				out.entries = append(out.entries, AuditEntry{
-					Kind:       AuditDeactivated,
+					Kind:       kind,
 					At:         p.at,
 					Generation: out.startState.Generation,
 					RunID:      runID,
