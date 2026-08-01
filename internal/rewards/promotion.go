@@ -23,7 +23,7 @@ import "slices"
 //   - **The retry does not survive a tier advance.** A failed gold notice is
 //     re-offered only while the customer is still gold; reach platinum first and
 //     gold is dropped for good.
-func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
+func (l TierLadder) PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 	// Top down, stopping at the first rule the balance satisfies: the highest
 	// match wins and the ones below are never reached, which is "only the tier
 	// they are at" written as control flow.
@@ -36,8 +36,8 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 	//
 	// Nobody is congratulated for basic: it is not a rung, so falling out of the
 	// loop is exactly the basic case.
-	for i := len(tiers) - 1; i >= 0; i-- {
-		t := tiers[i]
+	for i := len(l) - 1; i >= 0; i-- {
+		t := l[i]
 		if state.Points < t.MinPoints {
 			continue
 		}
@@ -60,12 +60,12 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 // DepartureNotice is the same Activity reused for "this customer left", which is
 // why there is no separate cleanup Activity.
 // FINDINGS.md#tier-promotion-notifications.
-func DepartureNotice(state *CustomerState) NotifyRequest {
+func (l TierLadder) DepartureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,
 		Email:          state.Email,
 		Event:          NotifyEventDeparted,
-		Level:          Level(state.Points),
+		Level:          l.Level(state.Points),
 		IdempotencyKey: state.CustomerID + ":" + NotifyEventDeparted,
 	}
 }

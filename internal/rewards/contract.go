@@ -65,6 +65,7 @@ type CustomerStatus struct {
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
+	TierFloor  int       `json:"tierFloor"`  // 0 for basic; the balance that earned Level
 	EnrolledAt time.Time `json:"enrolledAt"`
 
 	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
@@ -74,15 +75,20 @@ type CustomerStatus struct {
 
 // StatusOf projects state into the Query result, deriving the tier fields rather
 // than reading them from state (FINDINGS.md#tiers-are-derived-never-stored).
-func StatusOf(state *CustomerState) CustomerStatus {
-	nextAt, _ := NextTierAt(state.Points)
+//
+// A method on the ladder, so the tier fields can only be derived under a ladder
+// the caller had to name -- and inside the workflow that is the run's own,
+// whichever version it resolved at startup.
+func (l TierLadder) StatusOf(state *CustomerState) CustomerStatus {
+	nextAt, _ := l.NextTierAt(state.Points)
 	return CustomerStatus{
 		CustomerID:         state.CustomerID,
 		Name:               state.Name,
 		Email:              state.Email,
 		Points:             state.Points,
-		Level:              Level(state.Points),
+		Level:              l.Level(state.Points),
 		NextTierAt:         nextAt,
+		TierFloor:          l.TierFloor(state.Points),
 		EnrolledAt:         state.EnrolledAt,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
 		Generation:         state.Generation,

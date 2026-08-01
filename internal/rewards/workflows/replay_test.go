@@ -15,15 +15,22 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Replay tests. FINDINGS.md#versioning-is-the-real-risk.
+// Replay tests. FINDINGS.md#versioning-and-replay.
 //
 // A customer's workflow *will* outlive a deploy. A worker picking up a task for
 // a run started weeks ago replays that run's recorded history through today's
 // code and requires the commands to match event for event; if they do not, the
 // workflow task fails and retries forever and the customer is silently wedged.
 //
-// testdata/pre-notification-* were recorded before the notification Activity
-// existed, so replaying them rehearses the deploy that adds it.
+// The fixtures are real histories from three eras:
+//
+//	pre-notification-*.json          before the notification Activity existed
+//	pre-marker-deactivated.json      likewise, and then deactivated
+//	ungated-notification.json        from the build that shipped the Activity ungated
+//	run-versioned-notification.json  from under the retired tier-notifications gate
+//
+// Which of them still replay changed when that gate was retired, and the tests
+// below are that ledger.
 
 // replayCase is one recorded run.
 type replayCase struct {
@@ -31,11 +38,13 @@ type replayCase struct {
 	what string
 }
 
+// The runs the retired tier-notifications gate used to protect.
 var preNotificationRuns = []replayCase{
 	{"pre-notification-enrollment.json", "first run: enrollment, three adds, then the roll"},
 	{"pre-notification-continued.json", "middle run: rolled into, three adds, rolled out of"},
 	{"pre-notification-deactivated.json", "final run: one add, then cancelled"},
 	{"pre-notification-rejection.json", "a run carrying a handler rejection at the cap"},
+	{"pre-marker-deactivated.json", "a marker-free run crossing gold, then deactivated"},
 }
 
 func loadHistory(t *testing.T, name string) *historypb.History {
@@ -72,50 +81,121 @@ func replay(t *testing.T, h *historypb.History) error {
 	})
 }
 
-// The deploy rehearsal. Every one of these histories was recorded before the
-// notification Activity existed; all of them must still replay. Remove the
-// GetVersion gate in CustomerRewardsWorkflow and these four fail with:
+// hasVersionMarker reports whether the history records any GetVersion decision.
+func hasVersionMarker(h *historypb.History) bool {
+	for _, e := range h.GetEvents() {
+		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
+			return true
+		}
+	}
+	return false
+}
+
+// hasNotifyActivity reports whether the history schedules the notification.
+func hasNotifyActivity(h *historypb.History) bool {
+	for _, e := range h.GetEvents() {
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil &&
+			a.GetActivityType().GetName() == rewards.ActivityNotifyCustomer {
+			return true
+		}
+	}
+	return false
+}
+
+// A run that recorded the *retired* gate still replays with the GetVersion call
+// deleted, which is what makes retiring a gate a normal thing to do.
 //
-//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
-//	  (ActivityType:(Name:NotifyCustomer) ...)
-func TestReplay_HistoriesRecordedBeforeTheNotificationActivity(t *testing.T) {
-	for _, tc := range preNotificationRuns {
-		t.Run(tc.file, func(t *testing.T) {
-			if err := replay(t, loadHistory(t, tc.file)); err != nil {
-				t.Errorf("%s (%s) no longer replays: %v", tc.file, tc.what, err)
-			}
-		})
+// run-versioned-notification.json carries a `Version` marker for a change ID no
+// code asks about any more, plus the automatic TemporalChangeVersion upsert that
+// came with it (FINDINGS.md#getversion-writes-two-events). Today's workflow
+// replays neither as a command, and neither has to be: the SDK matches commands
+// to events for Activities, timers and the like, and lets an orphan marker pass.
+func TestReplay_HistoriesCarryingTheRetiredMarkerStillReplay(t *testing.T) {
+	h := loadHistory(t, "run-versioned-notification.json")
+
+	// The fixture only proves anything if it really carries the retired marker
+	// and the Activity that gate controlled.
+	if !hasVersionMarker(h) {
+		t.Fatal("fixture has no Version marker; it cannot show a retired gate replaying")
+	}
+	if !hasNotifyActivity(h) {
+		t.Fatal("fixture schedules no NotifyCustomer activity; recapture it from a run that crosses a tier")
+	}
+
+	if err := replay(t, h); err != nil {
+		t.Fatalf("a run recorded under the retired gate no longer replays: %v", err)
 	}
 }
 
-// A history recorded by the *current* code, version marker and all. Guards the
-// other direction: that today's workflow is self-consistent, and that the marker
-// and its automatic TemporalChangeVersion upsert replay cleanly.
-func TestReplay_HistoryRecordedByTheCurrentWorkflow(t *testing.T) {
-	h := loadHistory(t, "run-versioned-notification.json")
+// The population the retired gate could never save, saved by retiring it.
+//
+// ungated-notification.json is real: an execution the *ungated* build created,
+// with the notification Activity in its history and no marker. Under the gate it
+// resolved to DefaultVersion, replay omitted an Activity the history demanded,
+// and it was unrescuable. With the gate gone the Activity is scheduled
+// unconditionally, the history matches, and the run is well again.
+//
+// The symmetry is the lesson: a gate protects the runs recorded before it and
+// strands the ones recorded beside it, and retiring it swaps which group is
+// which. Neither is escapable after the fact — only by not shipping the ungated
+// commit in the first place.
+//
+// It doubles as coverage for the *new* gate's DefaultVersion branch: the history
+// has no TemporalChangeVersion, so today's code resolves
+// rewards.ChangeTierThresholds to DefaultVersion and replays it on
+// rewards.TiersV1 throughout. It does not pin the thresholds themselves — its
+// balances step 200/400/600, which is gold under either ladder. A history that
+// discriminates needs a pre-marker run parked between GoldThresholdV2 and
+// GoldThreshold; until one is recorded, TestLadderBoundaries is the only cover
+// for that arithmetic.
+func TestReplay_UngatedHistoriesReplayNowTheGateIsRetired(t *testing.T) {
+	h := loadHistory(t, "ungated-notification.json")
+
+	// Confirm the fixture is the thing this test claims: an Activity, no marker.
+	if hasVersionMarker(h) || !hasNotifyActivity(h) {
+		t.Fatalf("fixture is not an ungated history (marker=%v activity=%v)",
+			hasVersionMarker(h), hasNotifyActivity(h))
+	}
 
 	if err := replay(t, h); err != nil {
-		t.Fatalf("a history this code produced does not replay through it: %v", err)
+		t.Fatalf("the ungated histories still cannot be rescued: %v", err)
 	}
+}
 
-	// Sanity-check the fixture is the interesting one rather than a bare run:
-	// it must carry both the version marker and a notification Activity, or the
-	// test above is replaying something that proves much less than it looks.
-	var sawMarker, sawActivity bool
-	for _, e := range h.GetEvents() {
-		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
-			sawMarker = true
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil &&
-			a.GetActivityType().GetName() == rewards.ActivityNotifyCustomer {
-			sawActivity = true
-		}
-	}
-	if !sawMarker {
-		t.Error("fixture has no Version marker; recapture it from a post-Phase-6 worker")
-	}
-	if !sawActivity {
-		t.Error("fixture schedules no NotifyCustomer activity; recapture it from a run that crosses a tier")
+// The bill for retiring the gate, itemised rather than quietly written off.
+//
+// These histories predate the notification Activity and were the entire reason
+// the tier-notifications gate was written. With the gate gone, today's code
+// emits a ScheduleActivityTask where they have no event:
+//
+//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
+//	  (ActivityType:(Name:NotifyCustomer) ...)
+//
+// Accepted deliberately: there is nothing left in flight worth migrating, so the
+// answer for any survivor is `make reset`. Asserted rather than deleted, because
+// the difference between "these runs are written off" and "we forgot about these
+// runs" is exactly this test — and because the query that decides whether a gate
+// is safe to retire is worth keeping next to the histories that prove it:
+//
+//	WorkflowType = 'CustomerRewardsWorkflow'
+//	  AND ExecutionStatus = 'Running'
+//	  AND TemporalChangeVersion IS NULL
+func TestReplay_RetiringTheGateForfeitsTheHistoriesItProtected(t *testing.T) {
+	for _, tc := range preNotificationRuns {
+		t.Run(tc.file, func(t *testing.T) {
+			h := loadHistory(t, tc.file)
+			if hasVersionMarker(h) || hasNotifyActivity(h) {
+				t.Fatalf("%s is not a pre-notification history (marker=%v activity=%v)",
+					tc.file, hasVersionMarker(h), hasNotifyActivity(h))
+			}
+
+			if err := replay(t, h); err == nil {
+				t.Errorf("%s (%s) replays again -- the notification gate has come "+
+					"back, or the Activity has; update this test and "+
+					"FINDINGS.md#retiring-a-gate-forfeits-what-it-protected",
+					tc.file, tc.what)
+			}
+		})
 	}
 }
 
@@ -128,110 +208,29 @@ func TestReplay_HistoryRecordedByTheCurrentWorkflow(t *testing.T) {
 // like a versioning problem, and it names whichever event came first, so it
 // points at innocent code.
 //
-// Asserted rather than merely commented, so nobody "simplifies" replay() back to
-// the plain call and gets a suite that passes while testing nothing.
+// Run against a history that replays perfectly well *with* the option, so the
+// option is the only variable. Asserted rather than merely commented, so nobody
+// "simplifies" replay() back to the plain call and gets a suite that passes
+// while testing nothing.
 func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
+	h := loadHistory(t, "run-versioned-notification.json")
+	if err := replay(t, h); err != nil {
+		t.Fatalf("fixture does not replay even with OriginalExecution, so this "+
+			"test cannot isolate the missing option: %v", err)
+	}
+
 	r := worker.NewWorkflowReplayer()
 	r.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
 
-	err := r.ReplayWorkflowHistory(nil, loadHistory(t, "pre-notification-enrollment.json"))
+	err := r.ReplayWorkflowHistory(nil, h)
 	if err == nil {
 		t.Fatal("the plain replay call now works -- drop the OriginalExecution workaround in replay()")
 	}
-	if !strings.Contains(err.Error(), "nondeterministic") {
+	// TMPRL1100 is the SDK's nondeterminism class, and that is the whole
+	// complaint: a harness mistake is reported as a versioning failure. Matched
+	// on the code rather than the prose, which varies with whichever event the
+	// replayer reached first.
+	if !strings.Contains(err.Error(), "TMPRL1100") {
 		t.Errorf("unexpected failure shape, worth re-reading: %v", err)
-	}
-}
-
-// A limitation, asserted so it cannot be forgotten: the gate arrived one commit
-// too late to save the runs the ungated code created.
-//
-// testdata/ungated-notification.json is real -- an execution whose history
-// contains a NotifyCustomer Activity and *no* Version marker. Replaying it
-// through the gated workflow fails, because GetVersion cannot tell "predates the
-// change" from "ran the change before it was gated":
-//
-//	lookup failed for scheduledEventID to activityID: scheduleEventID: 24
-//
-// There is no code fix -- whichever way DefaultVersion is interpreted, one of
-// the two populations breaks. Gating protects every run recorded before the
-// change, at the cost of those recorded in the window between two commits.
-//
-// The remedy is operational, and the affected executions are findable because
-// GetVersion upserts TemporalChangeVersion
-// (FINDINGS.md#getversion-writes-two-events):
-//
-//	WorkflowType = 'CustomerRewardsWorkflow'
-//	  AND ExecutionStatus = 'Running'
-//	  AND TemporalChangeVersion IS NULL
-//	  AND StartTime > '<when the ungated build was deployed>'
-//
-// ...then `make reset`, or a targeted terminate. The StartTime clause separates
-// them from older runs, which also have no marker but replay perfectly well.
-func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
-	h := loadHistory(t, "ungated-notification.json")
-
-	// Confirm the fixture is the thing this test claims: an Activity, no marker.
-	var sawMarker, sawActivity bool
-	for _, e := range h.GetEvents() {
-		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
-			sawMarker = true
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil &&
-			a.GetActivityType().GetName() == rewards.ActivityNotifyCustomer {
-			sawActivity = true
-		}
-	}
-	if sawMarker || !sawActivity {
-		t.Fatalf("fixture is not an ungated Phase 6 history (marker=%v activity=%v)",
-			sawMarker, sawActivity)
-	}
-
-	if err := replay(t, h); err == nil {
-		t.Fatal("these histories now replay -- a way to rescue them has been found; " +
-			"update this test and FINDINGS.md#versioning-is-the-real-risk")
-	}
-}
-
-// The departure half of the gate.
-//
-// A customer enrolled before the marker can still be deactivated today: their
-// run is live, it has no marker, and the deactivate Update arrives as new
-// history on top of it. The gate has to keep that Update from arming the
-// departure notice, or the Activity goes into history that a later replay --
-// still resolving to DefaultVersion -- would decline to produce, wedging the
-// customer at the very moment they leave.
-//
-// testdata/pre-marker-deactivated.json is that run: no marker, no Activities, an
-// addPoints that crosses gold, and a deactivate. Recorded by running the current
-// workflow with the GetVersion call replaced by a bare `false`; the replayer
-// sees recorded events, not how they were made.
-func TestReplay_PreMarkerRunCanStillBeDeactivated(t *testing.T) {
-	h := loadHistory(t, "pre-marker-deactivated.json")
-
-	// The fixture only means something if it really is marker-free and
-	// Activity-free; otherwise this passes for the wrong reason.
-	for _, e := range h.GetEvents() {
-		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
-			t.Fatal("fixture has a Version marker; recapture it without the GetVersion call")
-		}
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
-			t.Fatalf("fixture already schedules %s; recapture it with notifications off",
-				a.GetActivityType().GetName())
-		}
-	}
-	var sawDeactivate bool
-	for _, e := range h.GetEvents() {
-		if u := e.GetWorkflowExecutionUpdateAcceptedEventAttributes(); u != nil &&
-			u.GetAcceptedRequest().GetInput().GetName() == rewards.UpdateDeactivate {
-			sawDeactivate = true
-		}
-	}
-	if !sawDeactivate {
-		t.Fatal("fixture carries no deactivate Update, so it cannot test the departure gate")
-	}
-
-	if err := replay(t, h); err != nil {
-		t.Errorf("a pre-marker customer cannot be deactivated without wedging: %v", err)
 	}
 }

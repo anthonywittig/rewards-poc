@@ -18,6 +18,16 @@ var (
 	KeyActive        = temporal.NewSearchAttributeKeyBool("RewardsActive")
 )
 
+// KeyChangeVersion is the built-in search attribute the server ships and
+// workflow.GetVersion upserts on our behalf -- which is why it is a bare name
+// rather than a typed key in the list above: nothing here writes it, the API
+// only reads it back to tell which tier ladder a run is on
+// (FINDINGS.md#getversion-writes-two-events). Its value is a KeywordList of
+// "<change id>-<version>" entries.
+//
+// Spelled out because the SDK keeps its copy of the name in an internal package.
+const KeyChangeVersion = "TemporalChangeVersion"
+
 // Note on CustomerName: registered as Text, and the typed constructor for Text
 // is NewSearchAttributeKeyString -- the SDK's "String" is the server's "Text".
 // Keyword is exact-match, Text is tokenized, which is why names use Text

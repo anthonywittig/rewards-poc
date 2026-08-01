@@ -344,6 +344,7 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		out.Points = st.Points
 		out.Level = st.Level
 		out.NextTierAt = st.NextTierAt
+		out.TierFloor = st.TierFloor
 		out.EnrolledAt = st.EnrolledAt
 		out.LifetimeEarnEvents = st.LifetimeEarnEvents
 		out.Generation = st.Generation
@@ -719,6 +720,13 @@ type searchAttrValues struct {
 	EnrolledAt time.Time
 	Generation int
 	Active     *bool // nil when the attribute was never upserted
+
+	// ChangeVersions is the built-in TemporalChangeVersion attribute: which
+	// workflow.GetVersion decisions this run has made. Nobody registers it --
+	// GetVersion upserts it for free (FINDINGS.md#getversion-writes-two-events)
+	// -- and it is what lets a caller with no worker to Query still derive tiers
+	// under the same ladder the run itself uses.
+	ChangeVersions []string
 }
 
 // decodeSearchAttributes is best-effort by design: a missing or undecodable
@@ -752,6 +760,10 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
 	decodeInt(rewards.KeyGeneration.GetName(), &out.Generation)
 
+	if p, ok := fields[rewards.KeyChangeVersion]; ok {
+		_ = dc.FromPayload(p, &out.ChangeVersions)
+	}
+
 	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
 		_ = dc.FromPayload(p, &out.EnrolledAt)
 	}
@@ -780,7 +792,14 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 
 	// Derived rather than stored, so it stays consistent with the balance we
 	// just recovered. FINDINGS.md#tiers-are-derived-never-stored.
-	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
+	//
+	// Under the run's own ladder, not today's: the thresholds are versioned, so
+	// a run that never picked up the marker is still on the original ones and
+	// telling its owner "gold at 450" would advertise a promotion that run would
+	// never have made. FINDINGS.md#versioning-the-tier-thresholds.
+	tiers := rewards.TiersForChangeVersions(v.ChangeVersions)
+	out.NextTierAt, _ = tiers.NextTierAt(out.Points)
+	out.TierFloor = tiers.TierFloor(out.Points)
 
 	// Status is deliberately not set here. Deciding active from deactivated
 	// needs the execution status as well as RewardsActive, and the caller has

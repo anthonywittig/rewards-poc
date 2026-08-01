@@ -30,8 +30,14 @@ type customer struct {
 	why             string
 }
 
-// Six customers per tier (basic < 500, gold < 1000, platinum >= 1000), which
-// fills the tier filter and pushes the unfiltered list past ListLimit.
+// Six customers per tier, which fills the tier filter and pushes the unfiltered
+// list past ListLimit.
+//
+// Bucketed by the ladder a run enrolled today gets -- basic below
+// GoldThresholdV2, gold below PlatinumThresholdV2, platinum at or above it. The
+// seeder enrolls fresh customers, so they all resolve the tier-thresholds
+// version marker to the current ladder; a run carried over from before that
+// marker would bucket by the 50-points-higher thresholds instead.
 var seedSet = []customer{
 	// --- basic ----------------------------------------------------------------
 	{
@@ -44,9 +50,9 @@ var seedSet = []customer{
 		why: "deactivated: no add-points form, and a departure notification",
 	},
 	{id: "katherine", name: "Katherine Johnson", email: "katherine@example.com", adds: []int{95}, why: "basic"},
-	{id: "alan", name: "Alan Turing", email: "alan@example.com", adds: []int{300, 180}, why: "basic, near gold"},
+	{id: "alan", name: "Alan Turing", email: "alan@example.com", adds: []int{300, 140}, why: "basic, near gold"},
 	{id: "margaret", name: "Margaret Hamilton", email: "margaret@example.com", adds: []int{200, 150}, why: "basic"},
-	{id: "donald", name: "Donald Knuth", email: "donald@example.com", adds: []int{400, 50}, why: "basic"},
+	{id: "donald", name: "Donald Knuth", email: "donald@example.com", adds: []int{400, 20}, why: "basic"},
 
 	// --- gold -----------------------------------------------------------------
 	{

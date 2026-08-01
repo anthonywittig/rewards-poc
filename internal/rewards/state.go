@@ -17,7 +17,11 @@
 // ActivityNotifyCustomer string constant instead.
 package rewards
 
-import "time"
+import (
+	"fmt"
+	"slices"
+	"time"
+)
 
 // TaskQueue is the single queue every customer workflow runs on.
 const TaskQueue = "rewards"
@@ -37,10 +41,46 @@ func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID
 
 // Tier thresholds. Tiers are derived from these, never stored.
 // FINDINGS.md#tiers-are-derived-never-stored.
+//
+// There are two sets because lowering the bar is a *command-changing* edit: the
+// balance at which a promotion Activity is scheduled moves, and so do the values
+// every search attribute upsert writes. Editing the constants in place would
+// wedge every run already in flight, so the ladder is versioned instead --
+// FINDINGS.md#versioning-the-tier-thresholds.
 const (
+	// v1, the original ladder. Runs whose history predates the version marker
+	// keep it for the rest of their lives.
 	GoldThreshold     = 500
 	PlatinumThreshold = 1000
+
+	// TierThresholdDrop is how much cheaper v2 makes every rung. One constant
+	// rather than two hand-written numbers, so "50 less" cannot drift into "50
+	// less for gold, 40 less for platinum".
+	TierThresholdDrop = 50
+
+	// v2, the ladder a run started today uses.
+	GoldThresholdV2     = GoldThreshold - TierThresholdDrop
+	PlatinumThresholdV2 = PlatinumThreshold - TierThresholdDrop
 )
+
+// Versioning marker for the tier ladder, and the only thing in this package that
+// exists for workflow.GetVersion. It lives here rather than in the workflows
+// package because two callers need it: the workflow passes it to GetVersion, and
+// the API reads it back out of the built-in TemporalChangeVersion search
+// attribute to tell which ladder a run it cannot Query was using.
+//
+// The name is recorded in Event History and can never be reused or renamed.
+// FINDINGS.md#versioning-is-the-real-risk.
+const (
+	ChangeTierThresholds  = "tier-thresholds"
+	VersionTierThresholds = 1
+)
+
+// ChangeVersionTierThresholds is the TemporalChangeVersion entry Temporal writes
+// for a run that resolved the marker above to VersionTierThresholds. Its shape
+// is "<change id>-<version>", set by the SDK rather than by us.
+// FINDINGS.md#getversion-writes-two-events.
+var ChangeVersionTierThresholds = fmt.Sprintf("%s-%d", ChangeTierThresholds, VersionTierThresholds)
 
 // Tier names. Strings rather than a custom type because they cross the wire as
 // search attribute values and JSON.
@@ -56,19 +96,56 @@ type tier struct {
 	MinPoints int
 }
 
-// tiers is the ladder, and the only place a threshold is attached to a tier.
-// Level, NextTierAt and PromotionFor all walk it rather than each carrying their
-// own switch.
+// TierLadder is an ordered ladder of rungs, and the only place a threshold is
+// attached to a tier. Level, NextTierAt, TierFloor and PromotionFor are all
+// methods on it rather than each carrying their own switch.
 //
 // LevelBasic is deliberately not a rung. It is the floor -- what you are when no
 // rule matches -- and giving it a zero-point rule would make "promoted to basic"
 // something the notifier had to special-case back out.
 //
 // MUST stay sorted by MinPoints ascending; everything below relies on it.
-// TestTierLadderIsOrdered enforces that rather than trusting the comment.
-var tiers = []tier{
-	{Level: LevelGold, MinPoints: GoldThreshold},
-	{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+// TestTierLadderIsOrdered enforces that for every ladder in ladders rather than
+// trusting the comment.
+type TierLadder []tier
+
+// The ladders. A run picks one at startup from its GetVersion result and uses
+// that one for its whole life; nothing recomputes a tier under a different
+// ladder than the one its history was written with.
+var (
+	TiersV1 = TierLadder{
+		{Level: LevelGold, MinPoints: GoldThreshold},
+		{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+	}
+	TiersV2 = TierLadder{
+		{Level: LevelGold, MinPoints: GoldThresholdV2},
+		{Level: LevelPlatinum, MinPoints: PlatinumThresholdV2},
+	}
+)
+
+// ladders is every ladder that exists, for the tests that assert the invariants
+// each one has to satisfy. Not for dispatch: use TiersForChangeVersions.
+//
+// There is deliberately no exported "the current ladder" alongside it. Every
+// caller either belongs to a run, and takes that run's ladder, or is resolving
+// one from a change version -- and a package-level shortcut is exactly how a
+// tier gets derived under thresholds the customer's run never used.
+var ladders = map[string]TierLadder{"v1": TiersV1, "v2": TiersV2}
+
+// TiersForChangeVersions resolves the ladder from a run's TemporalChangeVersion
+// search attribute, which is how a caller outside the workflow -- the API
+// projecting a closed execution it cannot Query -- gets the same answer the run
+// itself would have given.
+//
+// Absent entry means absent marker means DefaultVersion, which is v1. That is
+// the same mapping the workflow makes, and it has to stay that way: a closed
+// pre-marker customer whose detail page suddenly reads "gold at 450" would be
+// showing them a promotion their run never made.
+func TiersForChangeVersions(changeVersions []string) TierLadder {
+	if slices.Contains(changeVersions, ChangeVersionTierThresholds) {
+		return TiersV2
+	}
+	return TiersV1
 }
 
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so
@@ -132,9 +209,9 @@ type CustomerState struct {
 
 // Level derives the tier from a balance: the highest rung the balance reaches,
 // or basic if it reaches none.
-func Level(points int) string {
+func (l TierLadder) Level(points int) string {
 	level := LevelBasic
-	for _, t := range tiers {
+	for _, t := range l {
 		if points >= t.MinPoints {
 			level = t.Level
 		}
@@ -144,13 +221,30 @@ func Level(points int) string {
 
 // NextTierAt returns the balance at which the next promotion happens, and false
 // if the customer is already at the top tier.
-func NextTierAt(points int) (int, bool) {
+func (l TierLadder) NextTierAt(points int) (int, bool) {
 	// The first rung not yet reached, which is the next one up because the
 	// ladder is ordered. Falling out means every rung is behind them.
-	for _, t := range tiers {
+	for _, t := range l {
 		if points < t.MinPoints {
 			return t.MinPoints, true
 		}
 	}
 	return 0, false
+}
+
+// TierFloor returns the balance that earned the customer their current tier, or
+// 0 for basic.
+//
+// It exists for the progress bar, which needs both ends of the current rung to
+// draw. The UI used to hardcode "the rung below 1000 is 500"; once the ladder is
+// versioned that is no longer knowable from the next threshold alone, so the
+// span comes from whichever ladder the run is actually on.
+func (l TierLadder) TierFloor(points int) int {
+	floor := 0
+	for _, t := range l {
+		if points >= t.MinPoints {
+			floor = t.MinPoints
+		}
+	}
+	return floor
 }

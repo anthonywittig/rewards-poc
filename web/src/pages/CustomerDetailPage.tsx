@@ -222,6 +222,7 @@ export function CustomerDetailPage() {
             <ProgressBar
               points={customer.points}
               nextTierAt={customer.nextTierAt}
+              tierFloor={customer.tierFloor}
               level={customer.level}
             />
           </div>

@@ -64,8 +64,8 @@ CLI inside the server container.
 ```sh
 make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
 make status ID=c-001
-make add    ID=c-001 AMOUNT=499 REASON=purchase
-make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
+make add    ID=c-001 AMOUNT=449 REASON=purchase
+make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 450, promoted to gold
 make deactivate ID=c-001                          # soft leave; the workflow keeps running
 make reactivate ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com   # rejoin, balance intact
 make audit  ID=c-001                              # the timeline, crawled out of Event History
@@ -209,13 +209,19 @@ go test ./internal/rewards/workflows/ -run TestReplay
 ```
 
 A customer's workflow outlives deploys, so today's code gets replayed against histories recorded
-weeks ago and the commands must match event for event. `internal/rewards/workflows/testdata/pre-notification-*.json`
-are real histories from before the notification Activity existed; replaying them is a rehearsal
-of the deploy that added it, and the first run failed — adding the Activity would have wedged
-every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
-the sharper lesson is that it arrived one commit too late to help executions created by the
-ungated build: **gate a command-changing edit in the same commit that introduces it.**
-[FINDINGS.md](docs/FINDINGS.md#versioning-is-the-real-risk).
+weeks ago and the commands must match event for event. `internal/rewards/workflows/testdata/`
+holds real histories; replaying them rehearses the deploy. The first time that test ran it
+failed — adding the notification Activity would have wedged every customer with an open run, and
+nothing else caught it. The fix is `workflow.GetVersion`, and the sharper lesson is that it
+arrived one commit too late to help executions created by the ungated build: **gate a
+command-changing edit in the same commit that introduces it.**
+
+That is applied rather than restated by the live gate, `tier-thresholds`: the tier ladder dropped
+50 points per rung (gold 450, platinum 950), which moves both the balance that schedules a
+promotion and the level every search attribute upsert writes. Runs recorded before the marker
+keep the original thresholds until they continue as new; the API resolves the same ladder from
+each run's `TemporalChangeVersion`.
+[FINDINGS.md](docs/FINDINGS.md#versioning-and-replay).
 
 **The determinism check runs before the replay test can save you.**
 

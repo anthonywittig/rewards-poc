@@ -35,12 +35,16 @@ type AddPointsRequest struct {
 // while Points and Generation come from the successor. Generation is the field
 // to trust for "which run"; RunID is advisory and may lag by one.
 type CustomerResponse struct {
-	CustomerID string    `json:"customerId"`
-	Name       string    `json:"name"`
-	Email      string    `json:"email"`
-	Points     int       `json:"points"`
-	Level      string    `json:"level"`
-	NextTierAt int       `json:"nextTierAt"`
+	CustomerID string `json:"customerId"`
+	Name       string `json:"name"`
+	Email      string `json:"email"`
+	Points     int    `json:"points"`
+	Level      string `json:"level"`
+	NextTierAt int    `json:"nextTierAt"`
+	// TierFloor is the balance that earned Level, 0 for basic. The progress bar
+	// needs both ends of the rung, and since the thresholds are versioned the
+	// client can no longer infer the lower one from NextTierAt.
+	TierFloor  int       `json:"tierFloor"`
 	EnrolledAt time.Time `json:"enrolledAt"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`

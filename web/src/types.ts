@@ -56,6 +56,10 @@ export interface CustomerResponse {
   points: number
   level: string
   nextTierAt: number
+  /** Balance that earned the current tier; 0 for basic. Server-supplied because
+   *  the thresholds are versioned per workflow run — the client cannot infer the
+   *  bottom of the rung from nextTierAt. */
+  tierFloor: number
   enrolledAt: string
   lifetimeEarnEvents: number
   generation: number

@@ -28,12 +28,13 @@ const (
 )
 
 // deliverPromotion runs NotifyCustomer for the customer's current unannounced
-// tier, if any, and records success in NotifiedLevels.
+// tier, if any, and records success in NotifiedLevels. The ladder is the run's
+// own, so a pre-marker run announces gold at 500 and not at 450.
 //
 // Callers run this from the workflow main loop so the Update handler never
 // awaits the Activity.
-func deliverPromotion(ctx workflow.Context, state *rewards.CustomerState) {
-	note, ok := rewards.PromotionFor(state)
+func deliverPromotion(ctx workflow.Context, tiers rewards.TierLadder, state *rewards.CustomerState) {
+	note, ok := tiers.PromotionFor(state)
 	if !ok {
 		return
 	}

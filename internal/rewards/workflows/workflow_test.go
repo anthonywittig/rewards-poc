@@ -182,17 +182,30 @@ func (s *RewardsSuite) Test_AddPoints_AppliesAndDerivesTier() {
 }
 
 // The tier boundary crossed through the real handler, not just the pure
-// function: 499 is still basic, one more point promotes.
+// function: one point below gold is still basic, one more point promotes.
+//
+// At the *lowered* boundary, which is also this suite's assertion that a fresh
+// run resolves rewards.ChangeTierThresholds to the new version. The test
+// environment has no recorded history, so every GetVersion here returns the
+// maximum supported version -- the same answer a customer enrolled today gets.
+// The pre-marker half of the gate is not reachable from here; it is covered in
+// level_test.go and by the replay suite.
 func (s *RewardsSuite) Test_AddPoints_CrossesGoldBoundary() {
-	first := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 499, Reason: "purchase"})
+	first := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{
+		Amount: rewards.GoldThresholdV2 - 1, Reason: "purchase"})
 	second := s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 1, Reason: "purchase"})
 	s.stopAt(3 * time.Minute)
 
 	_ = s.runUntilStopped(newState())
 
-	s.Equal(rewards.LevelBasic, first.value.Level, "499 points is still basic")
-	s.Equal(rewards.LevelGold, second.value.Level, "500 points promotes to gold")
-	s.Equal(500, second.value.Balance)
+	s.Equal(rewards.LevelBasic, first.value.Level, "one point short of gold is still basic")
+	s.Equal(rewards.LevelGold, second.value.Level, "the lowered threshold promotes to gold")
+	s.Equal(rewards.GoldThresholdV2, second.value.Balance)
+
+	// The point of the version bump: this balance was basic under the old
+	// ladder, and any run still on it reports basic to this day.
+	s.Equal(rewards.LevelBasic, rewards.TiersV1.Level(rewards.GoldThresholdV2),
+		"a pre-marker run must not see gold here")
 }
 
 func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
@@ -306,7 +319,8 @@ func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 	s.Equal("ada@example.com", status.Email)
 	s.Equal(600, status.Points)
 	s.Equal(rewards.LevelGold, status.Level)
-	s.Equal(rewards.PlatinumThreshold, status.NextTierAt)
+	s.Equal(rewards.PlatinumThresholdV2, status.NextTierAt)
+	s.Equal(rewards.GoldThresholdV2, status.TierFloor, "the other end of the rung the UI draws")
 	s.False(status.EnrolledAt.IsZero(), "EnrolledAt is stamped on the first run")
 }
 

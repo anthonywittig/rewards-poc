@@ -21,19 +21,15 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Versioning markers for workflow.GetVersion.
+// The workflow.GetVersion markers this workflow uses are named in the domain
+// package -- rewards.ChangeTierThresholds -- because the API needs the same
+// strings to read a run's version back out of TemporalChangeVersion.
 // FINDINGS.md#versioning-is-the-real-risk.
 //
-// Entity workflows outlive deploys, so a change that alters the commands a run
-// emits has to be gated or it breaks every execution already in flight. These
-// names are recorded in Event History and can never be reused or renamed.
-const (
-	// changeTierNotifications gates the notification Activity. Runs started
-	// before it keep the old behaviour for the rest of their lives, and pick
-	// notifications up at their next continue-as-new.
-	changeTierNotifications  = "tier-notifications"
-	versionTierNotifications = 1
-)
+// The gate that used to live here, changeTierNotifications, is gone. It was
+// retired the ordinary way: it had no live runs left on DefaultVersion, so the
+// branch it selected was dead code. Removing it is not free of consequences --
+// see FINDINGS.md#retiring-a-gate-forfeits-the-histories-it-protected.
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
@@ -59,31 +55,38 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		state.EnrolledAt = workflow.Now(ctx)
 	}
 
-	if err := upsertSearchAttributes(ctx, &state); err != nil {
+	// Which tier ladder this run lives by, decided once and never revisited.
+	//
+	// Lowering the thresholds by TierThresholdDrop moves the balance at which a
+	// promotion Activity is scheduled *and* the level every search attribute
+	// upsert writes, so it is a command-changing edit twice over. Ungated, a run
+	// whose history records "no Activity at 460 points" would replay under the
+	// new code and emit a ScheduleActivityTask the history has no event for:
+	//
+	//	nondeterministic workflow: extra replay command for ScheduleActivityTask
+	//
+	// Runs recorded before this marker resolve to DefaultVersion and keep the
+	// original ladder for the rest of their lives; they move to the cheaper one
+	// at their next continue-as-new, at most EarnsPerRun adds away. That means a
+	// customer sitting at 460 is basic until their run rolls and gold after --
+	// deliberate, and the price of not wedging them.
+	//
+	// It is resolved before the handlers are registered, on purpose: it must be
+	// the same value for every Update the run ever serves, and reading it inside
+	// a handler would put a GetVersion marker in the middle of an Update's
+	// history rather than at a fixed point.
+	tiers := rewards.TiersV1
+	if workflow.GetVersion(ctx, rewards.ChangeTierThresholds,
+		workflow.DefaultVersion, rewards.VersionTierThresholds) >= rewards.VersionTierThresholds {
+		tiers = rewards.TiersV2
+	}
+
+	if err := upsertSearchAttributes(ctx, tiers, &state); err != nil {
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
 
-	// Adding the notification Activity was a *breaking* change to every run
-	// already in flight: the new code emits a ScheduleActivityTask command where
-	// the recorded history has no matching event, so replay fails and the
-	// workflow task retries forever. Runs whose history predates this marker
-	// resolve to DefaultVersion and keep behaving as they did.
-	//
-	// One population the gate cannot save: executions created by the *ungated*
-	// build. Their history contains the Activity and no marker, so they resolve
-	// to DefaultVersion too, and replay then omits an Activity the history
-	// demands. GetVersion cannot tell "predates the change" from "ran the change
-	// before it was gated". Find them with TemporalChangeVersion IS NULL plus a
-	// StartTime lower bound, and reset them. Pinned by
-	// TestReplay_UngatedPhase6HistoriesCannotBeRescued.
-	//
-	// The lesson is upstream: gate a command-changing edit in the same commit
-	// that introduces it.
-	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
-		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
-
 	if err := workflow.SetQueryHandler(ctx, rewards.QueryGetStatus, func() (rewards.CustomerStatus, error) {
-		return rewards.StatusOf(&state), nil
+		return tiers.StatusOf(&state), nil
 	}); err != nil {
 		return fmt.Errorf("register %s query: %w", rewards.QueryGetStatus, err)
 	}
@@ -110,20 +113,20 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
 
-			// Gated: a run whose history predates the version marker must not arm
-			// this, or the loop emits a ScheduleActivityTask the history has no
-			// event for. See notifyEnabled above.
-			if _, ok := rewards.PromotionFor(&state); ok && notifyEnabled {
+			// Asked of the run's own ladder: on a pre-marker run the same
+			// balance that arms this today would not have armed it, and arming
+			// it would emit a ScheduleActivityTask its history has no event for.
+			if _, ok := tiers.PromotionFor(&state); ok {
 				needsNotify = true
 				logger.Info("tier promotion pending",
-					"customerId", state.CustomerID, "level", rewards.Level(state.Points))
+					"customerId", state.CustomerID, "level", tiers.Level(state.Points))
 			}
 
 			earnsThisRun++
 
 			eventID := fmt.Sprintf("%s:%d", state.CustomerID, state.LifetimeEarnEvents)
 
-			if err := upsertSearchAttributes(ctx, &state); err != nil {
+			if err := upsertSearchAttributes(ctx, tiers, &state); err != nil {
 				logger.Error("search attribute upsert failed after point add",
 					"customerId", state.CustomerID, "error", err)
 			}
@@ -133,12 +136,12 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"amount", req.Amount,
 				"reason", req.Reason,
 				"balance", state.Points,
-				"level", rewards.Level(state.Points),
+				"level", tiers.Level(state.Points),
 				"eventId", eventID)
 
 			return rewards.AddPointsResult{
 				Balance: state.Points,
-				Level:   rewards.Level(state.Points),
+				Level:   tiers.Level(state.Points),
 				EventID: eventID,
 			}, nil
 		},
@@ -178,19 +181,16 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			// shows them active, so a leave visibility never saw is not a leave.
 			next := state
 			next.Deactivated = true
-			if err := upsertSearchAttributes(ctx, &next); err != nil {
+			if err := upsertSearchAttributes(ctx, tiers, &next); err != nil {
 				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
-			// Gated for the same reason as the promotion above: a pre-marker run
-			// deactivated after the deploy must not emit a command its history
-			// cannot account for.
-			needsDeparture = notifyEnabled
+			needsDeparture = true
 
 			logger.Info("customer deactivated",
 				"customerId", state.CustomerID,
 				"points", state.Points,
-				"level", rewards.Level(state.Points))
+				"level", tiers.Level(state.Points))
 			return rewards.DeactivateResult{Changed: true}, nil
 		}); err != nil {
 		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
@@ -203,7 +203,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			// applied, so a racing enroll cannot overwrite a live customer's
 			// name and email with a second signup's.
 			if !state.Deactivated {
-				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
+				return rewards.ReactivateResult{Changed: false, Status: tiers.StatusOf(&state)}, nil
 			}
 			if strings.TrimSpace(req.Email) == "" {
 				return rewards.ReactivateResult{}, temporal.NewNonRetryableApplicationError(
@@ -219,7 +219,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			}
 			next.Email = strings.TrimSpace(req.Email)
 			next.Deactivated = false
-			if err := upsertSearchAttributes(ctx, &next); err != nil {
+			if err := upsertSearchAttributes(ctx, tiers, &next); err != nil {
 				return rewards.ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
@@ -227,8 +227,8 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			logger.Info("customer reactivated",
 				"customerId", state.CustomerID,
 				"points", state.Points,
-				"level", rewards.Level(state.Points))
-			return rewards.ReactivateResult{Changed: true, Status: rewards.StatusOf(&state)}, nil
+				"level", tiers.Level(state.Points))
+			return rewards.ReactivateResult{Changed: true, Status: tiers.StatusOf(&state)}, nil
 		},
 		workflow.UpdateHandlerOptions{
 			Validator: func(ctx workflow.Context, req rewards.ReactivateRequest) error {
@@ -259,13 +259,13 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 		if needsNotify {
 			needsNotify = false
-			deliverPromotion(ctx, &state)
+			deliverPromotion(ctx, tiers, &state)
 			continue
 		}
 
 		if needsDeparture {
 			needsDeparture = false
-			if err := sendNotify(ctx, rewards.DepartureNotice(&state)); err != nil {
+			if err := sendNotify(ctx, tiers.DepartureNotice(&state)); err != nil {
 				logger.Error("departure notification failed after retries",
 					"customerId", state.CustomerID, "error", err)
 			}
@@ -293,12 +293,12 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	}
 }
 
-func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {
+func upsertSearchAttributes(ctx workflow.Context, tiers rewards.TierLadder, state *rewards.CustomerState) error {
 	return workflow.UpsertTypedSearchAttributes(ctx,
 		rewards.KeyCustomerID.ValueSet(state.CustomerID),
 		rewards.KeyCustomerEmail.ValueSet(state.Email),
 		rewards.KeyCustomerName.ValueSet(state.Name),
-		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
+		rewards.KeyRewardsLevel.ValueSet(tiers.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),
 		rewards.KeyEnrolledAt.ValueSet(state.EnrolledAt),
 		rewards.KeyGeneration.ValueSet(int64(state.Generation)),

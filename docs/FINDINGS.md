@@ -27,7 +27,8 @@ For how Temporal uses Postgres and Elasticsearch underneath, see
   pagination
 - [The history crawl](#the-history-crawl) — walking the run chain, events read, truncation
 - [Versioning and replay](#versioning-and-replay) — the deploy that would have wedged every
-  customer, replay harness traps, stale workers
+  customer, retiring a gate, versioning the tier thresholds, replay harness traps, stale
+  workers
 - [The local stack](#the-local-stack) — retention floor, Elasticsearch tuning
 - [Smaller edges](#smaller-edges)
 - [Out of scope](#out-of-scope)
@@ -125,23 +126,29 @@ type CustomerState struct {
 The thresholds live in one ordered table, and everything tier-shaped walks it:
 
 ```go
-// when points >= GoldThreshold:     gold
-// when points >= PlatinumThreshold: platinum
-var tiers = []tier{
-    {Level: LevelGold, MinPoints: GoldThreshold},
-    {Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+type TierLadder []tier
+
+var TiersV2 = TierLadder{
+    {Level: LevelGold, MinPoints: GoldThresholdV2},         // 450
+    {Level: LevelPlatinum, MinPoints: PlatinumThresholdV2}, // 950
 }
 
-func Level(points int) string          // the highest rung reached
-func NextTierAt(points int) (int, bool) // the first rung not reached
-func promotionFor(state *CustomerState) // the highest rung not yet announced
+func (TierLadder) Level(points int) string            // the highest rung reached
+func (TierLadder) NextTierAt(points int) (int, bool)  // the first rung not reached
+func (TierLadder) TierFloor(points int) int           // the last rung reached
+func (TierLadder) PromotionFor(*CustomerState)        // the highest rung not yet announced
 ```
 
-Each of those three was its own `switch` over the same two constants until the ladder replaced
-them. That is three places to edit when a tier is added and two to forget, and both failures
-are quiet: a missing case in `NextTierAt` is a wrong progress bar, and a missing case in
-`promotionFor` is a promotion nobody is told about. Adding a tier is now one line, guarded by
-`TestTierLadderIsOrdered` — the ordering is load-bearing for all three readers.
+Each of those was its own `switch` over the same two constants until the ladder replaced them.
+That is four places to edit when a tier is added and three to forget, and every failure is
+quiet: a missing case in `NextTierAt` is a wrong progress bar, and a missing case in
+`PromotionFor` is a promotion nobody is told about. Adding a tier is now one line per ladder,
+guarded by `TestTierLadderIsOrdered` — the ordering is load-bearing for all four readers.
+
+They are *methods*, not package functions, because there is more than one ladder: the
+thresholds are versioned ([below](#versioning-the-tier-thresholds)), so nothing may derive a
+tier without first saying under which ladder. That turned an invisible mistake — computing a
+level under today's thresholds for a run recorded under yesterday's — into a compile error.
 
 `basic` is deliberately not a rung. It is the floor, what you are when no rule matches, so
 `promotionFor` needs no clause to avoid congratulating anyone for reaching it.
@@ -381,13 +388,14 @@ Level})` logs a line saying what would be sent, and returns. The body is a stub 
 would call an email or push service here — but everything *around* it is real.
 
 Triggered when a point-add leaves the customer at a tier they have not been told about. Because
-tiers are derived this is a pure comparison inside the handler: is `Level(points)` absent from
-`NotifiedLevels`?
+tiers are derived this is a pure comparison inside the handler: is `tiers.Level(points)` absent
+from `NotifiedLevels`? (`tiers` being the run's own ladder —
+[versioning the tier thresholds](#versioning-the-tier-thresholds).)
 
 **One notification per customer per tier reached, naming where they are now — not one per
-threshold passed.** `MaxPointsPerTxn` is 1000 and platinum starts at 1000, so a single add from
-zero lands a customer in platinum having never been observed at gold, and only platinum is
-announced. Sending "Welcome to Gold" beside "Welcome to Platinum" would describe a state that
+threshold passed.** `MaxPointsPerTxn` is 1000 and platinum starts below that, so a single add
+from zero can land a customer in platinum having never been observed at gold, and only platinum
+is announced. Sending "Welcome to Gold" beside "Welcome to Platinum" would describe a state that
 held for no measurable time.
 
 #### Where it runs, and why not in the handler
@@ -1049,17 +1057,16 @@ nondeterministic workflow: extra replay command for ScheduleActivityTask:
 exists for executions that started *before* the deploy, and the only thing that looks at those is
 a replay test. That is the whole argument for having one.
 `internal/rewards/workflows/testdata/pre-notification-*.json` are real histories recorded by the
-earlier
-worker, so replaying them is a rehearsal of that deploy.
+earlier worker, so replaying them is a rehearsal of that deploy.
 
-Fixed with `workflow.GetVersion` gating the Activity, so runs recorded before the marker keep the
-old behaviour for the rest of their lives and pick notifications up at their next
-continue-as-new — at most `EarnsPerRun` adds away.
+Fixed at the time with `workflow.GetVersion` gating the Activity, so runs recorded before the
+marker kept the old behaviour for the rest of their lives and picked notifications up at their
+next continue-as-new — at most `EarnsPerRun` adds away.
 
-**And the fix has a population it cannot save, which is the sharper half of the lesson.**
-Executions created by the *ungated* build — the code as it actually merged — have the Activity in
-their history and no marker. They resolve to `DefaultVersion` exactly like a pre-change run, so
-replay omits an Activity the history demands:
+**And that fix had a population it could not save, which is the sharper half of the lesson.**
+Executions created by the *ungated* build — the code as it actually merged — had the Activity in
+their history and no marker. They resolved to `DefaultVersion` exactly like a pre-change run, so
+replay omitted an Activity the history demanded:
 
 ```
 lookup failed for scheduledEventID to activityID: scheduleEventID: 24
@@ -1067,27 +1074,109 @@ lookup failed for scheduledEventID to activityID: scheduleEventID: 24
 
 `GetVersion` cannot distinguish "predates the change" from "ran the change before it was gated":
 the marker is the only signal and neither has one. Whichever way `DefaultVersion` is interpreted,
-one population breaks. Gating is still right — it protects everyone from before the deploy, at the
-cost of those started between two commits — but no later commit can reach back and repair the
-histories the ungated build wrote. Pinned by
-`TestReplay_UngatedPhase6HistoriesCannotBeRescued`.
+one population breaks. Gating was still right — it protects everyone from before the deploy, at
+the cost of those started between two commits — but no later commit can reach back and repair
+the histories the ungated build wrote.
 
-The affected executions are at least findable, because `GetVersion` upserts
-`TemporalChangeVersion`:
+**The lesson is upstream of all of it: gate a command-changing edit in the same commit that
+introduces it.** There is no later commit that can fix having not done so.
+
+### Retiring a gate forfeits what it protected
+
+The `tier-notifications` gate is gone. A gate is scaffolding, not architecture: once no execution
+is left on its `DefaultVersion` branch, the branch is dead code and deleting it is the normal end
+of the change's life. The check is a visibility query, not a hunch:
 
 ```
 WorkflowType = 'CustomerRewardsWorkflow'
   AND ExecutionStatus = 'Running'
   AND TemporalChangeVersion IS NULL
-  AND StartTime > '<when the ungated build went out>'
 ```
 
-The `StartTime` clause is what separates them from earlier runs, which also lack the marker and
-replay perfectly well. Then reset them — `make reset` in dev, a targeted terminate in anything
-real.
+Rows there mean the gate is still load-bearing. (The query is only sound because `GetVersion`
+upserts `TemporalChangeVersion` for free — [below](#getversion-writes-two-events).)
 
-**The lesson is upstream of all of it: gate a command-changing edit in the same commit that
-introduces it.** There is no later commit that can fix having not done so.
+Three things the retirement made concrete, all pinned in `replay_test.go`:
+
+**A history that carries the marker replays fine without the call.** `run-versioned-notification.json`
+has a `Version` marker for a change ID no code asks about any more, plus the automatic
+`TemporalChangeVersion` upsert that came with it. Today's workflow replays neither as a command,
+and it does not need to: the SDK matches commands to events for Activities, timers and their
+kind, and lets an orphan marker pass. This is what makes retiring a gate safe for the runs that
+recorded it.
+
+**The histories the gate protected are forfeit, permanently.** With the gate gone, the
+`pre-notification-*.json` runs fail exactly as they did before it existed. Nothing can be done
+for them by any later commit; the answer is `make reset` in dev and a targeted terminate or reset
+in anything real. `TestReplay_RetiringTheGateForfeitsTheHistoriesItProtected` asserts the failure
+rather than deleting the fixtures, because the difference between "these runs are written off"
+and "we forgot about these runs" is exactly that test.
+
+**And the unrescuable population is rescued.** `ungated-notification.json` — the history the gate
+could never fix — replays again, because the workflow now schedules that Activity
+unconditionally, which is what its history says happened. The symmetry is the whole finding: **a
+gate protects the runs recorded before it and strands the ones recorded beside it, and retiring
+it swaps which group is which.** Neither state is reachable by choosing more carefully at the
+time. Only by not shipping the ungated commit.
+
+### Versioning the tier thresholds
+
+The current gate is `tier-thresholds`, and it exists because the thresholds moved: every rung
+dropped by `TierThresholdDrop` (50), so gold is 450 and platinum 950.
+
+That reads like a config change and is not one. Lowering a threshold changes the commands a run
+emits, twice over:
+
+- the balance at which a promotion Activity is scheduled moves, so a run recorded with no
+  Activity at 460 points would replay under the new code and emit a `ScheduleActivityTask` its
+  history has no event for;
+- every `UpsertWorkflowSearchAttributes` writes `RewardsLevel`, so the same balance would write
+  `gold` where the history recorded `basic`.
+
+So it is gated in the commit that introduces it, which is the lesson above applied rather than
+restated:
+
+```go
+tiers := rewards.TiersV1
+if workflow.GetVersion(ctx, rewards.ChangeTierThresholds,
+    workflow.DefaultVersion, rewards.VersionTierThresholds) >= rewards.VersionTierThresholds {
+    tiers = rewards.TiersV2
+}
+```
+
+Resolved once, before any handler is registered, and threaded through everything that derives a
+tier for the rest of the run. Reading it inside a handler would drop a marker into the middle of
+an Update's history instead of at a fixed point, and would leave open the possibility of two
+Updates in the same run disagreeing about what gold costs.
+
+**A customer at 460 points is basic until their run rolls, and gold after.** That is the visible
+cost, and it is the right trade: at most `EarnsPerRun` adds of delay against wedging the
+execution outright. It is also why the ladder is chosen per run and never recomputed —
+`NotifiedLevels` records that gold was announced, so a run that flipped ladders mid-life could
+announce gold twice, or skip it.
+
+**The API has to make the same choice, without a workflow to ask.** When the detail page falls
+back to search attributes for a customer no worker can Query, it resolves the ladder from that
+run's `TemporalChangeVersion` rather than using today's:
+
+```go
+tiers := rewards.TiersForChangeVersions(v.ChangeVersions)
+out.NextTierAt, _ = tiers.NextTierAt(out.Points)
+```
+
+Absent attribute means absent marker means `DefaultVersion` means `TiersV1` — the same mapping
+the workflow makes. Skipping that and using the current ladder would advertise a promotion the
+run will never make, and it would do it only on the degraded path, where nobody is looking.
+
+**The UI could no longer infer the ladder either.** The progress bar used to compute the bottom
+of the current rung from the top of it (`nextTierAt === 1000 ? 500 : 0`). With two ladders live
+that is unknowable client-side, so `tierFloor` joined the contract next to `nextTierAt` and both
+ends now come from the run that owns them.
+
+What is *not* covered: no recorded history parks a balance between 450 and 499, so no replay test
+discriminates the two ladders — the marker-free fixtures step 200/400/600, which is gold under
+both. `TestLadderBoundaries` covers the arithmetic; a fixture recorded from a pre-marker run in
+that band would cover the deploy.
 
 ### GetVersion writes two events
 
@@ -1096,11 +1185,13 @@ search attribute. The second is a gift — executions become queryable by which 
 they are running, which is exactly what you want during a migration:
 
 ```
-WorkflowType = 'CustomerRewardsWorkflow' AND TemporalChangeVersion = 'tier-notifications-1'
+WorkflowType = 'CustomerRewardsWorkflow' AND TemporalChangeVersion = 'tier-thresholds-1'
 ```
 
 That answers "how many customers have picked up the change yet?" from the Temporal UI, with no
-instrumentation of our own.
+instrumentation of our own — and its complement, `TemporalChangeVersion IS NULL`, is what says
+whether a gate is safe to [retire](#retiring-a-gate-forfeits-what-it-protected). The API reads
+the same attribute per customer to pick the tier ladder for a run it cannot Query.
 
 ### Replay substitutes a fake workflow ID
 
