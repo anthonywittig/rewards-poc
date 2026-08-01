@@ -35,6 +35,35 @@ const (
 	LevelPlatinum = "platinum"
 )
 
+// tier is one rung of the ladder: a name and the balance that earns it.
+type tier struct {
+	Level     string
+	MinPoints int
+}
+
+// tiers is the ladder, and the only place a threshold is attached to a tier.
+// Read it as the rule list it is:
+//
+//	when points >= GoldThreshold:     gold
+//	when points >= PlatinumThreshold: platinum
+//
+// Level, NextTierAt and promotionFor all walk this rather than each carrying
+// their own switch. Three switches over the same two constants is three places
+// to edit when a tier is added and two places to forget -- and the failure is
+// quiet: a missing case in NextTierAt is a wrong progress bar, and a missing
+// case in promotionFor is a promotion nobody is told about.
+//
+// LevelBasic is deliberately not a rung. It is the floor -- what you are when no
+// rule matches -- and giving it a zero-point rule would make "promoted to basic"
+// something the notifier had to special-case back out.
+//
+// MUST stay sorted by MinPoints ascending; everything below relies on it.
+// TestTierLadderIsOrdered enforces that rather than trusting the comment.
+var tiers = []tier{
+	{Level: LevelGold, MinPoints: GoldThreshold},
+	{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+}
+
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so
 // breaching it leaves no trace in Event History; PointsCap is enforced in the
 // *handler*, so breaching it is recorded. That split is the point of the
@@ -92,28 +121,28 @@ type CustomerState struct {
 	NotifiedLevels []string `json:"notifiedLevels,omitempty"`
 }
 
-// Level derives the tier from a balance.
+// Level derives the tier from a balance: the highest rung the balance reaches,
+// or basic if it reaches none.
 func Level(points int) string {
-	switch {
-	case points >= PlatinumThreshold:
-		return LevelPlatinum
-	case points >= GoldThreshold:
-		return LevelGold
-	default:
-		return LevelBasic
+	level := LevelBasic
+	for _, t := range tiers {
+		if points >= t.MinPoints {
+			level = t.Level
+		}
 	}
+	return level
 }
 
 // NextTierAt returns the balance at which the next promotion happens, and false
 // if the customer is already at the top tier. The UI needs "82 points to gold"
 // and deriving it here keeps that rule in one place.
 func NextTierAt(points int) (int, bool) {
-	switch {
-	case points >= PlatinumThreshold:
-		return 0, false
-	case points >= GoldThreshold:
-		return PlatinumThreshold, true
-	default:
-		return GoldThreshold, true
+	// The first rung not yet reached, which is the next one up because the ladder
+	// is ordered. Falling out of the loop means every rung is behind them.
+	for _, t := range tiers {
+		if points < t.MinPoints {
+			return t.MinPoints, true
+		}
 	}
+	return 0, false
 }

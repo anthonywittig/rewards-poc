@@ -106,26 +106,47 @@ func sendNotify(ctx workflow.Context, req NotifyRequest) error {
 // Tiers are derived rather than stored (PLAN.md 3.2), so this needs no extra
 // state to work out.
 func promotionFor(state *CustomerState) (NotifyRequest, bool) {
-	current := Level(state.Points)
-	// Nobody is congratulated for the tier they started in. Under the old
-	// crossing rule this was implicit -- basic can never be crossed into -- and
-	// under this one it has to be said.
-	if current == LevelBasic {
-		return NotifyRequest{}, false
+	// Walk the ladder from the top down and stop at the first rule the balance
+	// satisfies. Top-down is the "only the tier they are at" decision above
+	// written as control flow rather than left implicit in a Level() call: the
+	// highest rule that matches wins, and the ones below it are never reached.
+	//
+	// Deciding the other way takes two changes rather than one, which is worth
+	// stating because the first is the obvious one and is actively harmful on its
+	// own. Reversing the walk alone announces the *lowest* unannounced tier: one
+	// add of MaxPointsPerTxn lands a customer in platinum and congratulates them
+	// for gold, which is worse than either policy. deliverPromotion sends a single
+	// notification per drain, so announcing every tier passed needs the reversed
+	// walk *and* a deliverPromotion that loops until this returns false.
+	//
+	// Measured rather than reasoned: the flip alone yields [gold], the flip plus
+	// the loop yields [gold platinum], and both fail exactly
+	// Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne and
+	// Test_Notify_RetryDoesNotSurviveAdvancingATier, which are the two tests that
+	// would have to be rewritten to decide the other way.
+	//
+	// Nobody is congratulated for basic, which needs no clause here: basic is not
+	// a rung, so falling out of the loop is exactly the basic case.
+	for i := len(tiers) - 1; i >= 0; i-- {
+		t := tiers[i]
+		if state.Points < t.MinPoints {
+			continue
+		}
+		if slices.Contains(state.NotifiedLevels, t.Level) {
+			return NotifyRequest{}, false
+		}
+		return NotifyRequest{
+			CustomerID: state.CustomerID,
+			Email:      state.Email,
+			Event:      NotifyEventPromoted,
+			Level:      t.Level,
+			// A customer reaches each tier once, so this is a natural key -- and
+			// it is what makes the outer retry above safe to send more than once.
+			// The stub ignores it; a real provider would not.
+			IdempotencyKey: state.CustomerID + ":" + t.Level,
+		}, true
 	}
-	if slices.Contains(state.NotifiedLevels, current) {
-		return NotifyRequest{}, false
-	}
-	return NotifyRequest{
-		CustomerID: state.CustomerID,
-		Email:      state.Email,
-		Event:      NotifyEventPromoted,
-		Level:      current,
-		// A customer reaches each tier once, so this is a natural key -- and it
-		// is what makes the outer retry above safe to send more than once. The
-		// stub ignores it; a real provider would not.
-		IdempotencyKey: state.CustomerID + ":" + current,
-	}, true
+	return NotifyRequest{}, false
 }
 
 // departureNotice is the same Activity reused for "this customer left", which is

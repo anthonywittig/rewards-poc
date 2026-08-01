@@ -179,20 +179,43 @@ retry loop — verified) rather than producing a running customer whose numbers 
 
 ### 3.2 Tier is derived, never stored
 
-```go
-const (
-    GoldThreshold     = 500
-    PlatinumThreshold = 1000
-)
+The thresholds live in one ordered table, and everything tier-shaped walks it:
 
-func Level(points int) string {
-    switch {
-    case points >= PlatinumThreshold: return "platinum"
-    case points >= GoldThreshold:     return "gold"
-    default:                          return "basic"
-    }
+```go
+// when points >= GoldThreshold:     gold
+// when points >= PlatinumThreshold: platinum
+var tiers = []tier{
+    {Level: LevelGold, MinPoints: GoldThreshold},
+    {Level: LevelPlatinum, MinPoints: PlatinumThreshold},
 }
+
+func Level(points int) string {          // the highest rung reached
+func NextTierAt(points int) (int, bool)  // the first rung not reached
+func promotionFor(state *CustomerState)  // the highest rung not yet announced
 ```
+
+Each of those three was its own `switch` over the same two constants until the ladder replaced
+them. That is three places to edit when a tier is added and two to forget, and both failures are
+quiet: a missing case in `NextTierAt` is a wrong progress bar, and a missing case in
+`promotionFor` is a promotion nobody is told about. Adding a tier is now one line, guarded by
+`TestTierLadderIsOrdered` — the ordering is load-bearing for all three readers.
+
+`basic` is deliberately not a rung. It is the floor, what you are when no rule matches, so
+`promotionFor` needs no clause to avoid congratulating anyone for reaching it.
+
+**Which direction `promotionFor` walks the ladder is the "only the tier they are at" decision**
+([§3.7](#37-tier-promotion-notifications)), and it is now where you would go to decide otherwise.
+Top-down and return announces where the customer is. Announcing every tier they passed takes
+*two* changes, and the first one alone is a trap worth recording: reversing the walk by itself
+announces the **lowest** unannounced tier, so one 1000-point add lands a customer in platinum and
+congratulates them for gold. `deliverPromotion` sends one notification per drain, so the other
+policy needs the reversed walk *and* a `deliverPromotion` that loops until `promotionFor` returns
+false.
+
+Measured, not reasoned: the flip alone yields `[gold]`, the flip plus the loop yields
+`[gold platinum]`, and both fail exactly `Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne`
+and `Test_Notify_RetryDoesNotSurviveAdvancingATier` and nothing else — so the decision cannot be
+reversed by accident.
 
 Deriving rather than storing means a threshold change applies uniformly and replays
 identically. The trade-off — worth saying out loud to stakeholders — is that lowering a
