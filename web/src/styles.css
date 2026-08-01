@@ -403,6 +403,18 @@ tbody tr:last-child td {
   text-overflow: ellipsis;
 }
 
+/* Stands in for the table when there is nothing to put in it. Matches the
+   table's frame so the results area keeps its place on the page. */
+.results-empty {
+  margin: 0;
+  padding: 1.1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: rgba(18, 24, 31, 0.45);
+  color: var(--mist);
+  font-size: 0.92rem;
+}
+
 /* Blank rows that hold the table's height while the next query loads. */
 .row-placeholder td {
   color: var(--mist);

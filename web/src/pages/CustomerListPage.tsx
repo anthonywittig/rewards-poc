@@ -116,12 +116,29 @@ export function CustomerListPage() {
     return rows
   }, [data, shown, pending, sortKey, sortDir, query])
 
-  // Blank rows so the body holds its height instead of collapsing. A query that
-  // returned nothing left the one-line “no match” row behind rather than data
-  // rows, so its stand-in has to be that shape or the empty table bounces too.
+  // Blank rows so the body holds its height instead of collapsing while the next
+  // query loads.
   const previousRows = loaded?.res.items.length ?? 0
   const placeholders = loading ? Math.max(previousRows - items.length, 0) : 0
-  const emptyPlaceholder = loading && placeholders === 0 && items.length === 0
+
+  // With nothing to list, the column headers describe columns that are not
+  // there — so the message stands on its own rather than inside an empty table.
+  // Like the notices, it stays on the last response while the next one loads:
+  // swapping in “Loading…” between keystrokes is a shorter string, so the block
+  // would shrink and regrow on every pause. aria-busy carries the loading state.
+  const showTable = items.length > 0 || placeholders > 0
+  const emptyMessage =
+    showTable || error
+      ? null
+      : shown
+        ? `No customers match this filter.${
+            // Keyed to the query behind the message, not the live input, so
+            // clearing the box does not drop a line while the reset loads.
+            loaded?.query.includes('CustomerName')
+              ? ' Name search matches word prefixes, and every word has to match: “ada lov” finds Ada Lovelace, “ada turing” finds nobody.'
+              : ''
+          }`
+        : 'Loading…'
 
   const incompleteNotice = useMemo(() => {
     if (!shown || shown.complete) return null
@@ -247,98 +264,90 @@ export function CustomerListPage() {
         </p>
       ) : null}
 
-      <div className="table-wrap" aria-busy={loading}>
-        <table>
-          {/* Pinned widths — see table-layout: fixed. Must sum to 100%. */}
-          <colgroup>
-            <col style={{ width: '38%' }} />
-            <col style={{ width: '12%' }} />
-            <col style={{ width: '11%' }} />
-            <col style={{ width: '13%' }} />
-            <col style={{ width: '18%' }} />
-            <col style={{ width: '8%' }} />
-          </colgroup>
-          <thead>
-            <tr>
-              <SortableTh
-                label="Name"
-                active={sortKey === 'name'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('name')}
-              />
-              <th>Tier</th>
-              <SortableTh
-                label="Points"
-                active={sortKey === 'points'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('points')}
-              />
-              <th>Status</th>
-              <SortableTh
-                label="Enrolled"
-                active={sortKey === 'enrolledAt'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('enrolledAt')}
-              />
-              <th>Gen</th>
-            </tr>
-          </thead>
-          <tbody>
-            {!loading && items.length === 0 ? (
+      {showTable ? (
+        <div className="table-wrap" aria-busy={loading}>
+          <table>
+            {/* Pinned widths — see table-layout: fixed. Must sum to 100%. */}
+            <colgroup>
+              <col style={{ width: '38%' }} />
+              <col style={{ width: '12%' }} />
+              <col style={{ width: '11%' }} />
+              <col style={{ width: '13%' }} />
+              <col style={{ width: '18%' }} />
+              <col style={{ width: '8%' }} />
+            </colgroup>
+            <thead>
               <tr>
-                <td colSpan={6} className="muted">
-                  No customers match this filter.
-                  {name.trim()
-                    ? ' Name search matches word prefixes, and every word has to match: “ada lov” finds Ada Lovelace, “ada turing” finds nobody.'
-                    : ''}
-                </td>
+                <SortableTh
+                  label="Name"
+                  active={sortKey === 'name'}
+                  dir={sortDir}
+                  enabled={!!shown?.complete}
+                  onClick={() => toggleSort('name')}
+                />
+                <th>Tier</th>
+                <SortableTh
+                  label="Points"
+                  active={sortKey === 'points'}
+                  dir={sortDir}
+                  enabled={!!shown?.complete}
+                  onClick={() => toggleSort('points')}
+                />
+                <th>Status</th>
+                <SortableTh
+                  label="Enrolled"
+                  active={sortKey === 'enrolledAt'}
+                  dir={sortDir}
+                  enabled={!!shown?.complete}
+                  onClick={() => toggleSort('enrolledAt')}
+                />
+                <th>Gen</th>
               </tr>
-            ) : null}
-            {items.map((c) => (
-              <tr key={c.customerId}>
-                <td>
-                  <Link to={`/customers/${c.customerId}`}>{c.name}</Link>
-                  <div className="muted row-sub">
-                    {c.customerId} · {c.email}
-                  </div>
-                </td>
-                <td>
-                  <TierBadge level={c.level} />
-                </td>
-                <td>{c.points.toLocaleString()}</td>
-                <td>
-                  <span className={`status-pill status-${c.status}`}>{c.status}</span>
-                </td>
-                <td>{formatDate(c.enrolledAt)}</td>
-                <td>{c.generation}</td>
-              </tr>
-            ))}
-            {Array.from({ length: placeholders }, (_, i) => (
-              <tr key={`placeholder-${i}`} className="row-placeholder">
-                <td>
-                  {i === 0 && items.length === 0 ? 'Loading…' : ' '}
-                  {/* Mirrors the id · email line so the row is the same height. */}
-                  <div className="row-sub">&nbsp;</div>
-                </td>
-                <td />
-                <td />
-                <td />
-                <td />
-                <td />
-              </tr>
-            ))}
-            {emptyPlaceholder ? (
-              // Same single-line, full-width shape as the “no match” row above.
-              <tr className="row-placeholder">
-                <td colSpan={6}>Loading…</td>
-              </tr>
-            ) : null}
-          </tbody>
-        </table>
-      </div>
+            </thead>
+            <tbody>
+              {items.map((c) => (
+                <tr key={c.customerId}>
+                  <td>
+                    <Link to={`/customers/${c.customerId}`}>{c.name}</Link>
+                    <div className="muted row-sub">
+                      {c.customerId} · {c.email}
+                    </div>
+                  </td>
+                  <td>
+                    <TierBadge level={c.level} />
+                  </td>
+                  <td>{c.points.toLocaleString()}</td>
+                  <td>
+                    <span className={`status-pill status-${c.status}`}>{c.status}</span>
+                  </td>
+                  <td>{formatDate(c.enrolledAt)}</td>
+                  <td>{c.generation}</td>
+                </tr>
+              ))}
+              {Array.from({ length: placeholders }, (_, i) => (
+                <tr key={`placeholder-${i}`} className="row-placeholder">
+                  <td>
+                    {i === 0 && items.length === 0 ? 'Loading…' : ' '}
+                    {/* Mirrors the id · email line so the row is the same height. */}
+                    <div className="row-sub">&nbsp;</div>
+                  </td>
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                  <td />
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : null}
+
+      {emptyMessage ? (
+        <p className="results-empty" aria-busy={loading}>
+          {emptyMessage}
+        </p>
+      ) : null}
     </>
   )
 }
