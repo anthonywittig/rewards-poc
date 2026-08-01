@@ -99,7 +99,10 @@ func main() {
 	seeded := 0
 	for _, c := range set {
 		if fresh {
-			_ = do(http.MethodDelete, base+"/api/customers/"+c.id, nil, nil)
+			if err := replace(base, c.id); err != nil {
+				log.Printf("  %-10s SKIPPED: %v", c.id, err)
+				continue
+			}
 		}
 		if err := seed(base, c); err != nil {
 			log.Printf("  %-10s SKIPPED: %v", c.id, err)
@@ -117,8 +120,13 @@ func main() {
 		seeded, len(set), time.Since(start).Round(time.Millisecond))
 
 	if seeded < len(set) {
-		fmt.Printf("\n%d skipped. Already enrolled? `make seed FRESH=1` replaces them.\n",
-			len(set)-seeded)
+		hint := "Already enrolled? `make seed FRESH=1` replaces them."
+		if fresh {
+			// Suggesting FRESH=1 to someone already running it is the kind of
+			// advice that wastes an afternoon.
+			hint = "FRESH=1 was set, so these are real failures rather than conflicts."
+		}
+		fmt.Printf("\n%d skipped. %s\n", len(set)-seeded, hint)
 		os.Exit(1)
 	}
 
@@ -126,6 +134,56 @@ func main() {
 	fmt.Printf("  make audit ID=ada\n")
 	fmt.Printf("  make reap WF=customer-capped     # then `make audit ID=capped` for a truncated log\n")
 }
+
+// replace deactivates an existing customer and waits for the execution to
+// actually close.
+//
+// The wait is the whole point. DELETE is a cancellation *request*: it returns as
+// soon as the server accepts it, but the workflow then runs handleLeave --
+// draining the notifier and sending a departure notification -- before the
+// execution closes. Enrollment uses a fail-on-conflict policy, so enrolling into
+// that window returns "already enrolled and active" and FRESH=1 silently fails
+// to do the one thing it exists for.
+//
+// Measured against the real stack: DELETE returned in 13ms, the execution closed
+// 75ms later. Phase 6 widened that window by putting an Activity in the
+// departure path, which is exactly the sort of thing that turns a latent race
+// into a reliable one. Raised on PR #16, where FRESH=1 skipped 8 of 9 customers.
+//
+// Polling rather than sleeping a fixed interval: the window depends on how long
+// the notification Activity takes, and a constant would be either slow or wrong.
+func replace(base, id string) error {
+	if err := do(http.MethodDelete, base+"/api/customers/"+id, nil, nil); err != nil {
+		// Nothing to replace is a fine outcome for a replace.
+		return nil
+	}
+
+	deadline := time.Now().Add(closeTimeout)
+	for {
+		var c struct {
+			Status string `json:"status"`
+		}
+		if err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c); err != nil {
+			return nil // gone entirely, which is closed enough
+		}
+		if c.Status != "active" {
+			return nil
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("still running %s after deactivating; is the worker keeping up?",
+				closeTimeout)
+		}
+		time.Sleep(closePoll)
+	}
+}
+
+// How long to wait for a cancelled execution to close, and how often to look.
+// The observed window is well under a second; the bound is generous because
+// exceeding it means something is actually wrong rather than merely slow.
+const (
+	closeTimeout = 15 * time.Second
+	closePoll    = 25 * time.Millisecond
+)
 
 func seed(base string, c customer) error {
 	err := do(http.MethodPost, base+"/api/customers", map[string]string{

@@ -1633,12 +1633,27 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     That answers "how many customers have picked up the change yet?" from the Temporal UI, with
     no instrumentation of our own.
 
+37. **Deactivation is a *request*, and Phase 6 widened the gap between asking and done.**
+    `DELETE /api/customers/{id}` returns as soon as the server accepts the cancellation, but the
+    execution stays `Running` while `handleLeave` drains the notifier and sends the departure
+    notification. Measured: DELETE returned in 13 ms, the execution closed 75 ms later.
+
+    Anything that deactivates and then re-enrolls has to wait, because enrollment fails on
+    conflict ([§3.6](#36-deactivation-via-cancel)) and 60 ms is plenty of window. `make seed
+    FRESH=1` did not, and skipped 8 of 9 customers with *"already enrolled and active"* — the
+    one thing `FRESH=1` exists to prevent. Raised on PR #16.
+
+    Worth noticing *why* it became reliable rather than rare: putting an Activity in the
+    departure path turned a window measured in microseconds into one measured in tens of
+    milliseconds. Adding a network call to a shutdown path is a good way to promote a latent
+    race into a certain one.
+
 **Design**
 
-37. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+38. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-38. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+39. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

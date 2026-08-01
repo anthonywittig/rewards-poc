@@ -457,6 +457,11 @@ Nine customers matching `cmd/mockapi`'s fixtures name for name, so the UI shows 
 whichever backend it points at. It drives the HTTP API rather than the Temporal client, so
 seeding exercises the path a user takes — rollover retries and error mapping included.
 
+`FRESH=1` deactivates before re-enrolling, and waits for each execution to actually close first.
+That wait is load-bearing: `DELETE` returns once the cancellation is *accepted*, but the
+workflow then runs its departure notification before closing — 13 ms to return, 75 ms to close —
+and enrollment fails on conflict, so without the wait `FRESH=1` skipped 8 of 9 customers.
+
 `capped` is the interesting one: 100 adds to land just under the points cap, which makes handler
 rejections reachable and produces ~33 generations. Follow it with `make reap WF=customer-capped`
 and `make audit ID=capped` for a truncated audit log.
