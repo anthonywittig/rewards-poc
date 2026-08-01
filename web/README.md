@@ -1,6 +1,8 @@
 # Rewards web UI
 
-Phase 8 React app. See [NOTES.md](./NOTES.md) for findings and the README blurb for Phase 9.
+React UI for the rewards POC. Findings and design notes live in
+[docs/FINDINGS.md](../docs/FINDINGS.md); see the repo [README](../README.md)
+for how to run the stack.
 
 ```sh
 # from repo root — stack + worker + api already up

@@ -90,11 +90,6 @@ func cappedAdds() []int {
 
 func main() {
 	base := env("API_BASE", "http://localhost:8081")
-	if os.Getenv("FRESH") != "" {
-		log.Fatal("FRESH=1 no longer does anything: deactivation is soft, so re-enrolling\n" +
-			"restores a customer's points rather than resetting them. For a clean slate:\n" +
-			"  make reset && make seed")
-	}
 
 	if err := ping(base); err != nil {
 		log.Fatalf("no API at %s: %v\nis `make api` running (and `make up` and `make worker`)?", base, err)
