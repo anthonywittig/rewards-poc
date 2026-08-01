@@ -21,4 +21,5 @@ var (
 // Note on CustomerName: registered as Text, and the typed constructor for Text
 // is NewSearchAttributeKeyString -- the SDK's "String" is the server's "Text".
 // Keyword is exact-match, Text is tokenized, which is why names use Text
-// (partial search) and IDs/emails use Keyword (exact lookup).
+// (word-prefix search via STARTS_WITH -- FINDINGS.md#prefix-search-works-on-a-text-attribute-with-three-catches)
+// and IDs/emails use Keyword (exact lookup).

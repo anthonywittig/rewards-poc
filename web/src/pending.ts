@@ -1,3 +1,4 @@
+import { nameTerms } from './format'
 import type { CustomerListItem, CustomerResponse } from './types'
 
 const KEY = 'rewards.pendingList'
@@ -84,13 +85,13 @@ export function matchesVisibilityQuery(c: CustomerListItem, query: string): bool
       // Legacy chip queries; soft-inactive uses RewardsActive instead.
       const want = c.status === 'deactivated' ? 'Canceled' : 'Running'
       if (!clause.includes(`'${want}'`)) return false
-    } else if (clause.startsWith('CustomerName')) {
-      // CustomerName is Text: tokenized whole-word match, so mirror that here
-      // rather than substring-matching, which would show rows the server won't.
+    } else if (clause.startsWith('CustomerName STARTS_WITH')) {
+      // One clause per term, so this is one prefix against the name's tokens --
+      // split by the same function that produced the term, rather than
+      // substring-matched, which would show rows the server won't.
       const literal = clause.match(/'((?:[^'\\]|\\.)*)'/)?.[1] ?? ''
-      const wanted = literal.replace(/\\(.)/g, '$1').toLowerCase().split(/\s+/).filter(Boolean)
-      const tokens = new Set(c.name.toLowerCase().split(/\s+/).filter(Boolean))
-      if (!wanted.every((t) => tokens.has(t))) return false
+      const wanted = literal.replace(/\\(.)/g, '$1').toLowerCase()
+      if (!nameTerms(c.name).some((t) => t.startsWith(wanted))) return false
     } else if (clause.startsWith('RewardsPoints >=')) {
       const n = Number(clause.split('>=')[1]?.trim() ?? NaN)
       if (!Number.isFinite(n) || c.points < n) return false

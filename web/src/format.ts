@@ -52,13 +52,36 @@ export function buildListQuery(opts: {
   } else if (opts.status === 'deactivated') {
     parts.push(`RewardsActive = false`)
   }
-  const name = opts.name.trim()
-  if (name) {
-    // CustomerName is registered as Text, so this is a tokenized match: whole
-    // words, not prefixes. "lovelace" finds Ada Lovelace, "lovel" does not.
-    parts.push(`CustomerName = '${escapeQueryLiteral(name)}'`)
+  // One clause per term, ANDed, so typing narrows instead of widening: the
+  // `=` match this replaced ORs its words, and "ada turing" returned both Ada
+  // Lovelace and Alan Turing.
+  for (const term of nameTerms(opts.name)) {
+    parts.push(`CustomerName STARTS_WITH '${escapeQueryLiteral(term)}'`)
   }
   return parts.join(' AND ')
+}
+
+/**
+ * Split a name -- typed or stored -- into the lowercase terms a CustomerName
+ * prefix search works in.
+ *
+ * The split mirrors Elasticsearch's standard tokenizer, which is what indexed
+ * the field: punctuation and whitespace break tokens, but an intra-word
+ * apostrophe does not ("Mary-Jane" is two tokens, "O'Brien" is one).
+ *
+ * Lowercased because indexed tokens are, and STARTS_WITH is a prefix match on
+ * the stored token rather than an analyzed one -- "Lovel" finds nobody.
+ */
+export function nameTerms(input: string): string[] {
+  return input
+    .toLowerCase()
+    .split(/[^\p{L}\p{N}']+/u)
+    // Temporal's query literals do not round-trip an apostrophe -- neither
+    // \' nor '' survives -- so cut each term at the first one. A shorter
+    // prefix is still a correct prefix, it just matches more, which beats
+    // "O'Brien" matching nothing at all.
+    .map((term) => term.split("'")[0])
+    .filter(Boolean)
 }
 
 /** Escape a user-typed value for a single-quoted visibility-query literal. */

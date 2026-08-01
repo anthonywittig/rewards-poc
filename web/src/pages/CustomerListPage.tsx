@@ -282,7 +282,7 @@ export function CustomerListPage() {
                 <td colSpan={6} className="muted">
                   No customers match this filter.
                   {name.trim()
-                    ? ' Name search is a tokenized Text match — whole words only, so “lovelace” hits and “lovel” does not.'
+                    ? ' Name search matches word prefixes, and every word has to match: “ada lov” finds Ada Lovelace, “ada turing” finds nobody.'
                     : ''}
                 </td>
               </tr>
