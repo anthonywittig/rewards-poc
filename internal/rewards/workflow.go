@@ -117,7 +117,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	//
 	// GetVersion is the fix. Runs whose history predates this marker resolve to
 	// DefaultVersion and keep behaving exactly as they did; new runs record
-	// version 1 and notify. PLAN.md 12.11.
+	// version 1 and notify. FINDINGS.md#versioning-is-the-real-risk.
 	//
 	// One population it cannot save, and the gate should be honest about it:
 	// executions created by the *ungated* Phase 6 build. Their history contains
@@ -298,8 +298,9 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		"points", state.Points,
 		"deactivated", state.Deactivated)
 
-	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
-	// earn count -- see the longer note that used to live here, and PLAN.md 3.5.
+	// Production should roll on GetContinueAsNewSuggested() rather than a fixed earn
+	// count -- see the longer note that used to live here, and
+	// FINDINGS.md#continue-as-new.
 	for {
 		if err := workflow.Await(ctx, func() bool {
 			return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun

@@ -1,4 +1,4 @@
-# Rewards POC -- see docs/PLAN.md
+# Rewards POC -- see docs/FINDINGS.md
 #
 # Every target runs against one stack, selected by ENV. Default is .env when
 # present, otherwise .env.example (so a fresh checkout can `make up` with no
@@ -60,7 +60,7 @@ ps: $(ENV) ## Show stack status
 tools: $(ENV) ## Shell in the temporal container (temporal CLI on PATH)
 	$(COMPOSE) exec temporal bash
 
-# Interactive shell, or a canned §8 query: make psql Q=history-blob ID=inspect
+# Interactive shell, or a canned query: make psql Q=history-blob ID=inspect
 psql: $(ENV) ## psql into Temporal persistence (Q=… for canned inspect queries)
 ifeq ($(Q),)
 	$(COMPOSE) exec postgres psql -U temporal -d temporal
@@ -68,7 +68,7 @@ else
 	@$(MAKE) --no-print-directory inspect-pg ENV=$(ENV) Q=$(Q) ID=$(ID)
 endif
 
-# Index summary, or a canned §8 query: make es Q=mapping
+# Index summary, or a canned query: make es Q=mapping
 es: $(ENV) ## Elasticsearch summary (Q=… for canned inspect queries)
 ifeq ($(Q),)
 	@$(TCTL) curl -s "http://elasticsearch:9200/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size,docs.deleted"
@@ -84,27 +84,27 @@ reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
 
 # Distinct from reap, which spares running executions on purpose. This one takes
 # everything, for when workflow code has changed under live executions and the
-# dev answer is to start over. See PLAN.md 12.11.
+# dev answer is to start over. See FINDINGS.md#versioning-is-the-real-risk.
 reset: $(ENV) ## Delete EVERY customer workflow, running included (dev only)
 	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) bash /reset.sh
 
-# --- Datastore inspection (Phase 7 / PLAN.md §8) -----------------------------
+# --- Datastore inspection -----------------------------------------------------
 # Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
 # ID defaults to the same customer the CLI targets (inspect → customer-inspect).
 
 inspect: ## List canned Postgres/ES inspect queries
 	@echo "Postgres (make inspect-pg Q=… ID=$(ID)):"
-	@echo "  history-blob      opaque history_node blobs (§8.1.1)"
-	@echo "  current-run       continue-as-new indirection (§8.1.2)"
-	@echo "  visibility-tasks  async queue feeding ES (§8.1.3)"
-	@echo "  after-reap        rows before/after make reap (§8.1.4)"
+	@echo "  history-blob      opaque history_node blobs"
+	@echo "  current-run       continue-as-new indirection"
+	@echo "  visibility-tasks  async queue feeding ES"
+	@echo "  after-reap        rows before/after make reap"
 	@echo
 	@echo "Elasticsearch (make inspect-es Q=… ID=$(ID)):"
-	@echo "  mapping           index mapping with custom SAs (§8.2)"
-	@echo "  customer          docs for one WorkflowId (§8.2)"
-	@echo "  gold-running      list-page filter + ES-side sort (§8.2)"
-	@echo "  indices           index size / searchable count (§8.2)"
-	@echo "  closed            deactivated customer / post-reap (§8.2)"
+	@echo "  mapping           index mapping with custom SAs"
+	@echo "  customer          docs for one WorkflowId"
+	@echo "  gold-running      list-page filter + ES-side sort"
+	@echo "  indices           index size / searchable count"
+	@echo "  closed            one customer's docs, before/after reap"
 	@echo
 	@echo "End-to-end: make write-trace ID=$(ID) AMOUNT=10"
 	@echo "Docs:       docs/DATASTORES.md"
@@ -154,7 +154,7 @@ worker: $(ENV) ## Run the workflow worker in the foreground (Ctrl-C to stop)
 # `go run` execs the compiled binary out of /root/.cache/go-build/<hash>/worker,
 # not a path containing "cmd/worker", so a stale worker survives the obvious
 # pkill and keeps serving old code against the same task queue. That failure is
-# silent and looks like a workflow bug -- see PLAN.md 12.10.
+# silent and looks like a workflow bug -- see FINDINGS.md#stale-workers.
 #
 # The unmarked pattern ('/worker$') is kept alongside the stack=… one so
 # orphans started before the marker existed still get killed.
@@ -241,7 +241,8 @@ reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAM
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed
-# by crawling Event History (PLAN.md 6). Compare with the raw events behind it:
+# by crawling Event History (docs/FINDINGS.md#the-history-crawl). Compare with
+# the raw events behind it:
 #
 #   make audit ID=c-001
 #   $(COMPOSE) exec temporal temporal workflow show --workflow-id customer-c-001

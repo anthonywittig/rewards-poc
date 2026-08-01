@@ -12,9 +12,9 @@ no database, no cache, no ORM.
 **Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
 they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
 
-The full design is in [docs/PLAN.md](docs/PLAN.md). Every phase found something the plan got
-wrong, and those corrections are the most useful thing in the repo — they're collected in
-[§12 Sharp edges](docs/PLAN.md#12-sharp-edges). The one worth reading first is §12.11.
+What building this established about Temporal is in [docs/FINDINGS.md](docs/FINDINGS.md) —
+measured behaviour, including everything the design guessed wrong first. The one worth reading
+first is [versioning](docs/FINDINGS.md#versioning-is-the-real-risk).
 
 ## Quick start
 
@@ -126,8 +126,8 @@ A rejected query comes back as a 400 carrying Temporal's own diagnostics. `ORDER
 exception, caught before the query is sent so you get an explanation instead of a bare syntax
 error. Because there's no ordering there's no meaningful pagination either: the list returns at
 most five rows, reports how many matched, and pushes you to filter — which is what the
-visibility store is good at. See [§4](docs/PLAN.md#4-search-attributes) and
-[§5](docs/PLAN.md#5-http-api).
+visibility store is good at. See [search attributes](docs/FINDINGS.md#search-attributes-and-visibility) and
+[the API](docs/FINDINGS.md#no-pagination-and-a-frozen-contract).
 
 Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
@@ -148,7 +148,7 @@ The UI reaches the API through Vite's proxy rather than a cross-origin base URL:
 deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
 the one that survives into production. `make web` sets `VITE_API_PROXY_TARGET` from the selected
 env file, so the UI follows `API_PORT` and a second stack proxies to its own API. See
-[web/NOTES.md](web/NOTES.md).
+[FINDINGS.md](docs/FINDINGS.md#the-go-api-sends-no-cors-headers).
 
 ## Things worth seeing
 
@@ -168,7 +168,7 @@ history stays under a dozen events against the ~47 the same seven adds accumulat
 rolling. Three is a demo number chosen to be watchable, not a defensible rule — the real limits
 are 50k events and 50 MB per run, and production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()` instead. Changing the constant breaks
-running workflows. [§3.5](docs/PLAN.md#35-continue-as-new-after-3-updates).
+running workflows. [FINDINGS.md](docs/FINDINGS.md#continue-as-new).
 
 **The audit log is the Event History.** Nothing stores a customer's point-add history; `make
 audit ID=c-001` walks back through the run chain and reads the events Temporal recorded because
@@ -182,7 +182,8 @@ make reap WF=customer-capped    # deletes the closed generations, keeps the runn
 make audit ID=capped            # truncated=True shown=1 lifetime=100 runsWalked=1
 ```
 
-Demonstrating the limitation is worth more than hiding it — [§6.3](docs/PLAN.md#63-truncation-is-the-feature).
+Demonstrating the limitation is worth more than hiding it —
+[FINDINGS.md](docs/FINDINGS.md#truncation-detection).
 
 **The validator/handler split.** Both of these fail identically from the caller's side, but only
 one leaves a trace:
@@ -198,7 +199,7 @@ rejection adds none, so a client stuck retrying `amount: -1` cannot grow history
 event, while a rejection that depends on the customer's accumulated state is permanently
 recorded. Facts about the *request* belong in the validator, facts about the *customer* in
 the handler —
-[§3.4](docs/PLAN.md#34-validation--and-a-deliberate-split).
+[FINDINGS.md](docs/FINDINGS.md#the-validatorhandler-split).
 
 **The replay test is the one that matters.**
 
@@ -213,14 +214,14 @@ of the deploy that added it, and the first run failed — adding the Activity wo
 every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
 the sharper lesson is that it arrived one commit too late to help executions created by the
 ungated build: **gate a command-changing edit in the same commit that introduces it.**
-[§12.11](docs/PLAN.md#12-sharp-edges).
+[FINDINGS.md](docs/FINDINGS.md#versioning-is-the-real-risk).
 
 **One Activity, deliberately.** `NotifyCustomer` is the only thing here that touches the outside
 world; everything else is workflow state needing no side effects, which is rather the argument.
 It fires when a customer sits at a tier they haven't been told about — a property, not an event,
 so a failed delivery is picked up by the next add — and the handler doesn't await it. Delivery
 runs in the workflow's main loop as **notify → depart → continue-as-new**, which is what keeps a
-promotion from rolling away unsent. [§3.7](docs/PLAN.md#37-tier-promotion-notifications).
+promotion from rolling away unsent. [FINDINGS.md](docs/FINDINGS.md#tier-promotion-notifications).
 
 ## Behaviour to expect
 
@@ -229,7 +230,7 @@ promotion from rolling away unsent. [§3.7](docs/PLAN.md#37-tier-promotion-notif
 - **Leaving is soft.** Deactivation is an Update that sets a flag, not a cancellation — the
   execution stays Running, so re-enrolling restores the balance, tier and history intact.
   Membership therefore lives in the `RewardsActive` search attribute rather than in
-  `ExecutionStatus`. [§3.6](docs/PLAN.md#36-soft-deactivation).
+  `ExecutionStatus`. [FINDINGS.md](docs/FINDINGS.md#soft-deactivation).
 - **Cancellation is not part of the model.** Nothing cancels a customer's workflow and the code
   does not handle it. `temporal workflow cancel` closes the execution without upserting
   `RewardsActive`, leaving a customer the list still calls active and the detail page calls
@@ -294,7 +295,7 @@ internal/httpapi/
   errors.go                   the stable error codes and their HTTP mapping
   dto.go                      the wire contract, frozen ahead of the endpoints
   testdata/                   real run histories, for the crawl's golden tests
-web/                          the React UI (see web/NOTES.md)
+web/                          the React UI
 deploy/
   docker-compose.yml          Postgres + Elasticsearch + Temporal + UI
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
@@ -308,8 +309,8 @@ Makefile
 
 ## Docs
 
-- [docs/PLAN.md](docs/PLAN.md) — the design, and [§12](docs/PLAN.md#12-sharp-edges) the
-  corrections it needed
+- [docs/FINDINGS.md](docs/FINDINGS.md) — what this established about Temporal: the workflow
+  design and its constraints, search attributes, error classification, the history crawl,
+  versioning, and the platform edges each of them ran into
 - [docs/DATASTORES.md](docs/DATASTORES.md) — how Temporal uses Postgres (persistence) and
   Elasticsearch (visibility), including an end-to-end write trace
-- [web/NOTES.md](web/NOTES.md) — the UI's own findings

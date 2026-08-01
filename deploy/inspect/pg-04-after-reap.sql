@@ -1,4 +1,4 @@
--- §8.1 finding 4: retention / make reap is visible at the storage layer.
+-- finding 4: retention / make reap is visible at the storage layer.
 -- Closed runs (ContinuedAsNew, Canceled, …) lose their executions + history_node
 -- rows after delete propagates (~25–40s). The Running run for the same
 -- workflow_id is untouched — that is why reap.sh filters

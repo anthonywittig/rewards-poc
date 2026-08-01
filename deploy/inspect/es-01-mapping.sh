@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §8.2: index mapping — custom search attributes are first-class fields.
+# index mapping — custom search attributes are first-class fields.
 # Run via: make inspect-es Q=mapping
 # Lives in the temporal container (bash + curl, no jq).
 

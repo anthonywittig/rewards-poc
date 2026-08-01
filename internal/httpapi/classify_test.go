@@ -117,9 +117,10 @@ func TestMapQueryError(t *testing.T) {
 	}
 }
 
-// Both halves of the validator/handler split (PLAN.md 3.4) must reach the caller
-// as the same 422 carrying the workflow's own words. The caller is not supposed
-// to be able to tell them apart -- that is the design.
+// Both halves of the validator/handler split
+// (FINDINGS.md#the-validatorhandler-split) must reach the caller as the same 422
+// carrying the workflow's own words. The caller is not supposed to be able to tell
+// them apart -- that is the design.
 func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -268,9 +269,9 @@ func TestUnrelatedFailedPreconditionIsStill503(t *testing.T) {
 }
 
 // The four answers GetWorkflowHistory gives, transcribed from a real server.
-// PLAN.md 6.3 predicted a single NotFound for the reaped case and got the type
-// wrong; the audit crawl detects truncation by this classification, so a wrong
-// answer here turns a truncated timeline into a 500.
+// FINDINGS.md#truncation-detection predicted a single NotFound for the reaped case
+// and got the type wrong; the audit crawl detects truncation by this
+// classification, so a wrong answer here turns a truncated timeline into a 500.
 //
 // The uncomfortable part is that the first two rows are byte-identical, so
 // "history was deleted" and "you invented a run ID" cannot be told apart. That

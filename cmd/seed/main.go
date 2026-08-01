@@ -11,8 +11,9 @@
 // enrolls the ones that are missing; anyone who already exists is checked
 // against the intended balance and left alone. Two reasons for that shape:
 //
-//   - Deactivation is soft (PLAN.md 3.6), so enrolling an existing customer
-//     *reactivates* them with their points intact. A seeder that enrolled
+//   - Deactivation is soft (FINDINGS.md#soft-deactivation), so enrolling an
+//     existing customer *reactivates* them with their points intact. A seeder
+//     that enrolled
 //     blindly would flip the deliberately-deactivated fixture back to active,
 //     and then stack a second set of adds on top of the balance it kept.
 //   - That is not hypothetical. It is what this program did until the soft
@@ -187,8 +188,9 @@ func ensure(base string, c customer) (string, error) {
 
 // check compares an existing customer with what the dataset asks for.
 //
-// Deliberately does not try to repair a mismatch. Points only go up (PLAN.md
-// 3.1) so a balance that is too high cannot be corrected, and one that is too
+// Deliberately does not try to repair a mismatch. Points only go up
+// (FINDINGS.md#points-only-go-up) so a balance that is too high cannot be
+// corrected, and one that is too
 // low would need adds whose reasons and timing would not match the rest --
 // producing a customer that looks seeded but has an audit log that disagrees.
 func check(c customer, cur customerState) (string, error) {

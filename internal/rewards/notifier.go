@@ -8,7 +8,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Tier-promotion delivery helpers. PLAN.md 3.7.
+// Tier-promotion delivery helpers. FINDINGS.md#tier-promotion-notifications.
 //
 // The Update handler does not await the Activity. It applies the points, notices
 // an unannounced tier, sets a flag, and returns -- so a notification provider
@@ -97,13 +97,14 @@ func sendNotify(ctx workflow.Context, req NotifyRequest) error {
 //     they are told where they are -- but it makes "retried on the next add"
 //     narrower than it sounds.
 //
-// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup
-// on the way in, and the at-least-once guard PLAN.md 3.7 asks for on the way
-// out. Previously the monotonic balance did the deduplication and this was
-// belt-and-braces.
+// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup on
+// the way in, and the at-least-once guard FINDINGS.md#tier-promotion-notifications
+// asks for on the way out. Previously the monotonic balance did the deduplication
+// and this was belt-and-braces.
 //
-// Tiers are derived rather than stored (PLAN.md 3.2), so this needs no extra
-// state to work out.
+// Tiers are derived rather than stored
+// (FINDINGS.md#tiers-are-derived-never-stored), so this needs no extra state to
+// work out.
 func promotionFor(state *CustomerState) (NotifyRequest, bool) {
 	// Walk the ladder from the top down and stop at the first rule the balance
 	// satisfies. Top-down is the "only the tier they are at" decision above
@@ -149,7 +150,8 @@ func promotionFor(state *CustomerState) (NotifyRequest, bool) {
 }
 
 // departureNotice is the same Activity reused for "this customer left", which is
-// why there is no separate cleanup Activity. PLAN.md 3.7.
+// why there is no separate cleanup Activity.
+// FINDINGS.md#tier-promotion-notifications.
 func departureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,

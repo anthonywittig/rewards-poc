@@ -27,10 +27,11 @@ import (
 // matching is needed to tell a business rejection from a transport failure --
 // and that a no-worker Update does not fail at all where a Query fails fast.
 
-// isWorkerUnavailable reports whether the failure is "nothing is polling the
-// task queue", which during development is by far the most common cause and
-// whose native message ("no poller seen for task queue recently, worker may be
-// down") deserves to reach the client intact rather than as a 500. PLAN.md 12.4.
+// isWorkerUnavailable reports whether the failure is "nothing is polling the task
+// queue", which during development is by far the most common cause and whose
+// native message ("no poller seen for task queue recently, worker may be down")
+// deserves to reach the client intact rather than as a 500.
+// FINDINGS.md#read-and-write-timeouts.
 func isWorkerUnavailable(err error) bool {
 	// FailedPrecondition is Temporal's "cannot do this right now", of which
 	// "no poller seen for task queue recently, worker may be down" is only one
@@ -69,11 +70,11 @@ func isTimeout(err error) bool {
 // isBusinessRejection reports whether the workflow itself refused the request,
 // as opposed to the request failing to reach it.
 //
-// Both halves of PLAN.md 3.4 land here: a validator rejection arrives as an
-// ApplicationError with an empty Type, a handler rejection with the type we
-// chose. They are deliberately indistinguishable to the caller -- which is the
-// design, not a limitation -- so both become 422. What matters is that neither
-// is confused with an outage.
+// Both halves of FINDINGS.md#the-validatorhandler-split land here: a validator
+// rejection arrives as an ApplicationError with an empty Type, a handler rejection
+// with the type we chose. They are deliberately indistinguishable to the caller --
+// which is the design, not a limitation -- so both become 422. What matters is
+// that neither is confused with an outage.
 func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) {
@@ -114,10 +115,10 @@ func isClosedRun(err error) bool {
 // isHistoryGone reports whether a run's Event History has been deleted --
 // reaped after retention, or removed on demand by `make reap`.
 //
-// PLAN.md 6.3 predicted this arrives as NotFound. It does not, and the
-// difference is not cosmetic: the audit crawl detects truncation by *this
-// error*, so with the predicted classification a truncated log came back as an
-// unmapped 500 instead of the timeline it was designed to serve. Measured
+// FINDINGS.md#truncation-detection predicted this arrives as NotFound. It does
+// not, and the difference is not cosmetic: the audit crawl detects truncation by
+// *this error*, so with the predicted classification a truncated log came back as
+// an unmapped 500 instead of the timeline it was designed to serve. Measured
 // against the real server, GetWorkflowHistory answers:
 //
 //	condition                        Go type                          message
@@ -139,10 +140,10 @@ func isClosedRun(err error) bool {
 // substring below is chosen from the half of the sentence that is diagnostic
 // rather than speculative.
 //
-// If a server upgrade changes that wording, truncation stops being recognised
-// and starts surfacing as a 500. That is the direction to fail in -- a loud
-// error beats a timeline that quietly shows fewer rows than the customer has,
-// which is precisely the outcome PLAN.md 6.3 exists to prevent.
+// If a server upgrade changes that wording, truncation stops being recognised and
+// starts surfacing as a 500. That is the direction to fail in -- a loud error
+// beats a timeline that quietly shows fewer rows than the customer has, which is
+// precisely the outcome FINDINGS.md#truncation-detection exists to prevent.
 func isHistoryGone(err error) bool {
 	var notFound *serviceerror.NotFound
 	if errors.As(err, &notFound) {

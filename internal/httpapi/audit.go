@@ -13,7 +13,8 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// The audit timeline, reconstructed by crawling Event History. PLAN.md 6.
+// The audit timeline, reconstructed by crawling Event History.
+// FINDINGS.md#the-history-crawl.
 //
 // This is the endpoint the whole POC is arranged around. Every other read is
 // served by something that looks like a database -- a Query against live
@@ -23,9 +24,9 @@ import (
 // workflow at all.
 //
 // It is also where the limits of "Temporal as the system of record" show. Closed
-// runs get reaped, so the log is not durable in the way a table would be, and
-// the crawl is O(runs x events) with no index to help it. Both are visible in
-// the response rather than papered over: PLAN.md 6.3.
+// runs get reaped, so the log is not durable in the way a table would be, and the
+// crawl is O(runs x events) with no index to help it. Both are visible in the
+// response rather than papered over: FINDINGS.md#truncation-detection.
 
 // auditTimeout bounds the whole crawl, which is the one endpoint whose cost
 // grows with a customer's age -- one GetWorkflowHistory round trip per
@@ -103,7 +104,7 @@ func walkRuns(ctx context.Context, fetch historyFetcher, runID string) ([]runAud
 		if err != nil {
 			// A run we were *told about* by its successor, whose history is gone.
 			// That is reaping, and it is the expected end of a long-lived
-			// customer's crawl rather than a failure. PLAN.md 6.3.
+			// customer's crawl rather than a failure. FINDINGS.md#truncation-detection.
 			//
 			// Only once we are past the first run, though: history missing for
 			// the run Describe just handed us is not truncation, it is the
@@ -147,10 +148,11 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 		// starting count plus the adds inside it is the current total, whatever
 		// happened to the runs before it.
 		//
-		// This is the continue-as-new payload doing the job PLAN.md 6.3 describes
-		// for it: it is what lets a truncated log say "3 of 21" instead of just
-		// showing three rows and hoping nobody asks. It also happens to be why
-		// this endpoint needs no worker, where the detail page does.
+		// This is the continue-as-new payload doing the job
+		// FINDINGS.md#truncation-detection describes for it: it is what lets a truncated
+		// log say "3 of 21" instead of just showing three rows and hoping nobody asks.
+		// It also happens to be why this endpoint needs no worker, where the detail page
+		// does.
 		newest := runs[0]
 		out.LifetimeEarnEvents = newest.startState.LifetimeEarnEvents + newest.earnEvents
 	}
@@ -192,9 +194,9 @@ type runAudit struct {
 }
 
 // pendingUpdate is an accepted Update waiting for its outcome. Acceptance and
-// completion are separate events (PLAN.md 6.2) and only together make a row: the
-// request carries the amount and reason, the outcome carries the new balance or
-// the rejection.
+// completion are separate events (FINDINGS.md#events-the-crawl-reads) and only
+// together make a row: the request carries the amount and reason, the outcome
+// carries the new balance or the rejection.
 type pendingUpdate struct {
 	name     string
 	updateID string
@@ -316,10 +318,10 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 
 			// Anchored to the *accepted* event, not this one. That is the event
-			// PLAN.md 6.2 pairs on, it is when the customer actually made the
-			// request, and it exists even for an update whose outcome never
-			// landed -- so the row's identity does not depend on the half of the
-			// pair that is allowed to be missing.
+			// FINDINGS.md#events-the-crawl-reads pairs on, it is when the customer actually
+			// made the request, and it exists even for an update whose outcome never landed
+			// -- so the row's identity does not depend on the half of the pair that is
+			// allowed to be missing.
 			entry := AuditEntry{
 				At:         p.at,
 				Generation: out.startState.Generation,
@@ -336,9 +338,9 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
-				// Handler rejections only. A validator rejection writes nothing
-				// to history at all, so it can never appear here -- which is the
-				// asymmetry PLAN.md 3.4 exists to demonstrate, and the reason
+				// Handler rejections only. A validator rejection writes nothing to history at
+				// all, so it can never appear here -- which is the asymmetry
+				// FINDINGS.md#the-validatorhandler-split exists to demonstrate, and the reason
 				// this timeline is not a record of every attempt.
 				entry.Kind = AuditPointsRejected
 				entry.Failure = f.GetMessage()
@@ -375,18 +377,18 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			delete(activities, a.GetScheduledEventId())
 
 			// Promotions only. The same Activity delivers the departure notice
-			// (PLAN.md 3.7), but AuditEntry's notification_sent kind carries a
-			// level and nothing else -- so a departure row is indistinguishable
-			// from a promotion, and the UI renders every one of them as
-			// "Promoted to Gold — notification sent". For a customer who just
-			// left, directly beneath their own deactivated row, that is the
-			// audit log inventing a promotion.
+			// (FINDINGS.md#tier-promotion-notifications), but AuditEntry's
+			// notification_sent kind carries a level and nothing else -- so a departure row
+			// is indistinguishable from a promotion, and the UI renders every one of them
+			// as "Promoted to Gold — notification sent". For a customer who just left,
+			// directly beneath their own deactivated row, that is the audit log inventing a
+			// promotion.
 			//
 			// Dropping the row loses nothing a reader needs: the deactivated row
 			// immediately above it already says they left, and the departure
 			// notice is a consequence of it rather than a separate fact. The
 			// alternative was an event field on AuditEntry, which is frozen.
-			// PLAN.md 12.31.
+			// FINDINGS.md#the-cost-of-a-frozen-contract.
 			if req.Event != rewards.NotifyEventPromoted {
 				continue
 			}
@@ -408,7 +410,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 // Best-effort throughout the crawl, like decodeSearchAttributes: a row with a
 // missing amount still tells the reader that an add happened, whereas a failed
 // request tells them nothing at all. The DataConverter is the client's default,
-// which is why the API and worker share a module -- PLAN.md 6.2.
+// which is why the API and worker share a module --
+// FINDINGS.md#events-the-crawl-reads.
 func decodeArg(dc converter.DataConverter, ps *commonpb.Payloads, dst any) bool {
 	if len(ps.GetPayloads()) == 0 {
 		return false

@@ -156,13 +156,14 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 //
 // This is where search attributes earn their keep: no lookup table, no local
 // index, and the same query works unchanged in the Temporal UI -- which is the
-// demonstration PLAN.md 4 is after.
+// demonstration FINDINGS.md#search-attributes-and-visibility is after.
 //
 // Capped at ListLimit with no pagination. That follows from the platform rather
-// than from laziness: ORDER BY is rejected outright (PLAN.md 12.8), so there is
-// no stable ordering, and "page 2" of an unordered set could overlap or skip
-// rows. A small slice plus an exact count plus a nudge to filter is the honest
-// shape. See PLAN.md 5.1.
+// than from laziness: ORDER BY is rejected outright
+// (FINDINGS.md#order-by-is-not-supported), so there is no stable ordering, and
+// "page 2" of an unordered set could overlap or skip rows. A small slice plus an
+// exact count plus a nudge to filter is the honest shape. See
+// FINDINGS.md#no-pagination-and-a-frozen-contract.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	userQuery := strings.TrimSpace(r.URL.Query().Get("q"))
 
@@ -174,7 +175,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	// to do instead.
 	if hasOrderBy(userQuery) {
 		return badRequest("ORDER BY is not supported by Temporal's visibility store " +
-			"(PLAN.md 12.8); filter to narrow the result set and sort client-side")
+			"(FINDINGS.md#order-by-is-not-supported); filter to narrow the result set and sort client-side")
 	}
 
 	query := scopedQuery(userQuery)
@@ -191,8 +192,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		if apiErr := mapListError(err, userQuery); apiErr != nil {
 			return apiErr
 		}
-		// Countable failures that are not the caller's fault degrade to "of
-		// many" rather than failing a list we can still serve. PLAN.md 5.1.
+		// Countable failures that are not the caller's fault degrade to "of many" rather
+		// than failing a list we can still serve.
+		// FINDINGS.md#no-pagination-and-a-frozen-contract.
 		s.log.Warn("count failed; falling back to an unknown total",
 			"query", query, "error", err)
 	} else {
@@ -229,7 +231,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 
 		// CustomerId is upserted by the workflow, but derive from the workflow
 		// ID if it is somehow absent -- the ID is the real identity and is
-		// always present. PLAN.md 3.1.
+		// always present. FINDINGS.md#the-workflow-is-the-integrity-boundary.
 		id := v.CustomerID
 		if id == "" {
 			id = strings.TrimPrefix(e.GetExecution().GetWorkflowId(), rewards.WorkflowIDPrefix)
@@ -403,15 +405,16 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 // The successor run exists but has no workflow task yet, so there is nothing to
 // dispatch the query to. It is transient -- the identical request succeeded
 // moments later -- and it is a sibling of the update-side rollover race in
-// PLAN.md 12.2, which anticipated this for Updates but not for Queries. At three
-// adds per run it is reachable by ordinary use.
+// FINDINGS.md#the-rollover-race, which anticipated this for Updates but not for
+// Queries. At three adds per run it is reachable by ordinary use.
 //
 // Retrying only the *unclassified* errors is deliberate. A NotFound will not
 // improve, and a worker-unavailable is already a clean 503 whose latency should
 // not be doubled by a pointless second attempt. Everything left is a failure we
 // could not name, where one more try of an idempotent ~30ms read is cheap
 // insurance. This is a bounded retry rather than a matched one because the error
-// above could not be reproduced on demand -- see PLAN.md 12.13.
+// above could not be reproduced on demand -- see
+// FINDINGS.md#queries-race-continue-as-new-too.
 func (s *Server) queryStatus(ctx context.Context, wfID string) (converter.EncodedValue, error) {
 	const attempts = 2
 
@@ -469,10 +472,10 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // updateWithRolloverRetry sends the Update, and sends it again if the run it
 // addressed closed because of continue-as-new.
 //
-// This is not defensive coding for a rare event. Continue-as-new fires every 3
-// adds, so a client that keeps adding points will hit it regularly -- an update
-// losing its run is the *expected* outcome of racing a rollover, and without a
-// transparent retry the demo looks broken roughly every third click. PLAN.md 12.2.
+// This is not defensive coding for a rare event. Continue-as-new fires every 3 adds, so a
+// client that keeps adding points will hit it regularly -- an update losing its run is the
+// *expected* outcome of racing a rollover, and without a transparent retry the demo looks
+// broken roughly every third click. FINDINGS.md#the-rollover-race.
 //
 // Soft-inactive customers stay Running, so a closed-run NotFound now means
 // rollover (retry) or a force-closed execution (refuse). Product deactivation
@@ -481,7 +484,7 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // Retrying is safe because the update did not run: the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
 // UpdateID -- Update dedup is scoped to a run, so the ID buys nothing across the
-// boundary. PLAN.md 12.3.
+// boundary. FINDINGS.md#update-dedup-does-not-survive-continue-as-new.
 func (s *Server) updateWithRolloverRetry(
 	ctx context.Context, wfID string, req AddPointsRequest,
 ) (rewards.AddPointsResult, error) {
@@ -586,12 +589,13 @@ func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
 //	gRPC RST_STREAM     "stream terminated ... error code: CANCEL" ~2.5s
 //
 // The first two are typed and mapped; the third is a bare transport error that
-// would become a 500. Bounding the call at 2s means our own deadline usually
-// wins the race, collapsing all three into one predictable 503 -- and a healthy
-// query answers in ~30ms, so this leaves roughly 60x headroom. PLAN.md 12.4.
-// listTimeout bounds the two visibility calls. Generous next to queryTimeout
-// because these read Elasticsearch rather than replaying a workflow, so no
-// worker is involved and the no-poller failure mode does not apply.
+// would become a 500. Bounding the call at 2s means our own deadline usually wins
+// the race, collapsing all three into one predictable 503 -- and a healthy query
+// answers in ~30ms, so this leaves roughly 60x headroom.
+// FINDINGS.md#read-and-write-timeouts. listTimeout bounds the two visibility
+// calls. Generous next to queryTimeout because these read Elasticsearch rather
+// than replaying a workflow, so no worker is involved and the no-poller failure
+// mode does not apply.
 const listTimeout = 10 * time.Second
 
 const queryTimeout = 2 * time.Second
@@ -603,7 +607,7 @@ const queryTimeout = 2 * time.Second
 // WaitForStage: Completed simply *blocks* -- observed still waiting after two
 // minutes with the worker stopped. Without this bound, `POST /points` hangs for
 // as long as the client will hold the connection whenever the worker is down,
-// which during development is often. PLAN.md 12.12.
+// which during development is often. FINDINGS.md#read-and-write-timeouts.
 const updateTimeout = 15 * time.Second
 
 func (s *Server) sendUpdate(
@@ -817,9 +821,10 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 // for a closed customer no worker is available to replay.
 //
 // Recovers everything the detail page shows except LifetimeEarnEvents, which is
-// workflow state rather than a registered search attribute (PLAN.md 4 lists the
-// set deliberately). Only reached on the degraded path, so that field is
-// present whenever the query works -- which is nearly always.
+// workflow state rather than a registered search attribute
+// (FINDINGS.md#search-attributes-and-visibility lists the set deliberately). Only
+// reached on the degraded path, so that field is present whenever the query works
+// -- which is nearly always.
 func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttributes) {
 	v := decodeSearchAttributes(sa)
 	out.Name = v.Name
@@ -830,7 +835,7 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 	out.EnrolledAt = v.EnrolledAt
 
 	// Derived rather than stored, so it stays consistent with the balance we
-	// just recovered. PLAN.md 3.2.
+	// just recovered. FINDINGS.md#tiers-are-derived-never-stored.
 	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
 
 	// Status is deliberately not set here. Deciding active from deactivated

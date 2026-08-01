@@ -169,8 +169,9 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 		t.Errorf("earnEvents = %d, want 3 (EarnsPerRun)", run.earnEvents)
 	}
 
-	// The request half of the row comes from the accepted event, the outcome
-	// half from the completed one -- the pairing PLAN.md 6.2 describes.
+	// The request half of the row comes from the accepted event, the outcome half
+	// from the completed one -- the pairing FINDINGS.md#events-the-crawl-reads
+	// describes.
 	add := run.entries[1]
 	if add.Amount != 1000 || add.Reason == "" {
 		t.Errorf("request side not decoded: amount=%d reason=%q", add.Amount, add.Reason)
@@ -340,9 +341,10 @@ func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
 	}
 }
 
-// The recorded half of the validator/handler split. A handler rejection writes
-// an Accepted and a Completed-with-failure, so it becomes a row; a validator
-// rejection writes nothing at all and can never appear here. PLAN.md 3.4.
+// The recorded half of the validator/handler split. A handler rejection writes an
+// Accepted and a Completed-with-failure, so it becomes a row; a validator
+// rejection writes nothing at all and can never appear here.
+// FINDINGS.md#the-validatorhandler-split.
 func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	run := auditRun("cap-run", loadEvents(t, "run-rejection.json"))
 
@@ -369,7 +371,8 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	}
 }
 
-// The notification rows PLAN.md 3.7 says the crawl picks up "for free".
+// The notification rows FINDINGS.md#tier-promotion-notifications says the crawl
+// picks up "for free".
 //
 // The Activity events here are real, captured from a throwaway workflow that
 // scheduled an activity named NotifyCustomer with a rewards.NotifyRequest -- the
@@ -618,8 +621,8 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	}
 }
 
-// The departure notification uses the same Activity as a promotion (PLAN.md 3.7)
-// and must not render as one.
+// The departure notification uses the same Activity as a promotion
+// (FINDINGS.md#tier-promotion-notifications) and must not render as one.
 //
 // These are real events, captured from a customer who earned gold and then left:
 // the Activity input says event "departed", and without the filter the timeline

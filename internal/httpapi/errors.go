@@ -64,7 +64,8 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 //
 // The 409 depends on the client being configured with
 // WorkflowExecutionErrorWhenAlreadyStarted -- without it the SDK returns the
-// existing run and a nil error, and there is nothing here to map. PLAN.md 3.6.
+// existing run and a nil error, and there is nothing here to map.
+// FINDINGS.md#soft-deactivation.
 func mapStartError(err error) error {
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &already) {
@@ -82,10 +83,10 @@ func mapQueryError(err error) error {
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status.
 //
 // The interesting case is 422. Both halves of the validator/handler split
-// (PLAN.md 3.4) surface here as a failed Update, and the caller is meant to be
-// unable to tell them apart -- which is exactly right for the API too. What
-// matters is separating a *business* rejection from an *infrastructure* failure,
-// because only the first is the caller's fault.
+// (FINDINGS.md#the-validatorhandler-split) surface here as a failed Update, and
+// the caller is meant to be unable to tell them apart -- which is exactly right
+// for the API too. What matters is separating a *business* rejection from an
+// *infrastructure* failure, because only the first is the caller's fault.
 //
 // Deactivated is the exception: it is a business answer, but it is a 409 with
 // its own code so clients can offer re-enrollment rather than treating it like
@@ -118,10 +119,11 @@ func mapUpdateError(err error) error {
 // caller *does* changes -- only what they are told to go and look at.
 //
 // The code stays CodeWorkerUnavailable, which reads oddly here. It is deliberate:
-// the error contract is frozen so Phase 8 can build against it (PLAN.md 5.1), and
-// this is the only 503 in it. Clients treat it as "backend not ready, retry",
-// which is correct for a slow visibility store as much as for a missing worker.
-// A truer code would be worth having and is not worth breaking the freeze for.
+// the error contract is frozen so Phase 8 can build against it
+// (FINDINGS.md#no-pagination-and-a-frozen-contract), and this is the only 503 in
+// it. Clients treat it as "backend not ready, retry", which is correct for a slow
+// visibility store as much as for a missing worker. A truer code would be worth
+// having and is not worth breaking the freeze for.
 func mapStoreReadError(err error, subject string) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
@@ -139,7 +141,7 @@ func classifyCommon(err error) error {
 	}
 
 	// No worker polling is the single most common development-time failure.
-	// PLAN.md 12.4.
+	// FINDINGS.md#read-and-write-timeouts.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
 			workerUnavailableMessage(err)}

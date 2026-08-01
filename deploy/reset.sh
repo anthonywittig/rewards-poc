@@ -2,8 +2,9 @@
 # Wipe every customer workflow in the namespace, running ones included.
 #
 # A development affordance, and a deliberately blunt one. Entity workflows
-# outlive deploys (docs/PLAN.md section 12.11), so while iterating on workflow
-# code you will routinely have executions recorded by yesterday's version that
+# outlive deploys (docs/FINDINGS.md#versioning-is-the-real-risk), so while
+# iterating on workflow code you will routinely have executions recorded by
+# yesterday's version that
 # today's version cannot replay. Production answers that with versioning; in dev
 # the honest answer is usually to throw the customers away and start again.
 #

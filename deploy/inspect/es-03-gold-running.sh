@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# §8.2: what the customer-list page is really asking.
+# what the customer-list page is really asking.
 #
 # Note the sort on RewardsPoints: raw Elasticsearch happily accepts it.
 # Temporal's ListWorkflow visibility query language rejects ORDER BY entirely
 # (custom *and* built-in attributes) — confirmed on server 1.29.7. Sorting for
-# the UI therefore has to happen client-side (see PLAN.md §4).
+# the UI therefore has to happen client-side (see FINDINGS.md#search-attributes-and-visibility).
 #
 # Run via: make inspect-es Q=gold-running
 

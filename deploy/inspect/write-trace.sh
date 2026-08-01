@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §8.3: follow one addPoints call through Postgres and Elasticsearch.
+# follow one addPoints call through Postgres and Elasticsearch.
 # Invoked from the host by `make write-trace ID=inspect AMOUNT=10`.
 #
 # Expects compose project env already loaded by Make (COMPOSE, NAMESPACE, …)

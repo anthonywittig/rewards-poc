@@ -1,7 +1,7 @@
 // Command api serves the HTTP surface over the rewards workflow.
 //
 // It holds a Temporal client and nothing else -- no database, no cache. See
-// PLAN.md 5.
+// FINDINGS.md#the-http-api.
 package main
 
 import (

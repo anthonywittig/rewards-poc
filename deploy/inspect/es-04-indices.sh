@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# §8.2: index size for our handful of customers — ES-is-overkill, made concrete.
+# index size for our handful of customers — ES-is-overkill, made concrete.
 # Run via: make inspect-es Q=indices
 #
 # Caveat: after make reap, docs.count from _cat/indices can stay high until

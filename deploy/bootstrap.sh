@@ -23,7 +23,8 @@ ES_REFRESH_INTERVAL="${ES_REFRESH_INTERVAL:-200ms}"
 log() { printf '  %s\n' "$*"; }
 
 # Search attributes for the customer list page and the Temporal UI.
-# Keep in sync with docs/PLAN.md section 4 and internal/rewards/searchattr.go.
+# Keep in sync with internal/rewards/searchattr.go and the table in
+# docs/FINDINGS.md#search-attributes-and-visibility.
 declare -A SEARCH_ATTRS=(
   [CustomerId]=Keyword
   [CustomerEmail]=Keyword
@@ -48,7 +49,8 @@ if temporal operator namespace describe \
 else
   # Temporal enforces a 1h minimum retention and there is no way to lower it on
   # a released server, so anything shorter fails here with "A valid retention
-  # period is not set on request". See docs/PLAN.md section 6.3; `make reap`
+  # period is not set on request". See
+  # docs/FINDINGS.md#retention-has-a-one-hour-floor; `make reap`
   # is how we force truncation instead.
   temporal operator namespace create \
     --address "${TEMPORAL_ADDRESS}" \

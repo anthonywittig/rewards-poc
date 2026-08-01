@@ -6,12 +6,14 @@ import (
 	"go.temporal.io/sdk/activity"
 )
 
-// NotifyCustomer is the only Activity in the system. PLAN.md 3.7.
+// NotifyCustomer is the only Activity in the system.
+// FINDINGS.md#tier-promotion-notifications.
 //
 // The body is a stub -- production would call an email or push provider here --
 // but everything around it is real: it is scheduled by workflow code, retried by
 // the platform, and recorded in Event History, which is what makes the audit
-// timeline pick up "notification sent" rows for free (PLAN.md 6.2).
+// timeline pick up "notification sent" rows for free
+// (FINDINGS.md#events-the-crawl-reads).
 //
 // It is deliberately the *only* thing in this codebase that would touch the
 // outside world. Everything else -- points, tiers, enrollment, the audit log --
