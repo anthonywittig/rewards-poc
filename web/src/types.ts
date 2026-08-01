@@ -49,6 +49,15 @@ export interface CustomerListResponse {
   query?: string
 }
 
+/**
+ * One rung of the tier ladder. `basic` is never in it — it is the floor, not a
+ * rung, so the span from zero to the first rung is implied.
+ */
+export interface Tier {
+  level: string
+  minPoints: number
+}
+
 export interface CustomerResponse {
   customerId: string
   name: string
@@ -56,6 +65,8 @@ export interface CustomerResponse {
   points: number
   level: string
   nextTierAt: number
+  /** Ascending by minPoints. Never null; see rewards.Ladder on the server. */
+  tiers: Tier[]
   enrolledAt: string
   lifetimeEarnEvents: number
   generation: number

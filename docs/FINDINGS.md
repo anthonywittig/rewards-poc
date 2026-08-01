@@ -127,10 +127,12 @@ The thresholds live in one ordered table, and everything tier-shaped walks it:
 ```go
 // when points >= GoldThreshold:     gold
 // when points >= PlatinumThreshold: platinum
-var tiers = []tier{
+var tiers = []Tier{
     {Level: LevelGold, MinPoints: GoldThreshold},
     {Level: LevelPlatinum, MinPoints: PlatinumThreshold},
 }
+
+func Ladder() []Tier // a copy of the rungs, for callers outside the package
 
 func Level(points int) string          // the highest rung reached
 func NextTierAt(points int) (int, bool) // the first rung not reached
@@ -145,6 +147,25 @@ are quiet: a missing case in `NextTierAt` is a wrong progress bar, and a missing
 
 `basic` is deliberately not a rung. It is the floor, what you are when no rule matches, so
 `promotionFor` needs no clause to avoid congratulating anyone for reaching it.
+
+**There was a fourth reader, and it was in the browser.** `CustomerResponse` carried
+`nextTierAt` and nothing else, which is enough to *name* the next target but not to draw a bar:
+that also needs the rung the customer is standing on. The UI reverse-looked-it-up from the one
+number it had —
+
+```tsx
+const prev = nextTierAt === 500 ? 0 : nextTierAt === 1000 ? 500 : 0
+```
+
+— so "adding a tier is one line" was false, and the missed line was in another language, in
+another build artifact, with no test in front of it. It fails the quietest way yet: a bar of the
+wrong width renders perfectly. The response now carries the whole ladder (`tiers`, ascending,
+`basic` absent) and the client derives its floor from that. The ladder comes back from the
+**Query** rather than being attached by the API, because `api` and `worker` are separate
+binaries on separate deploys — an API pairing its own rungs with a `nextTierAt` from another
+build could name a target that is not on the ladder printed beside it. Which also means a
+`make api` without a `make worker` serves `tiers: null` until the worker catches up; the bar
+degrades to spanning the whole climb rather than the current segment.
 
 **Which direction `promotionFor` walks the ladder is the "only the tier they are at" decision**
 ([notifications](#tier-promotion-notifications)), and it is where you would go to decide

@@ -223,6 +223,7 @@ export function CustomerDetailPage() {
               points={customer.points}
               nextTierAt={customer.nextTierAt}
               level={customer.level}
+              tiers={customer.tiers}
             />
           </div>
 

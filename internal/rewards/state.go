@@ -17,7 +17,10 @@
 // ActivityNotifyCustomer string constant instead.
 package rewards
 
-import "time"
+import (
+	"slices"
+	"time"
+)
 
 // TaskQueue is the single queue every customer workflow runs on.
 const TaskQueue = "rewards"
@@ -50,10 +53,16 @@ const (
 	LevelPlatinum = "platinum"
 )
 
-// tier is one rung of the ladder: a name and the balance that earns it.
-type tier struct {
-	Level     string
-	MinPoints int
+// Tier is one rung of the ladder: a name and the balance that earns it.
+//
+// Exported, with JSON tags, because the ladder itself travels to the client as
+// part of the customer detail response. A single "next threshold" is not enough
+// to draw a progress bar -- that needs the rung *below* the customer too -- and
+// the alternative to sending the ladder is a second copy of it in the UI, which
+// is what this replaced.
+type Tier struct {
+	Level     string `json:"level"`
+	MinPoints int    `json:"minPoints"`
 }
 
 // tiers is the ladder, and the only place a threshold is attached to a tier.
@@ -66,9 +75,22 @@ type tier struct {
 //
 // MUST stay sorted by MinPoints ascending; everything below relies on it.
 // TestTierLadderIsOrdered enforces that rather than trusting the comment.
-var tiers = []tier{
+var tiers = []Tier{
 	{Level: LevelGold, MinPoints: GoldThreshold},
 	{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+}
+
+// Ladder returns the rungs, ordered by MinPoints ascending.
+//
+// A copy: Level, NextTierAt and PromotionFor all read `tiers` trusting that
+// order without re-checking it, so a caller that sorted or appended to a shared
+// slice would corrupt tier derivation for the whole process.
+//
+// LevelBasic is absent, because it is the floor rather than a rung (see tiers).
+// A client drawing the ladder therefore has to supply the "zero to the first
+// rung" span itself -- there is no entry describing it.
+func Ladder() []Tier {
+	return slices.Clone(tiers)
 }
 
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so

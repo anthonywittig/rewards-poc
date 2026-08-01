@@ -3,7 +3,11 @@
 // See FINDINGS.md#the-http-api.
 package httpapi
 
-import "time"
+import (
+	"time"
+
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
+)
 
 // EnrollRequest is the body of POST /api/customers.
 type EnrollRequest struct {
@@ -42,6 +46,17 @@ type CustomerResponse struct {
 	Level      string    `json:"level"`
 	NextTierAt int       `json:"nextTierAt"`
 	EnrolledAt time.Time `json:"enrolledAt"`
+
+	// The whole ladder, ascending, so the UI can draw progress without holding
+	// its own copy of the thresholds. NextTierAt alone is not enough: a bar also
+	// needs the rung below the customer, and deriving that on the client means
+	// hardcoding the ladder there -- which then goes stale silently, because a
+	// wrong bar width renders perfectly.
+	//
+	// Answered by the worker, so these rungs are the ones Level and NextTierAt
+	// above were actually derived from. Basic is not in it; the span from zero
+	// to the first rung is implied. See rewards.Ladder.
+	Tiers []rewards.Tier `json:"tiers"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
