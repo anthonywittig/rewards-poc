@@ -213,8 +213,20 @@ func (m *mock) enroll(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, ok := m.customers[req.CustomerID]; ok && existing.Status == "active" {
-		writeErr(w, 409, "already_exists", "customer is already enrolled and active")
+	if existing, ok := m.customers[req.CustomerID]; ok {
+		if existing.Status == "active" {
+			writeErr(w, 409, "already_exists", "customer is already enrolled and active")
+			return
+		}
+		// Soft re-enroll: keep points, lifetime counters, and enrollment date.
+		existing.Status = "active"
+		existing.Name = req.Name
+		existing.Email = req.Email
+		m.customers[req.CustomerID] = existing
+		m.visibleAt[req.CustomerID] = time.Now().Add(visibilityLag)
+		writeJSON(w, 200, httpapi.EnrollResponse{
+			CustomerID: req.CustomerID, WorkflowID: "customer-" + req.CustomerID, RunID: existing.RunID,
+		})
 		return
 	}
 

@@ -20,7 +20,7 @@ API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 MOCK_PORT ?= 8082
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate \
+        worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web web-build
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -211,8 +211,16 @@ add: $(ENV) ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: $(ENV) ## Leave the program -- cancel, not terminate (make deactivate ID=c-001)
-	@$(TCLI) workflow cancel --workflow-id customer-$(ID)
+deactivate: $(ENV) ## Soft-leave the program (make deactivate ID=c-001)
+	@$(TCLI) workflow update execute \
+	  --workflow-id customer-$(ID) \
+	  --name deactivate
+
+reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAME="Ada" EMAIL=ada@example.com)
+	@$(TCLI) workflow update execute \
+	  --workflow-id customer-$(ID) \
+	  --name reactivate \
+	  --input '{"name":"$(or $(NAME),Ada Lovelace)","email":"$(or $(EMAIL),$(ID)@example.com)"}'
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed

@@ -16,11 +16,9 @@ edit it from this phase. Draft paragraph for the integrator:
    `customer-<id>`. The UI auto-slugs from the name and lets you edit it. Worth
    a one-line correction in §9 so the create screen matches the frozen contract.
 
-2. **Status chips map to Temporal `ExecutionStatus`, not the API's
-   `status` string.** The list query uses `ExecutionStatus = 'Running'|'Canceled'`
-   while detail payloads say `active`|`deactivated`. The UI translates; §9's
-   "status toggle (Running/Canceled)" is the visibility vocabulary and is
-   correct — just easy to confuse with the DTO field of the same English word.
+2. **Status chips map to `RewardsActive`, not `ExecutionStatus`.** Soft-inactive
+   customers stay `Running`, so the list query uses `RewardsActive = true|false`
+   while detail payloads say `active`|`deactivated`. The UI translates between them.
 
 3. **Optimistic list insert is session-scoped with a TTL.** §9 says the list should
    optimistically insert after create. Implemented via `sessionStorage` (cleared once

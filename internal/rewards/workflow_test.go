@@ -82,11 +82,10 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 			if err != nil {
 				return
 			}
-			// The test env hands back the concrete value the handler returned.
+			// addPoints returns AddPointsResult; deactivate returns nil;
+			// reactivate returns CustomerStatus. Only decode when present.
 			if res, ok := v.(rewards.AddPointsResult); ok {
 				r.value = res
-			} else {
-				s.Failf("unexpected update result", "got %T, want rewards.AddPointsResult", v)
 			}
 		},
 	}
@@ -101,10 +100,26 @@ func (s *RewardsSuite) addPoints(at time.Duration, id string, req rewards.AddPoi
 	return res
 }
 
-// cancelAt schedules the graceful-departure path. Every test needs one: the
-// Phase 1 workflow runs until cancelled, so without this the env would block.
+// cancelAt schedules an ops Cancel so the long-running entity workflow can
+// finish under the test env. Product deactivation is soft (see deactivateAt).
 func (s *RewardsSuite) cancelAt(at time.Duration) {
 	s.env.RegisterDelayedCallback(func() { s.env.CancelWorkflow() }, at)
+}
+
+func (s *RewardsSuite) deactivateAt(at time.Duration, id string) *updateResult {
+	res := &updateResult{}
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(rewards.UpdateDeactivate, id, res.callback(s))
+	}, at)
+	return res
+}
+
+func (s *RewardsSuite) reactivateAt(at time.Duration, id string, req rewards.ReactivateRequest) *updateResult {
+	res := &updateResult{}
+	s.env.RegisterDelayedCallback(func() {
+		s.env.UpdateWorkflow(rewards.UpdateReactivate, id, res.callback(s), req)
+	}, at)
+	return res
 }
 
 // queryStatusAt reads getStatus mid-run.
@@ -621,9 +636,8 @@ func (s *RewardsSuite) Test_ContinueAsNew_CancelWinsBeforeThreshold() {
 
 // --- Cancellation (PLAN.md 3.6) ---------------------------------------------
 
-// Cancel, not Terminate: the workflow's own code runs on the way out, and the
-// execution closes as Canceled so the customer list can tell active from
-// deactivated via ExecutionStatus.
+// Ops Cancel still closes as Canceled (test teardown / emergency path).
+// Product leave is soft -- see Test_SoftDeactivate_KeepsPointsForReenroll.
 func (s *RewardsSuite) Test_Cancel_ClosesAsCanceled() {
 	s.cancelAt(time.Minute)
 
@@ -632,6 +646,61 @@ func (s *RewardsSuite) Test_Cancel_ClosesAsCanceled() {
 	s.Require().Error(err)
 	var canceled *temporal.CanceledError
 	s.True(errors.As(err, &canceled), "want a CanceledError, got %T: %v", err, err)
+}
+
+// Soft-deactivate keeps the workflow running with the balance intact;
+// reactivate clears the flag and restores the same points.
+func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
+	s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
+	deact := s.deactivateAt(2*time.Minute, "leave")
+	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
+	s.reactivateAt(4*time.Minute, "rejoin", rewards.ReactivateRequest{
+		Name: "Ada Lovelace", Email: "ada@example.com",
+	})
+	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
+	s.cancelAt(6 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Require().NoError(deact.rejected)
+	s.Require().NoError(deact.completed)
+	s.False(statusAfterLeave.Active, "soft leave must mark inactive")
+	s.Equal(600, statusAfterLeave.Points, "points must survive deactivation")
+	s.True(statusAfterRejoin.Active, "re-enroll must reactivate")
+	s.Equal(600, statusAfterRejoin.Points, "re-enroll must restore the prior balance")
+}
+
+// addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.
+func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
+	s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave")
+	blocked := s.addPoints(3*time.Minute, "u2", rewards.AddPointsRequest{Amount: 50, Reason: "purchase"})
+	s.cancelAt(4 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Require().Error(blocked.completed)
+	var app *temporal.ApplicationError
+	s.Require().True(errors.As(blocked.completed, &app))
+	s.Equal(rewards.ErrTypeDeactivated, app.Type())
+}
+
+// Soft deactivate still sends the departure notification.
+func (s *RewardsSuite) Test_SoftDeactivate_SendsDepartureNotice() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.deactivateAt(2*time.Minute, "leave")
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted))
 }
 
 // An Update delivered in the same instant as the cancellation still applies,

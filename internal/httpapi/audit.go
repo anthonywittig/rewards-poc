@@ -261,6 +261,21 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p, paired := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
+			if paired && p.name == rewards.UpdateDeactivate {
+				if a.GetOutcome().GetFailure() != nil {
+					continue
+				}
+				out.entries = append(out.entries, AuditEntry{
+					Kind:       AuditDeactivated,
+					At:         p.at,
+					Generation: out.startState.Generation,
+					RunID:      runID,
+					EventID:    p.eventID,
+					RequestID:  p.updateID,
+				})
+				continue
+			}
+
 			// A future Update handler must not render as a point-add. An
 			// unpaired completion (name unknown) is still shown: dropping a row
 			// that history clearly contains would be the worse failure.
@@ -353,9 +368,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			})
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
-			// The request, not WorkflowExecutionCanceled, because this is the
-			// moment the customer asked. The two are a workflow task apart and
-			// the second only exists if the workflow shut down cleanly.
+			// Ops Cancel (not product soft-deactivate). Kept so a cancelled
+			// execution still shows a leave row on the timeline.
 			out.entries = append(out.entries, AuditEntry{
 				Kind:       AuditDeactivated,
 				At:         e.GetEventTime().AsTime(),

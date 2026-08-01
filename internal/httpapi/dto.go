@@ -29,9 +29,8 @@ type AddPointsRequest struct {
 
 // CustomerResponse is the customer detail payload.
 //
-// Status comes from the execution rather than from workflow state: a cancelled
-// execution is a deactivated customer, and the workflow cannot report its own
-// closure. PLAN.md 3.6.
+// Status comes from workflow state (Active / Deactivated), not from whether
+// the Temporal execution is Running. Soft-inactive customers stay Running.
 //
 // Assembled from two reads -- Describe for liveness, Query for state -- and a
 // continue-as-new can land between them. When it does, Points and Generation

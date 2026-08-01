@@ -267,8 +267,7 @@ export function CustomerDetailPage() {
               <h2>Deactivated</h2>
               <p className="warn-copy">
                 This customer has left the program. Points cannot be added.
-                Re-enrollment starts a new workflow at zero — deactivation is not
-                irreversible, but history on the old run may still be reaped.
+                Re-enrolling the same customer ID restores their prior balance.
               </p>
             </section>
           )}
@@ -287,8 +286,8 @@ export function CustomerDetailPage() {
               ) : (
                 <>
                   <p className="warn-copy">
-                    Cancel the workflow (graceful). Re-enrolling later starts over at
-                    zero points.
+                    Soft-deactivate this customer. Their points are kept, and
+                    re-enrolling later restores them.
                   </p>
                   <div className="form-actions">
                     <button

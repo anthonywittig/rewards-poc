@@ -77,7 +77,11 @@ export function matchesVisibilityQuery(c: CustomerListItem, query: string): bool
   for (const clause of q.split(' AND ').map((s) => s.trim()).filter(Boolean)) {
     if (clause.startsWith('RewardsLevel')) {
       if (!clause.includes(`'${c.level}'`)) return false
+    } else if (clause.startsWith('RewardsActive')) {
+      const wantActive = clause.includes('true')
+      if (wantActive !== (c.status === 'active')) return false
     } else if (clause.startsWith('ExecutionStatus')) {
+      // Legacy chip queries; soft-inactive uses RewardsActive instead.
       const want = c.status === 'deactivated' ? 'Canceled' : 'Running'
       if (!clause.includes(`'${want}'`)) return false
     } else if (clause.startsWith('CustomerName')) {

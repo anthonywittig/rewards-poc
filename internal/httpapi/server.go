@@ -60,17 +60,17 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// enroll starts a customer's workflow.
+// enroll starts a customer's workflow, or reactivates a soft-deactivated one.
+//
+// Re-enrollment keeps the existing balance: the workflow ID is still occupied,
+// so we Update rather than Start, and Deactivated flips back to false with
+// Points untouched.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
 		return err
 	}
 
-	// Checked here as well as in the workflow. The workflow is the integrity
-	// boundary and keeps its own validation (PLAN.md 3.1), but letting a bad
-	// request through would turn a 400 into a WorkflowExecutionFailed and a
-	// burnt workflow ID, which is a poor way to report a typo.
 	req.CustomerID = strings.TrimSpace(req.CustomerID)
 	if req.CustomerID == "" {
 		return badRequest("customerId is required")
@@ -82,12 +82,10 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
 
+	wfID := rewards.WorkflowID(req.CustomerID)
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
-		ID:        rewards.WorkflowID(req.CustomerID),
+		ID:        wfID,
 		TaskQueue: rewards.TaskQueue,
-		// Both are required for a duplicate enrollment to surface as an error.
-		// The conflict policy governs what the server does; the second flag
-		// governs whether the SDK tells us. PLAN.md 3.6 and 12.7.
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, rewards.CustomerRewardsWorkflow, rewards.CustomerState{
@@ -95,14 +93,50 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		Name:       req.Name,
 		Email:      req.Email,
 	})
-	if err != nil {
+	if err == nil {
+		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
+			CustomerID: req.CustomerID,
+			WorkflowID: run.GetID(),
+			RunID:      run.GetRunID(),
+		})
+		return nil
+	}
+
+	var already *serviceerror.WorkflowExecutionAlreadyStarted
+	if !errors.As(err, &already) {
 		return mapStartError(err)
 	}
 
-	writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
+	// ID is taken. Active → 409. Soft-deactivated → reactivate and restore.
+	enc, qerr := s.queryStatus(r.Context(), wfID)
+	if qerr != nil {
+		return qerr
+	}
+	var st rewards.CustomerStatus
+	if err := enc.Get(&st); err != nil {
+		return err
+	}
+	if st.Active {
+		return &apiError{http.StatusConflict, CodeAlreadyExists,
+			"customer is already enrolled and active"}
+	}
+
+	if _, err = s.sendReactivate(r.Context(), wfID, rewards.ReactivateRequest{
+		Name:  req.Name,
+		Email: req.Email,
+	}); err != nil {
+		return err
+	}
+	desc, derr := s.temporal.DescribeWorkflowExecution(r.Context(), wfID, "")
+	runID := ""
+	if derr == nil {
+		runID = desc.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+	}
+
+	writeJSON(w, s.log, http.StatusOK, EnrollResponse{
 		CustomerID: req.CustomerID,
-		WorkflowID: run.GetID(),
-		RunID:      run.GetRunID(),
+		WorkflowID: wfID,
+		RunID:      runID,
 	})
 	return nil
 }
@@ -171,10 +205,14 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	for _, e := range resp.GetExecutions() {
 		v := decodeSearchAttributes(e.GetSearchAttributes())
 
-		// Status is a built-in rather than one of ours: a workflow cannot
-		// record its own closure. PLAN.md 3.6.
+		// Soft-inactive: membership is RewardsActive, not ExecutionStatus.
+		// Fall back to Running/not for workflows that have not upserted the
+		// attribute yet (pre-deploy generations).
 		status := "deactivated"
-		if e.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		switch {
+		case v.Active != nil && *v.Active:
+			status = "active"
+		case v.Active == nil && e.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
 			status = "active"
 		}
 
@@ -284,12 +322,8 @@ func mapListError(err error, userQuery string) error {
 	return &apiError{http.StatusBadRequest, CodeInvalidRequest, msg}
 }
 
-// getCustomer reads current state via Query, and liveness via Describe.
-//
-// Two calls rather than one because they answer different questions: Query asks
-// the workflow what it holds, Describe asks the server whether it is still
-// running. A workflow cannot report its own closure, so Describe is what
-// distinguishes active from deactivated.
+// getCustomer reads current state via Query. Soft-inactive status comes from
+// workflow state (Active), not from whether the execution is still Running.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -303,23 +337,14 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	info := desc.GetWorkflowExecutionInfo()
-	status := "active"
-	if info.GetStatus() != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		status = "deactivated"
-	}
+	running := info.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING
 
 	out := CustomerResponse{
 		CustomerID: id,
-		Status:     status,
+		Status:     "active", // refined from Query below
 		RunID:      info.GetExecution().GetRunId(),
 	}
 
-	// Queried regardless of whether the customer is still active. A closed
-	// execution answers Queries perfectly well -- Temporal replays its history
-	// to serve them -- which is worth knowing, because assuming otherwise is
-	// easy and costs real fidelity: search attributes carry no
-	// LifetimeEarnEvents, so a departed customer would read back missing a field
-	// that was available all along.
 	enc, qerr := s.queryStatus(r.Context(), wfID)
 	switch {
 	case qerr == nil:
@@ -335,24 +360,21 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		out.EnrolledAt = st.EnrolledAt
 		out.LifetimeEarnEvents = st.LifetimeEarnEvents
 		out.Generation = st.Generation
+		if st.Active {
+			out.Status = "active"
+		} else {
+			out.Status = "deactivated"
+		}
 
-	case status == "deactivated":
-		// Answering a closed customer needs a worker to replay their history,
-		// so with no worker polling they would otherwise 503 -- despite the
-		// execution record in hand already carrying most of what the page
-		// shows. Degrade to that rather than failing: a departed customer is
-		// not going to change, and a stale-but-complete-enough record beats an
-		// outage for someone who is only being looked up.
-		//
-		// Note this does NOT cover a reaped customer. `make reap` deletes the
-		// whole execution record, search attributes included, so those fail at
-		// Describe above and surface as a 404 -- see PLAN.md 6.3.
+	case !running:
+		// Closed execution (ops cancel / failed enroll): degrade to search
+		// attributes when no worker is available to replay.
 		s.log.Info("query failed for a closed customer, falling back to search attributes",
 			"workflowId", wfID, "error", qerr)
 		fillFromSearchAttributes(&out, info.GetSearchAttributes())
+		out.Status = "deactivated"
 
 	default:
-		// A running customer that cannot answer is a real failure.
 		return qerr
 	}
 
@@ -441,12 +463,11 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // losing its run is the *expected* outcome of racing a rollover, and without a
 // transparent retry the demo looks broken roughly every third click. PLAN.md 12.2.
 //
-// The subtlety is that "the run you addressed has closed" arrives as one
-// ambiguous NotFound covering two opposite situations: a rollover, where a
-// successor is already running and retrying is exactly right, and a
-// deactivation, where nothing is running and retrying can never succeed. So we
-// ask the server which it is rather than guessing from the message -- an extra
-// Describe, only ever on the error path.
+// The subtlety used to be that "the run you addressed has closed" covered both
+// continue-as-new and Cancel-based deactivation. Soft-inactive customers stay
+// Running, so a closed-run NotFound now means rollover (retry) or an ops
+// Cancel/Terminate (refuse). Product deactivation rejects inside the Update
+// handler as ErrTypeDeactivated instead.
 //
 // Retrying is safe because the update did not run: the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
@@ -474,7 +495,7 @@ func (s *Server) updateWithRolloverRetry(
 		if !running {
 			return rewards.AddPointsResult{}, &apiError{
 				http.StatusConflict, CodeDeactivated,
-				"customer is deactivated; re-enroll them before adding points",
+				"customer workflow is closed; re-enroll them before adding points",
 			}
 		}
 
@@ -560,34 +581,52 @@ func (s *Server) sendUpdate(
 	return res, nil
 }
 
-// deactivate cancels the workflow. Cancel rather than Terminate so the
-// workflow's own departure code runs. PLAN.md 3.6.
+func (s *Server) sendReactivate(
+	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+) (rewards.CustomerStatus, error) {
+	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   wfID,
+		UpdateName:   rewards.UpdateReactivate,
+		Args:         []any{req},
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return rewards.CustomerStatus{}, mapUpdateError(err)
+	}
+	var st rewards.CustomerStatus
+	if err := handle.Get(ctx, &st); err != nil {
+		return rewards.CustomerStatus{}, mapUpdateError(err)
+	}
+	return st, nil
+}
+
+// deactivate soft-leaves the customer via Update. The workflow stays Running
+// with Deactivated set so re-enrollment can restore the prior balance.
 //
-// Deliberately does NOT disambiguate a closed execution the way the update path
-// does, because Cancel and Update disagree about what a closed run means.
-// Measured against a real server:
-//
-//	operation on a closed execution   Canceled   Failed   Terminated   never existed
-//	------------------------------    --------   ------   ----------   -------------
-//	CancelWorkflow                     nil        nil      nil          NotFound
-//	UpdateWorkflow                     NotFound   -        -            NotFound
-//
-// So Cancel is already idempotent server-side: deactivating a departed customer
-// is a successful no-op, and only a workflow ID that never existed produces the
-// NotFound that becomes a 404. That is exactly the REST semantics wanted here,
-// and it is why this handler is three lines while updateWithRolloverRetry needs
-// an extra Describe to decide the same question.
-//
-// Reviewed on PR #6 as a suspected bug -- repeat DELETE misreporting 404 -- on
-// the reasonable assumption that Cancel behaves like Update. It does not.
+// Idempotent: repeating DELETE against an already-deactivated customer is a
+// successful no-op (the Update handler returns nil).
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
 		return badRequest("customer id is required")
 	}
 
-	if err := s.temporal.CancelWorkflow(r.Context(), rewards.WorkflowID(id), ""); err != nil {
-		return mapQueryError(err)
+	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout)
+	defer cancel()
+
+	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   rewards.WorkflowID(id),
+		UpdateName:   rewards.UpdateDeactivate,
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return mapUpdateError(err)
+	}
+	if err := handle.Get(ctx, nil); err != nil {
+		return mapUpdateError(err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -609,6 +648,7 @@ type searchAttrValues struct {
 	Level      string
 	EnrolledAt time.Time
 	Generation int
+	Active     *bool // nil when the attribute was never upserted
 }
 
 // decodeSearchAttributes is best-effort by design: a missing or undecodable
@@ -647,6 +687,12 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
 		_ = dc.FromPayload(p, &out.EnrolledAt)
 	}
+	if p, ok := fields[rewards.KeyActive.GetName()]; ok {
+		var active bool
+		if err := dc.FromPayload(p, &active); err == nil {
+			out.Active = &active
+		}
+	}
 	return out
 }
 
@@ -666,9 +712,10 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 	out.Generation = v.Generation
 	out.EnrolledAt = v.EnrolledAt
 
-	// Derived rather than stored, so it stays consistent with the balance we
-	// just recovered. PLAN.md 3.2.
 	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
+	if v.Active != nil && !*v.Active {
+		out.Status = "deactivated"
+	}
 }
 
 func decodeJSON(r *http.Request, dst any) error {
