@@ -90,6 +90,8 @@ func cappedAdds() []int {
 }
 
 func main() {
+	// The compose one-shot sets this to the in-network address. The default is
+	// the published port, for running this directly with `go run`.
 	base := env("API_BASE", "http://localhost:8081")
 
 	if err := ping(base); err != nil {

@@ -1144,8 +1144,9 @@ logic.
 ## The local stack
 
 `postgres` (persistence), `elasticsearch` (visibility), `temporal` (auto-setup image),
-`temporal-ui`, `worker` and `api` in Compose; only the Vite dev server runs on the host, via
-`make web`.
+`temporal-ui`, `worker` and `api` in Compose, plus `seed` as a one-shot behind a profile; only
+the Vite dev server runs on the host, via `make web`. The three Go services share one
+`deploy/Dockerfile`, selected by a `CMD` build arg, so `make up` needs Docker and no toolchain.
 `temporalio/auto-setup` with `DB=postgres12`, `ENABLE_ES=true`, `ES_SEEDS=elasticsearch` creates
 schemas and installs the ES index template for us.
 

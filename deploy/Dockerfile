@@ -1,5 +1,6 @@
-# The Go services -- worker and api. One file for both, selected by CMD, because
-# the only difference between them is which package under cmd/ gets built.
+# The Go binaries -- worker, api and the seed one-shot. One file for all three,
+# selected by CMD, because the only difference is which package under cmd/ gets
+# built.
 #
 # Built from the repo root rather than from deploy/ -- see build.context in
 # docker-compose.yml -- because the binaries need cmd/ and internal/, which live
@@ -16,8 +17,8 @@ WORKDIR /src
 # Module download is its own layer so editing workflow code doesn't re-fetch the
 # SDK, and the cache mounts persist between builds. Together they keep a rebuild
 # after a code change to a few seconds, which is what makes `make worker` and
-# `make api` usable as the edit-restart loop. The two services share both the
-# layer and the caches, so building the second is nearly free.
+# `make api` usable as the edit-restart loop. All three share both the layer and
+# the caches, so each image after the first is nearly free.
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download
