@@ -1,6 +1,6 @@
 # Postgres (persistence) + Elasticsearch (visibility) + Temporal + the workflow
-# worker. The api and web dev server run on the host via `make api` / `make web`,
-# not here.
+# worker + the HTTP API. Only the Vite dev server runs on the host, via
+# `make web`.
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
@@ -111,10 +111,11 @@ services:
   worker:
     build:
       # The repo root: the binary needs cmd/ and internal/, which are above this
-      # file. deploy/worker.Dockerfile has the details.
+      # file. deploy/Dockerfile has the details.
       context: ..
-      dockerfile: deploy/worker.Dockerfile
+      dockerfile: deploy/Dockerfile
       args:
+        CMD: worker
         GO_VERSION: ${GO_VERSION}
         ALPINE_VERSION: ${ALPINE_VERSION}
     depends_on:
@@ -122,11 +123,43 @@ services:
         condition: service_healthy
     environment:
       # In-network, so the service name and the container port -- not the
-      # host-published TEMPORAL_GRPC_PORT the host-side targets use.
+      # host-published TEMPORAL_GRPC_PORT a host-side `go run` would use.
       - TEMPORAL_HOSTPORT=temporal:7233
       - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}
     # Survives a Temporal restart and a laptop reboot; `make worker-stop` still
     # holds it down, because `compose stop` is an explicit stop.
+    restart: unless-stopped
+
+  # Same shape as the worker, one image apart. `make api` rebuilds and restarts
+  # it; `make api-logs` tails it.
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        CMD: api
+        GO_VERSION: ${GO_VERSION}
+        ALPINE_VERSION: ${ALPINE_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      - TEMPORAL_HOSTPORT=temporal:7233
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}
+      # Fixed inside the container, like every other service here: API_PORT is
+      # the host-side knob, applied by the port mapping below, so a second stack
+      # publishes a different port without changing what the process binds.
+      - API_PORT=8081
+    ports:
+      - "${API_PORT}:8081"
+    healthcheck:
+      # /healthz answers from the process alone -- no Temporal call -- so this
+      # reports the server being up, which is what `make up --wait` needs before
+      # `make seed` can work. Alpine has busybox wget, not curl.
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
     restart: unless-stopped
 
 volumes:

@@ -3,8 +3,7 @@
 React app over the rewards API. See [docs/FINDINGS.md](../docs/FINDINGS.md).
 
 ```sh
-# from repo root — stack + worker + api already up
-make api
+# from repo root — `make up` brings up the stack, worker and API
 make web       # :5173 — /api proxied to the API on :8081
 ```
 
