@@ -1,5 +1,5 @@
-# Phase 0 stack: Postgres (persistence) + Elasticsearch (visibility) + Temporal.
-# worker/api/web join in later phases.
+# Postgres (persistence) + Elasticsearch (visibility) + Temporal. The worker and
+# api run on the host via `make worker` / `make api`, not here.
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
@@ -28,15 +28,14 @@ services:
       - discovery.type=single-node
       - ES_JAVA_OPTS=${ES_JAVA_OPTS}
       - xpack.security.enabled=false
-      # Absolute-byte watermarks, not percentages. With ES's default 85/90/95%
+      # Absolute-byte watermarks, not percentages: with ES's default 85/90/95%
       # thresholds a nearly-full laptop disk flips indices read-only and
       # visibility silently stops updating while workflows keep running fine.
-      # These are Temporal's own reference values -- keep them.
       - cluster.routing.allocation.disk.threshold_enabled=true
       - cluster.routing.allocation.disk.watermark.low=512mb
       - cluster.routing.allocation.disk.watermark.high=256mb
       - cluster.routing.allocation.disk.watermark.flood_stage=128mb
-      # We index a handful of documents. None of this earns its memory.
+      # Not worth the memory for a handful of documents.
       - xpack.ml.enabled=false
       - xpack.monitoring.collection.enabled=false
       - xpack.watcher.enabled=false
@@ -72,17 +71,14 @@ services:
       - ES_SEEDS=elasticsearch
       - ES_VERSION=v7
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/dev.yaml
-      # auto-setup creates a default namespace on boot; ours is created by
-      # bootstrap.sh with the retention we actually want.
+      # Ours is created by bootstrap.sh with the retention we want.
       - SKIP_DEFAULT_NAMESPACE_CREATION=true
     ports:
       - "${TEMPORAL_GRPC_PORT}:7233"
     volumes:
       - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
       # The server image ships the `temporal` CLI, so operational scripts run
-      # here via `exec` rather than in a separate admin-tools container --
-      # several seconds faster per invocation, and one less image to pin.
-      # Note it has bash, curl and grep but no python3 or jq.
+      # here via `exec`. It has bash, curl and grep but no python3 or jq.
       - ./bootstrap.sh:/bootstrap.sh:ro
       - ./reap.sh:/reap.sh:ro
       - ./reset.sh:/reset.sh:ro
