@@ -28,14 +28,12 @@ to `.env` only when you want local overrides.
 ```sh
 # 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
 #    namespace and search-attribute bootstrap, then the workflow worker and the
-#    HTTP API. Takes a minute the first time (it builds their images too), and
-#    returns once the API answers.
+#    HTTP API, then eighteen demo customers, six per tier, including the
+#    interesting edge cases. Takes a minute the first time (it builds the worker
+#    and api images too).
 make up
 
-# 2. Eighteen demo customers, six per tier, including the interesting edge cases.
-make seed
-
-# 3. The React UI on :5173, in its own terminal.
+# 2. The React UI on :5173, in its own terminal.
 #    Installs dependencies and typechecks on the way up, so the first run is slower.
 make web
 ```
@@ -80,14 +78,14 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 
 | | |
 |---|---|
-| `make up` / `down` / `destroy` | start + bootstrap / stop / stop and delete volumes |
+| `make up` / `down` / `destroy` | start + bootstrap + seed / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
 | `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
 | `make api` / `api-logs` / `api-stop` | the same three for the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
 | `make workflowcheck` | static determinism check on workflow code, no Docker needed |
-| `make seed` / `reset` | demo customers (idempotent) / delete every customer workflow |
+| `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |
 | `make reap [WF=customer-x]` | delete closed runs now, to force audit-log truncation |
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
 | `make verify-config` | re-check the platform assumptions the design depends on |
