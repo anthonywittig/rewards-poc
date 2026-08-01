@@ -29,16 +29,13 @@ var commonExecution = commonpb.WorkflowExecution{
 }
 
 // Handler-level tests, driven through the real mux with a stubbed Temporal
-// client. Everything else in this package tests a mapper or a pure function in
-// isolation, which turned out not to be enough: the timeout misattribution
-// reported on PR #13 lived in *which mapper the handler called*, so a suite that
-// only exercised the mappers passed with the bug fully intact. Reverting either
-// call site to mapQueryError has to fail something, and now does.
+// client. The mappers are covered in isolation elsewhere, which is not enough on
+// its own: a timeout can be misattributed by *which mapper the handler calls*,
+// so reverting either call site to mapQueryError has to fail something here.
 
 // stubTemporal implements only the methods the endpoints under test reach.
 // Embedding the interface means anything else panics rather than silently
-// returning a zero value -- a test that wandered off the intended path should
-// fail loudly rather than assert on nothing.
+// returning a zero value.
 type stubTemporal struct {
 	client.Client
 	describeErr error
@@ -46,9 +43,8 @@ type stubTemporal struct {
 	listErr     error
 	countErr    error
 
-	// Soft-deactivation surface (membership_test.go). Everything here is
-	// opt-in: a zero stubTemporal behaves exactly as it did before these
-	// existed, so the tests above are unaffected by them.
+	// Soft-deactivation surface (membership_test.go), all opt-in: a zero
+	// stubTemporal behaves as though none of it existed.
 	describeInfo *workflowpb.WorkflowExecutionInfo
 	executions   []*workflowpb.WorkflowExecutionInfo
 	startErr     error
@@ -98,7 +94,7 @@ func (s *stubTemporal) QueryWorkflow(
 
 // stubEncoded is a Query result that round-trips through the real converter, so
 // a status type that does not encode fails here rather than decoding to a
-// zero-valued -- and therefore inactive -- customer.
+// zero-valued, and therefore inactive, customer.
 type stubEncoded struct{ value any }
 
 func (e *stubEncoded) HasValue() bool { return e.value != nil }
@@ -179,11 +175,10 @@ func doGET(t *testing.T, h http.Handler, path string) (int, ErrorResponse) {
 	return rec.Code, body
 }
 
-// The reported bug, end to end. A crawl that runs out of time must not tell the
-// caller to go and look at a worker it never spoke to.
+// A crawl that runs out of time must not tell the caller to go and look at a
+// worker it never spoke to.
 func TestGetAudit_TimeoutDoesNotBlameTheWorker(t *testing.T) {
-	// Describe succeeds, so the failure lands in the crawl itself -- the path
-	// the report was about.
+	// Describe succeeds, so the failure lands in the crawl itself.
 	h := newTestServer(&stubTemporal{historyErr: context.DeadlineExceeded})
 
 	code, body := doGET(t, h, "/api/customers/ada/audit")
@@ -205,9 +200,7 @@ func TestGetAudit_DescribeTimeoutDoesNotBlameTheWorker(t *testing.T) {
 	assertBlamesNoWorker(t, body, auditSubject)
 }
 
-// The list reads the visibility index and is equally worker-free. Not reported,
-// found while fixing the audit endpoint -- the two share the defect because they
-// shared the mapper.
+// The list reads the visibility index and is equally worker-free.
 func TestListCustomers_TimeoutDoesNotBlameTheWorker(t *testing.T) {
 	h := newTestServer(&stubTemporal{
 		countErr: context.DeadlineExceeded,
