@@ -1,8 +1,6 @@
 # Rewards web UI
 
-React UI for the rewards POC. Findings and design notes live in
-[docs/FINDINGS.md](../docs/FINDINGS.md); see the repo [README](../README.md)
-for how to run the stack.
+React app over the rewards API. See [docs/FINDINGS.md](../docs/FINDINGS.md).
 
 ```sh
 # from repo root — stack + worker + api already up

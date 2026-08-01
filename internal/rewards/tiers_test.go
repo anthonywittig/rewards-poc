@@ -2,13 +2,11 @@ package rewards
 
 import "testing"
 
-// The ladder's ordering is load-bearing, and in-package because tiers is
-// unexported. Level takes the last rung it reaches, NextTierAt takes the first
-// it has not, and promotionFor walks it backwards -- all three are wrong if the
-// entries are not sorted by MinPoints ascending, and all three are wrong
-// *quietly*: no panic, just a customer told they are gold when they are
-// platinum. A new tier is one line in the table, so this is the guard against
-// that line going in the wrong place.
+// The ladder's ordering is load-bearing, and this is in-package because tiers is
+// unexported. Level takes the last rung it reaches, NextTierAt the first it has
+// not, and PromotionFor walks it backwards -- all three go wrong if the entries
+// are not sorted by MinPoints ascending, and all three go wrong *quietly*: no
+// panic, just a customer told they are gold when they are platinum.
 func TestTierLadderIsOrdered(t *testing.T) {
 	if len(tiers) == 0 {
 		t.Fatal("the ladder is empty; Level would always answer basic")

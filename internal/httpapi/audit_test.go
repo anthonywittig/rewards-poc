@@ -39,11 +39,9 @@ import (
 //	  temporal temporal workflow show --workflow-id customer-hist \
 //	  --run-id <run> -o json
 //
-// Testing the mapping against recorded server output rather than against
-// hand-built protos is deliberate. Every phase of this project has found the
-// plan wrong about some platform detail, and a synthetic history only ever
-// proves the code agrees with whoever wrote the test. These bytes are the ones
-// Temporal actually wrote.
+// Testing against recorded server output rather than hand-built protos is
+// deliberate: a synthetic history only ever proves the code agrees with whoever
+// wrote the test.
 
 func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 	t.Helper()
@@ -80,12 +78,10 @@ func softDeactivatedRun(t *testing.T) []*historypb.HistoryEvent {
 // membershipUpdate builds the Accepted/Completed pair Temporal writes for a
 // deactivate or reactivate Update.
 //
-// Built rather than captured, unlike every fixture above, because the cases
-// that matter here are the *combinations* -- leave, rejoin, repeat leave,
-// no-op rejoin -- and capturing four more histories to vary one boolean would
-// bury the thing under test. TestMembershipUpdateMatchesTheCapturedPair below
-// keeps that honest by checking this builder against the one pair that was
-// recorded from a real server.
+// Built rather than captured, unlike every fixture above, because the cases that
+// matter are the *combinations* -- leave, rejoin, repeat leave, no-op rejoin.
+// TestMembershipUpdateMatchesTheCapturedPair keeps the builder honest against
+// the one pair recorded from a real server.
 func membershipUpdate(
 	t *testing.T, firstEventID int64, name, updateID string, result any,
 ) []*historypb.HistoryEvent {
@@ -169,9 +165,8 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 		t.Errorf("earnEvents = %d, want 3 (EarnsPerRun)", run.earnEvents)
 	}
 
-	// The request half of the row comes from the accepted event, the outcome half
-	// from the completed one -- the pairing FINDINGS.md#events-the-crawl-reads
-	// describes.
+	// The request half of the row comes from the accepted event, the outcome
+	// half from the completed one. FINDINGS.md#events-the-crawl-reads.
 	add := run.entries[1]
 	if add.Amount != 1000 || add.Reason == "" {
 		t.Errorf("request side not decoded: amount=%d reason=%q", add.Amount, add.Reason)
@@ -186,8 +181,7 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 		t.Errorf("row not anchored: at=%v eventId=%d", add.At, add.EventID)
 	}
 
-	// Balances are cumulative down the run, which is what makes the timeline
-	// readable without the reader doing arithmetic.
+	// Balances are cumulative down the run.
 	for i, want := range []int{1000, 2000, 3000} {
 		if got := run.entries[i+1].Balance; got != want {
 			t.Errorf("entry %d balance = %d, want %d", i+1, got, want)
@@ -214,8 +208,8 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 	if run.entries[0].RunID != "run-1" {
 		t.Errorf("divider runId = %q, want the successor's", run.entries[0].RunID)
 	}
-	// Carried state, which is the whole point of continue-as-new: this run has
-	// no idea what happened in the previous one beyond these numbers.
+	// Carried state: this run has no idea what happened in the previous one
+	// beyond these numbers.
 	if run.startState.LifetimeEarnEvents != 3 {
 		t.Errorf("carried lifetimeEarnEvents = %d, want 3", run.startState.LifetimeEarnEvents)
 	}
@@ -266,9 +260,8 @@ func TestMembershipUpdateMatchesTheCapturedPair(t *testing.T) {
 	}
 }
 
-// Rejoining is the point of the whole feature, so it cannot be the one thing the
-// timeline stays silent about. Without a row, a customer who left and came back
-// reads as permanently departed with unexplained point-adds after the departure.
+// Without a rejoin row, a customer who left and came back reads as permanently
+// departed with unexplained point-adds after the departure.
 func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
 	events := append(softDeactivatedRun(t),
 		membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
@@ -372,14 +365,9 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 }
 
 // The notification rows FINDINGS.md#tier-promotion-notifications says the crawl
-// picks up "for free".
-//
-// The Activity events here are real, captured from a throwaway workflow that
-// scheduled an activity named NotifyCustomer with a rewards.NotifyRequest -- the
-// signature 3.7 specifies -- because Phase 6 has not been written yet. Splicing
-// them into a real enrollment run tests the mapping against server bytes without
-// waiting for the Activity itself. Phase 6 should delete this splice and assert
-// against its own history.
+// picks up "for free". The Activity events are real, captured from a workflow
+// that scheduled NotifyCustomer with a rewards.NotifyRequest, and spliced into a
+// real enrollment run.
 func TestAuditRun_NotificationRows(t *testing.T) {
 	events := append(loadEvents(t, "run-enrollment.json"), loadEvents(t, "events-notification.json")...)
 	run := auditRun("run-0", events)
@@ -417,10 +405,9 @@ func TestAuditRun_UncompletedNotificationIsNotReported(t *testing.T) {
 	}
 }
 
-// Only NotifyCustomer becomes a notification row. Nothing else schedules an
-// Activity today, but the crawl is the one component that sees everything a
-// workflow ever did -- so the day a later phase adds an unrelated Activity, it
-// must not start announcing itself to customers as a notification.
+// Only NotifyCustomer becomes a notification row. The crawl sees everything a
+// workflow ever did, so an unrelated Activity added later must not start
+// announcing itself as a notification.
 func TestAuditRun_OtherActivitiesAreIgnored(t *testing.T) {
 	notify := loadEvents(t, "events-notification.json")
 	notify[0].GetActivityTaskScheduledEventAttributes().
@@ -449,8 +436,8 @@ func fakeChain(runs map[string][]*historypb.HistoryEvent) historyFetcher {
 func TestWalkRuns_StopsAtEnrollment(t *testing.T) {
 	enrollment := loadEvents(t, "run-enrollment.json")
 	continued := loadEvents(t, "run-continued.json")
-	// The continued run's start event names its predecessor; make the fake chain
-	// answer to that name rather than to one this test invented.
+	// Make the fake chain answer to the predecessor the start event names,
+	// rather than to one this test invented.
 	prev := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(),
@@ -522,9 +509,9 @@ func TestAssemble_OldestFirst(t *testing.T) {
 	}
 }
 
-// The contract's own claim: ShownEarnEvents equals LifetimeEarnEvents whenever
-// the log is complete. It holds because the carried count at the newest run's
-// start is exactly the sum of the earns in every run before it.
+// ShownEarnEvents equals LifetimeEarnEvents whenever the log is complete,
+// because the carried count at the newest run's start is exactly the sum of the
+// earns in every run before it.
 func TestAssemble_ShownEqualsLifetimeWhenComplete(t *testing.T) {
 	runs := []runAudit{
 		{runID: "c", earnEvents: 1, startState: rewards.CustomerState{LifetimeEarnEvents: 6}},
@@ -622,12 +609,10 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 }
 
 // The departure notification uses the same Activity as a promotion
-// (FINDINGS.md#tier-promotion-notifications) and must not render as one.
-//
-// These are real events, captured from a customer who earned gold and then left:
-// the Activity input says event "departed", and without the filter the timeline
-// showed "Promoted to Gold — notification sent" immediately below that
-// customer's own deactivated row.
+// (FINDINGS.md#tier-promotion-notifications) and must not render as one. Real
+// events, captured from a customer who earned gold and then left; without the
+// filter the timeline shows "Promoted to Gold — notification sent" immediately
+// below that customer's own deactivated row.
 func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
 	departure := loadEvents(t, "events-departure-notification.json")
 

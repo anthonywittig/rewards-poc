@@ -26,20 +26,18 @@ Configuration defaults come from `.env.example`, so a fresh checkout needs no co
 to `.env` only when you want local overrides.
 
 ```sh
-# 1. Infrastructure: Postgres, Elasticsearch, Temporal, Temporal UI --
-#    then namespace and search-attribute bootstrap. Takes a minute the first time.
+# 1. The stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then namespace
+#    and search-attribute bootstrap, then the workflow worker. Takes a minute the
+#    first time (it builds the worker image too).
 make up
 
-# 2. The workflow worker, in its own terminal. Leave it running.
-make worker
-
-# 3. The HTTP API on :8081, in its own terminal. Leave it running.
+# 2. The HTTP API on :8081, in its own terminal. Leave it running.
 make api
 
-# 4. Eighteen demo customers, six per tier, including the interesting edge cases.
+# 3. Eighteen demo customers, six per tier, including the interesting edge cases.
 make seed
 
-# 5. The React UI on :5173, in its own terminal.
+# 4. The React UI on :5173, in its own terminal.
 #    Installs dependencies and typechecks on the way up, so the first run is slower.
 make web
 ```
@@ -52,6 +50,9 @@ That's everything up. Where it all is:
 | HTTP API | <http://localhost:8081/api/customers> |
 | Temporal UI | <http://localhost:8080> |
 | Temporal gRPC | `localhost:7233`, namespace `rewards` |
+
+The worker has no terminal of its own — it is a Compose service now, so `make worker-logs` tails
+it and `make worker` rebuilds and restarts it after a workflow code change.
 
 `make test` runs the Go unit tests and needs neither Docker nor a running server. `make down`
 stops the stack and keeps the data; `make destroy` deletes the volumes too.
@@ -82,7 +83,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 |---|---|
 | `make up` / `down` / `destroy` | start + bootstrap / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
-| `make worker` / `workers` / `worker-stop` | run / list / kill this stack's workers |
+| `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
 | `make api` / `api-stop` | run the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
@@ -282,21 +283,22 @@ value in that one line and no change anywhere else.
 
 ## Troubleshooting
 
-**If the workflow seems to ignore a code change, check for a stale worker first.** `go run` execs
-its binary out of the build cache, at a path containing neither `cmd/worker` nor `exe/worker`, so
-the obvious `pkill` misses it and it keeps serving *old* code against the same task queue —
-silently, and looking exactly like a bug in the workflow.
+**If the workflow seems to ignore a code change, the worker is still running the old image.**
+The worker runs in the stack, built from `deploy/worker.Dockerfile`, so editing workflow code
+does nothing until the image is rebuilt:
 
 ```sh
-make workers       # should list exactly one for this stack
-make worker-stop   # kills this stack's workers, including orphans
+make worker        # rebuild from the current code and restart the container
+make worker-logs   # tail it -- the startup line names the task queue and namespace
 ```
 
-Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic.
+Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic, so
+rebuild before concluding anything about workflow behaviour.
 
-**A 503 `worker_unavailable` usually means nothing is polling the task queue** — start
-`make worker`. (The same code also covers a slow or unreachable Temporal, because it is the
-contract's only 503 — so if the worker is running, check `make ps` before restarting it.)
+**A 503 `worker_unavailable` usually means nothing is polling the task queue** — check
+`make ps` and run `make worker` if it isn't up. (The same code also covers a slow or unreachable
+Temporal, because it is the contract's only 503 — so if the worker is running, look at the rest
+of `make ps` before restarting it.)
 Underneath, a Query with no worker fails three different ways depending on how long the worker
 has been gone — two taking ~9–10 s, one a bare transport error at ~2.5 s — while an Update
 doesn't fail at all: it blocks, observed still waiting after two minutes. The API bounds both
@@ -337,7 +339,8 @@ internal/httpapi/
   testdata/                   real run histories, for the crawl's golden tests
 web/                          the React UI
 deploy/
-  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI
+  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker
+  worker.Dockerfile           the worker image, built from the repo root
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
