@@ -10,6 +10,7 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/sdk/converter"
 	"go.temporal.io/sdk/internalbindings"
 	"go.temporal.io/sdk/worker"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -24,13 +25,16 @@ import (
 //
 // The fixtures are real histories from three eras:
 //
-//	pre-notification-*.json          before the notification Activity existed
-//	pre-marker-deactivated.json      likewise, and then deactivated
-//	ungated-notification.json        from the build that shipped the Activity ungated
-//	run-versioned-notification.json  from under the retired tier-notifications gate
+//	pre-notification-*.json             before the notification Activity existed
+//	pre-marker-deactivated.json         likewise, and then deactivated
+//	ungated-notification.json           from the build that shipped the Activity ungated
+//	run-versioned-notification.json     from under the retired tier-notifications gate
+//	pre-thresholds-basic-at-460.json    a pre-marker run parked on the original ladder
+//	gated-thresholds-gold-at-460.json   the same balance under the current one
 //
-// Which of them still replay changed when that gate was retired, and the tests
-// below are that ledger.
+// Which of them still replay changed when the notification gate was retired, and
+// the tests below are that ledger. The last two are the pair that pins the gate
+// that replaced it.
 
 // replayCase is one recorded run.
 type replayCase struct {
@@ -140,14 +144,12 @@ func TestReplay_HistoriesCarryingTheRetiredMarkerStillReplay(t *testing.T) {
 // which. Neither is escapable after the fact — only by not shipping the ungated
 // commit in the first place.
 //
-// It doubles as coverage for the *new* gate's DefaultVersion branch: the history
-// has no TemporalChangeVersion, so today's code resolves
+// It also exercises the *new* gate's DefaultVersion branch in passing: the
+// history has no TemporalChangeVersion, so today's code resolves
 // rewards.ChangeTierThresholds to DefaultVersion and replays it on
-// rewards.TiersV1 throughout. It does not pin the thresholds themselves — its
-// balances step 200/400/600, which is gold under either ladder. A history that
-// discriminates needs a pre-marker run parked between GoldThresholdV2 and
-// GoldThreshold; until one is recorded, TestLadderBoundaries is the only cover
-// for that arithmetic.
+// rewards.TiersV1 throughout. It does not discriminate the two ladders -- its
+// balances step 200/400/600, which is gold under both. That is what
+// TestReplay_TierThresholdsGate is for.
 func TestReplay_UngatedHistoriesReplayNowTheGateIsRetired(t *testing.T) {
 	h := loadHistory(t, "ungated-notification.json")
 
@@ -197,6 +199,108 @@ func TestReplay_RetiringTheGateForfeitsTheHistoriesItProtected(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The threshold gate, rehearsed on real histories rather than argued from the
+// code.
+//
+// Both fixtures are recorded runs sitting on exactly 460 points -- inside the
+// band the version bump moved, above GoldThresholdV2 and below GoldThreshold --
+// so they are the same customer under two ladders and the only thing separating
+// them is the marker:
+//
+//	pre-thresholds-basic-at-460.json   no marker, no Activity, RewardsLevel basic
+//	gated-thresholds-gold-at-460.json  tier-thresholds-1, NotifyCustomer, gold
+//
+// The pre-marker one was recorded by a worker built with the GetVersion call
+// removed, which is what a run enrolled before the deploy looks like; the
+// replayer sees recorded events, not how they were made. It is the fixture that
+// actually rehearses this deploy: replaying it through today's code has to
+// resolve DefaultVersion, walk TiersV1, find 460 is basic, and emit no Activity.
+// Ungate the ladder and it fails the way the whole exercise is about:
+//
+//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
+//	  (ActivityType:(Name:NotifyCustomer) ...)
+func TestReplay_TierThresholdsGate(t *testing.T) {
+	t.Run("pre-marker run stays on the original ladder", func(t *testing.T) {
+		h := loadHistory(t, "pre-thresholds-basic-at-460.json")
+
+		// A marker or an Activity here would mean the fixture was recorded by a
+		// gated worker after all, and the test would pass for the wrong reason.
+		if hasVersionMarker(h) || hasNotifyActivity(h) {
+			t.Fatalf("fixture is not a pre-marker run (marker=%v activity=%v); "+
+				"recapture it from a worker built without the GetVersion call",
+				hasVersionMarker(h), hasNotifyActivity(h))
+		}
+		if got := finalPoints(t, h); got != preMarkerBalance {
+			t.Fatalf("fixture ends at %d points, not %d -- it is outside the band "+
+				"the version bump moved, so it no longer discriminates the ladders", got, preMarkerBalance)
+		}
+
+		if err := replay(t, h); err != nil {
+			t.Errorf("a customer enrolled before the threshold change is wedged by it: %v", err)
+		}
+	})
+
+	t.Run("marked run is on the lowered ladder", func(t *testing.T) {
+		h := loadHistory(t, "gated-thresholds-gold-at-460.json")
+
+		if !hasVersionMarker(h) || !hasNotifyActivity(h) {
+			t.Fatalf("fixture is not a gated run at a promotion (marker=%v activity=%v)",
+				hasVersionMarker(h), hasNotifyActivity(h))
+		}
+		if got := finalPoints(t, h); got != preMarkerBalance {
+			t.Fatalf("fixture ends at %d points, not %d", got, preMarkerBalance)
+		}
+
+		if err := replay(t, h); err != nil {
+			t.Errorf("a run recorded under the current ladder does not replay: %v", err)
+		}
+	})
+}
+
+// preMarkerBalance is the balance both threshold fixtures park on: gold under
+// TiersV2, basic under TiersV1. Asserted to be inside that band, so a later edit
+// to either threshold fails here rather than quietly leaving two fixtures that
+// agree with each other.
+const preMarkerBalance = 460
+
+func TestTierFixturesStraddleTheThresholdChange(t *testing.T) {
+	if rewards.TiersV1.Level(preMarkerBalance) != rewards.LevelBasic ||
+		rewards.TiersV2.Level(preMarkerBalance) != rewards.LevelGold {
+		t.Fatalf("%d points is %q under v1 and %q under v2; the threshold fixtures "+
+			"no longer straddle the change and prove nothing about it", preMarkerBalance,
+			rewards.TiersV1.Level(preMarkerBalance), rewards.TiersV2.Level(preMarkerBalance))
+	}
+}
+
+// finalPoints reads the balance the last addPoints Update returned, which is how
+// a fixture states what it is about without a comment anyone can forget to
+// update.
+func finalPoints(t *testing.T, h *historypb.History) int {
+	t.Helper()
+	points := 0
+	for _, e := range h.GetEvents() {
+		c := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
+		if c == nil {
+			continue
+		}
+		var res rewards.AddPointsResult
+		payloads := c.GetOutcome().GetSuccess().GetPayloads()
+		if len(payloads) == 0 {
+			continue
+		}
+		if err := converter.GetDefaultDataConverter().FromPayload(payloads[0], &res); err != nil {
+			continue
+		}
+		if res.Balance > points {
+			points = res.Balance
+		}
+	}
+	if points == 0 {
+		t.Fatal("no completed addPoints Update in the history; the fixture carries no balance")
+	}
+	return points
 }
 
 // The trap, pinned. worker.ReplayWorkflowHistory documents OriginalExecution as

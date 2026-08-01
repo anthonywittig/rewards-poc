@@ -1173,10 +1173,33 @@ of the current rung from the top of it (`nextTierAt === 1000 ? 500 : 0`). With t
 that is unknowable client-side, so `tierFloor` joined the contract next to `nextTierAt` and both
 ends now come from the run that owns them.
 
-What is *not* covered: no recorded history parks a balance between 450 and 499, so no replay test
-discriminates the two ladders — the marker-free fixtures step 200/400/600, which is gold under
-both. `TestLadderBoundaries` covers the arithmetic; a fixture recorded from a pre-marker run in
-that band would cover the deploy.
+**Rehearsed on real histories, not argued from the code.** Two runs were recorded on the live
+stack sitting on exactly 460 points — inside the band the change moved — so they are the same
+customer under two ladders and the marker is the only thing separating them:
+
+```
+pre-thresholds-basic-at-460.json    no marker, no Activity, RewardsLevel basic, nextTierAt 500
+gated-thresholds-gold-at-460.json   tier-thresholds-1, NotifyCustomer, gold, nextTierAt 950
+```
+
+The first was recorded by a worker built with the `GetVersion` call removed, which is what a run
+enrolled before the deploy looks like; the replayer sees recorded events, not how they were made.
+Replaying it through the gated code resolves `DefaultVersion`, walks `TiersV1`, finds 460 is
+basic, and emits no Activity. Ungate the ladder and it fails exactly as advertised:
+
+```
+nondeterministic workflow: extra replay command for ScheduleActivityTask:
+  (ActivityType:(Name:NotifyCustomer) ...)
+```
+
+Confirmed by removing the gate and watching `TestReplay_TierThresholdsGate` fail, then putting it
+back. A replay test that has never been seen to fail is a test of nothing.
+
+The API's half was checked the same way: both customers deactivated, the worker killed, and the
+detail endpoint read again. With no worker to Query, the pre-marker customer still comes back
+`basic` / `nextTierAt 500` / `tierFloor 0` and the marked one `gold` / `950` / `450` — the ladder
+resolved out of each run's real `TemporalChangeVersion` in Elasticsearch, not out of today's
+constants.
 
 ### GetVersion writes two events
 

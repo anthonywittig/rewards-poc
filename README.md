@@ -220,7 +220,9 @@ That is applied rather than restated by the live gate, `tier-thresholds`: the ti
 50 points per rung (gold 450, platinum 950), which moves both the balance that schedules a
 promotion and the level every search attribute upsert writes. Runs recorded before the marker
 keep the original thresholds until they continue as new; the API resolves the same ladder from
-each run's `TemporalChangeVersion`.
+each run's `TemporalChangeVersion`. Two histories recorded on the live stack at 460 points —
+one either side of the marker — are what pin it, and removing the gate makes the first of them
+fail.
 [FINDINGS.md](docs/FINDINGS.md#versioning-and-replay).
 
 **The determinism check runs before the replay test can save you.**
