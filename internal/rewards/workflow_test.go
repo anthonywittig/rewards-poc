@@ -709,19 +709,12 @@ func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Dura
 	return calls
 }
 
-// THE test PLAN.md 10 asks for, and the reason it says to write it first.
-//
 // A promotion landing on the *third* add is the ordinary case at
 // EarnsPerRun = 3, and it is precisely when the run wants to continue as new.
-// workflow.AllHandlersFinished returns true the moment the Update handler
-// returns -- it knows nothing about the workflow.Go goroutine still holding a
-// queued notification (PLAN.md 12.6) -- so without notifier.idle() in the
-// pre-roll condition the roll wins and the notification is dropped silently.
-//
-// Verified to fail before the guard existed:
-//
-//	--- FAIL: Test_Notify_PromotionOnTheRollingAddIsNotDropped
-//	    expected the promotion to survive the roll, got no notifications
+// The main loop drains needsNotify before rolling, so the promotion is sent in
+// this run and NotifiedLevels rides into the successor. (The earlier
+// workflow.Go design needed an explicit notifier.idle() guard for the same
+// reason -- PLAN.md 12.6 -- and this test failed without it.)
 func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
 	calls := s.mockNotify(50 * time.Millisecond)
 
@@ -755,9 +748,8 @@ func (s *RewardsSuite) Test_Notify_PromotionMidRunIsSent() {
 }
 
 // Both boundaries crossed inside one run produce two notifications, in order.
-// Worth pinning because the queue is drained one at a time by a single
-// goroutine, so a second promotion arriving while the first is in flight has to
-// wait rather than be lost.
+// The main loop sends one promotion per wake; a second add that advances the
+// tier re-arms needsNotify so platinum is not lost behind gold.
 func (s *RewardsSuite) Test_Notify_BothTiersInOneRun() {
 	calls := s.mockNotify(20 * time.Millisecond)
 
@@ -831,22 +823,13 @@ func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	s.Equal("ada@example.com", departed.Email)
 }
 
-// The departure drain, which until now could not be tested.
-//
-// PLAN.md 3.5 and the Phase 2 tests both carried a note that handleLeave's drain
-// was unfalsifiable: the handler did arithmetic and returned, so it had always
-// finished by the time cancellation was processed, and the tests passed with the
-// drain removed. A queued notification is the first thing that can genuinely
-// still be outstanding when the customer leaves -- so this is the test that
-// makes that guard real, and it fails if the notifier clause is dropped from
-// handleLeave's await.
+// A promotion armed in the same instant as cancel must still be sent before the
+// departure notice. handleLeave drains needsNotify on a disconnected context;
+// without that, cancel wins the main loop and the promotion is dropped.
 func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
-	// The delays are asymmetric on purpose. With both slow, the departure's own
-	// round trip happens to hold the workflow open long enough for the promotion
-	// to land alongside it, and the test passes whether or not the drain exists
-	// -- which it did, until a mutation run showed the guard could be deleted
-	// with everything still green. A promotion that outlives an instant
-	// departure is the only shape that actually needs the drain.
+	// Asymmetric delays: a slow promotion with an instant departure is the
+	// shape that actually needs the drain. If both are slow, the departure
+	// round trip can mask a missing drain.
 	calls := s.mockNotifyPer(func(r rewards.NotifyRequest) time.Duration {
 		if r.Event == rewards.NotifyEventPromoted {
 			return 200 * time.Millisecond
@@ -951,13 +934,9 @@ func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
 		"a dropped promotion must be picked up by the next add, not lost for good")
 }
 
-// ...and the flip side: re-offering the tier on every add must not mean
-// announcing it on every add.
-//
-// Note this passes by way of NotifiedLevels rather than by way of the queue's
-// own idempotence -- the delivery succeeds before the next add lands, so the
-// duplicate never reaches the queue. The queue guard is tested directly in
-// notifier_test.go, because from out here the two are indistinguishable.
+// ...and the flip side: re-arming needsNotify on every add must not mean
+// announcing the tier on every add. NotifiedLevels is what stops the second
+// delivery once the first has succeeded.
 func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
 	calls := s.mockNotifyFailing(0)
 
