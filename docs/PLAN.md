@@ -387,18 +387,77 @@ into recorded history, which is precisely the shape that causes the non-determin
 should do instead is both simpler and harder to misuse than a switch inviting people to change
 it at runtime.
 
-### 3.6 Deactivation via cancel
+### 3.6 Deactivation via cancel, departure via completion
 
 `client.CancelWorkflow(ctx, "customer-<id>", "")`. The pending `workflow.Await` returns a
-cancelled error, `handleLeave` records the departure and returns `ctx.Err()`, and the
-execution closes as `Canceled`.
+cancelled error, `handleLeave` records the departure — and returns `nil`, so the execution
+closes as **`Completed`**.
 
 Cancel, not Terminate: Terminate skips workflow code entirely, so no cleanup runs and the
 departure is never recorded by our own code.
 
-Re-enrollment works because the workflow ID is free once the execution closes. A double-create
-against a *running* customer should return a clean 409 rather than silently attaching to the
-existing run — which takes **two** settings on `StartWorkflowOptions`, not one:
+**Cancel is how departure is requested; Completed is how it ends.** These are separate
+decisions and it is worth keeping them apart. Returning `ctx.Err()` is the reflex, and it
+closes the run `Canceled` — which is what this workflow did until we changed it. But a
+customer leaving the program is not an aborted piece of work: it is the last thing the
+workflow exists to do, and it runs its whole departure procedure (drain in-flight updates,
+deliver any owed promotion, send the departure notice) before returning. `Completed` says
+that. `Canceled` says the opposite, and reserving it leaves it free to mean what it should —
+this stopped early, something was wrong — for an operator terminating a stuck customer.
+
+Nothing is hidden by not echoing the cancellation back. `WorkflowExecutionCancelRequested` is
+in Event History either way, and it is the event the [§6](#6-audit-log) crawl reads for the
+deactivated row — which is why that row survived the change untouched: it was always anchored
+to the *request*, never to the terminal state.
+
+What completing adds, beyond the vocabulary: a **result payload**. `handleLeave` returns a
+`DepartureSummary` — final balance, level, lifetime earn events, generation, departed-at —
+which lands in `WorkflowExecutionCompleted` and is readable from `temporal workflow show`,
+from Describe, and from the audit crawl with no Query and therefore no worker. The audit
+timeline uses it to fill in the standing on the deactivated row, which is otherwise only
+inferable from the balance on the last `points_added` row, and not inferable at all once the
+run holding that row has been reaped ([§6.3](#63-what-the-audit-log-cannot-do)). A
+`CanceledError` can carry details too, so this is not something completing makes newly
+*possible* — it makes it natural. Details on a cancellation read as "why this was aborted",
+and a customer's final standing is not that.
+
+#### Departure is permanent
+
+A departed customer **cannot be re-enrolled**. That takes a third setting on
+`StartWorkflowOptions`, and it only works because of the decision above:
+
+```go
+WorkflowIDReusePolicy: enums.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
+```
+
+`FAILED_ONLY` reuses a workflow ID whose last run `Failed`, `Canceled`, `Terminated` or
+`TimedOut`, and refuses one whose last run `Completed`. So it lands exactly on the line we
+want:
+
+| last run | | |
+|---|---|---|
+| departed customer | `Completed` | refused, permanently |
+| rejected enrollment | `Failed` | allowed, so a typo is fixable |
+
+That second row is why this is not `REJECT_DUPLICATE`, which refuses reuse after *any* closed
+run. An enrollment that failed `validateEnrollment` never became a customer, and burning their
+ID over a bad payload would be a poor way to report a typo.
+
+Note the dependency: under the old `Canceled` close, a departed customer sat in the *first*
+column of that policy, so `FAILED_ONLY` would have let them re-enroll and refused nothing at
+all. Completing is what makes permanence expressible without writing our own check.
+
+**Both refusals arrive as the same `WorkflowExecutionAlreadyStarted`**, since from the server's
+side they are the same fact: this workflow ID is spoken for. The caller's remedy is opposite in
+each case — *go and look at them* against *pick a different ID* — so the API resolves it with a
+Describe on the error path (`Server.mapEnrollError`), exactly as `updateWithRolloverRetry` does
+for its own ambiguous `NotFound` ([§12.2](#12-sharp-edges)). The server's message does
+distinguish them ("already running" against "already finished successfully") and is
+deliberately not matched on; see [§12.3](#12-sharp-edges) for the one place in this codebase
+that does match on a message and the argument for why it is the only one.
+
+A double-create against a *running* customer should return a clean 409 rather than silently
+attaching to the existing run — which takes **two** further settings, not one:
 
 ```go
 WorkflowIDConflictPolicy:                 enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
@@ -416,12 +475,18 @@ The `temporal` CLI hides this too: `workflow start --id-conflict-policy Fail` ag
 running execution prints `Running execution:` with the existing run ID and **exits 0**. So the
 CLI cannot be used to verify this behaviour — check it through the SDK.
 
-**Re-enrolling starts over at zero points and basic tier** — decided, not a default. A
-returning customer is simply a fresh enrollment that happens to reuse the workflow ID, so
-there is no "restore the prior balance" path to build and no dependency on the old run's
-history (which after reaping is usually gone anyway). The UI should say so at
-the point of deactivation, since it makes the action irreversible in a way "deactivate"
-doesn't imply on its own.
+**Deactivation is irreversible, and the UI says so at the point of the action** — "this
+cannot be undone; the customer id cannot be enrolled again" rather than the softer wording
+"deactivate" implies on its own.
+
+This replaces an earlier decision that re-enrolling *was* allowed and started over at zero
+points and basic tier. Both are defensible; what settles it is that "starts over at zero" is a
+rule the system states and does not enforce. Nothing stops a returning customer from being
+enrolled with a different name or email under the same ID, and their old audit timeline —
+until it is reaped — sits under the same workflow ID as the new one's, with a `deactivated`
+row in the middle and no marker saying the customer either side of it is a different person.
+Refusing reuse outright removes that ambiguity instead of documenting it. A customer who
+genuinely returns gets a new ID, which is the honest description of what they are.
 
 ### 3.7 Tier promotion notifications
 
@@ -558,8 +623,9 @@ Registered once at bootstrap, before any workflow starts. Using the typed API
 | `RewardsEnrolledAt` | Datetime | at start of each run, from carried state |
 | `RewardsGeneration` | Int | on continue-as-new |
 
-Built-ins we get free and will use: `ExecutionStatus` (Running vs Canceled → active vs
-deactivated), `StartTime`, `CloseTime`, `WorkflowId`, `RunId`.
+Built-ins we get free and will use: `ExecutionStatus` (Running vs Completed → active vs
+deactivated; see [§3.6](#36-deactivation-via-cancel-departure-via-completion)), `StartTime`,
+`CloseTime`, `WorkflowId`, `RunId`.
 
 ### Visibility indexes Runs, not customers
 
@@ -580,9 +646,11 @@ ExecutionStatus != 'ContinuedAsNew'
 ```
 
 That leaves exactly the current generation whatever its final state — `Running` for an active
-customer, `Canceled` for a departed one, `Failed` for an enrollment that never validated.
-`IN ('Running','Canceled')` looks equivalent and silently drops that last group: 45 against 47
-on the same data.
+customer, `Completed` for a departed one, `Failed` for an enrollment that never validated.
+Enumerating instead of excluding looks equivalent and silently drops that last group: measured
+at 45 against 47 on the same data, back when a departure closed `Canceled` and the enumerated
+form read `IN ('Running','Canceled')`. The lesson outlived the spelling: enumerate the states
+you want and you inherit responsibility for the ones you forgot.
 
 This shipped as a bug in the Phase 4 list endpoint and was caught by the Phase 7 datastore
 inspection — which is the argument for [§8](#8-inspecting-postgres-and-elasticsearch) being a
@@ -1218,7 +1286,7 @@ Vite + React + TypeScript in `web/`. **Done** — three screens against `make mo
 
 - **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
   ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status toggle
-  (Running/Canceled via `ExecutionStatus`), and a raw search-attribute query box so we can show
+  (Running/Completed via `ExecutionStatus`), and a raw search-attribute query box so we can show
   the same query working in the Temporal UI. This is where search attributes earn their keep —
   and where the design has to be honest that filtering, not browsing, is what the visibility
   store supports.
@@ -1324,10 +1392,14 @@ Things not in the original brief that will come up.
    **And "operate on a closed execution" is not one behaviour — it depends on the operation.**
    Measured on 1.29.7:
 
-   | on a closed execution | `Canceled` | `Failed` | `Terminated` | never existed |
-   |---|---|---|---|---|
-   | `CancelWorkflow` | `nil` | `nil` | `nil` | `NotFound` |
-   | `UpdateWorkflow` | `NotFound` | — | — | `NotFound` |
+   | on a closed execution | `Completed` | `Canceled` | `Failed` | `Terminated` | never existed |
+   |---|---|---|---|---|---|
+   | `CancelWorkflow` | `nil` | `nil` | `nil` | `nil` | `NotFound` |
+   | `UpdateWorkflow` | `NotFound` | `NotFound` | — | — | `NotFound` |
+
+   (Measured against `Canceled`, `Failed` and `Terminated`; the `Completed` column is the state
+   a departed customer now closes in and is inferred from the others, since `CancelWorkflow`
+   returned `nil` for every closed state tried and `UpdateWorkflow` `NotFound`.)
 
    Cancel is idempotent server-side; Update is not. So `DELETE` needs no disambiguation and is
    naturally idempotent, while `POST /points` needs the extra `Describe` above. Assuming the two
@@ -1364,7 +1436,7 @@ Things not in the original brief that will come up.
    to make `ExecuteWorkflow` return an error — it also needs
    `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
    error. The `temporal` CLI hides it as well, exiting 0. Confirmed in Phase 1;
-   see [§3.6](#36-deactivation-via-cancel).
+   see [§3.6](#36-deactivation-via-cancel-departure-via-completion).
 8. **`ORDER BY` is not supported in visibility queries**, for custom *or* built-in attributes,
    even on Elasticsearch visibility. Filtering is server-side; sorting is the caller's problem,
    and is only correct when the whole filtered set fits one page. Confirmed in Phase 1 on
@@ -1484,12 +1556,12 @@ Elasticsearch 7.17.27; details and the queries that show them are in
 **From the Phase 8 UI** — found building the React screens against both APIs.
 
 29. **"Status" means two different things, in two different vocabularies.** The visibility
-    query language says `ExecutionStatus = 'Running' | 'Canceled'`; the API's DTOs say
+    query language says `ExecutionStatus = 'Running' | 'Completed'`; the API's DTOs say
     `status: "active" | "deactivated"`. Same concept, same English word, no overlap in
     spelling — and they are not interchangeable in either direction, because one is a Temporal
     built-in search attribute and the other is our projection of it. A status filter in the UI
     has to translate. The mismatch is not accidental: a workflow cannot record its own closure
-    ([§3.6](#36-deactivation-via-cancel)), so the API is deriving a rewards-domain word from a
+    ([§3.6](#36-deactivation-via-cancel-departure-via-completion)), so the API is deriving a rewards-domain word from a
     platform-domain one.
 
 30. **The Go API sends no CORS headers; only the mock does.** So pointing a browser at it with
@@ -1584,6 +1656,29 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."
+
+37. **A workflow's terminal state is a design decision, not a consequence of how it was
+    asked to stop.** Cancel it and return `ctx.Err()` and it closes `Canceled`; cancel it and
+    return `nil` and it closes `Completed`. The Go SDK picks the closing command purely from
+    the returned error (`internal_task_handlers.go`: `errors.As(err, &canceledErr)` →
+    `CANCEL_WORKFLOW_EXECUTION`, else `COMPLETE_WORKFLOW_EXECUTION`) and never consults
+    whether a cancellation was pending. Returning `ctx.Err()` is the reflex and it is what
+    this workflow did for six phases, which meant every departed customer looked, to
+    visibility queries and to the Temporal UI, like something that had been aborted.
+
+    Two consequences worth separating. **The status is a vocabulary you are choosing** —
+    spending `Canceled` on the ordinary happy-path exit leaves nothing to say "this stopped
+    early" with. And **the exit you choose decides what you can carry out with you**: a
+    completion has a result payload, a cancellation has error details, and the first is the
+    natural home for a customer's final standing. Both fall out of one line in `handleLeave`.
+
+    What made this changeable at all is that nothing downstream had hard-coded the *terminal
+    state* as the definition of "departed" — the list derives status from "not Running", and
+    the audit row is anchored to `WorkflowExecutionCancelRequested`, the moment the customer
+    asked. Only three string literals (the UI's status chip, the mock, an inspect script) and
+    the workflow tests actually named `Canceled`. Deriving from the negative rather than
+    enumerating the positive is what kept the blast radius that small; the same instinct is
+    what [§4](#4-search-attributes) argues for in the list query, for a different reason.
 
 ---
 

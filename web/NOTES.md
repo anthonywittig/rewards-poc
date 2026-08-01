@@ -17,10 +17,11 @@ edit it from this phase. Draft paragraph for the integrator:
    a one-line correction in §9 so the create screen matches the frozen contract.
 
 2. **Status chips map to Temporal `ExecutionStatus`, not the API's
-   `status` string.** The list query uses `ExecutionStatus = 'Running'|'Canceled'`
+   `status` string.** The list query uses `ExecutionStatus = 'Running'|'Completed'`
    while detail payloads say `active`|`deactivated`. The UI translates; §9's
-   "status toggle (Running/Canceled)" is the visibility vocabulary and is
-   correct — just easy to confuse with the DTO field of the same English word.
+   "status toggle" is the visibility vocabulary and is correct — just easy to
+   confuse with the DTO field of the same English word. (`Completed`, not
+   `Canceled`: a departure closes the workflow normally — PLAN.md §3.6.)
 
 3. **Optimistic list insert is session-scoped with a TTL.** §9 says the list should
    optimistically insert after create. Implemented via `sessionStorage` (cleared once

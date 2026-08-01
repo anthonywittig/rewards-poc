@@ -78,7 +78,8 @@ export function matchesVisibilityQuery(c: CustomerListItem, query: string): bool
     if (clause.startsWith('RewardsLevel')) {
       if (!clause.includes(`'${c.level}'`)) return false
     } else if (clause.startsWith('ExecutionStatus')) {
-      const want = c.status === 'deactivated' ? 'Canceled' : 'Running'
+      // 'Completed' is a departed customer — see buildListQuery in format.ts.
+      const want = c.status === 'deactivated' ? 'Completed' : 'Running'
       if (!clause.includes(`'${want}'`)) return false
     } else if (clause.startsWith('CustomerName')) {
       const first = c.name.split(/\s+/)[0]?.toLowerCase() ?? ''

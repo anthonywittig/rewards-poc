@@ -76,7 +76,17 @@ function renderBody(e: AuditResponse['entries'][number]): React.ReactNode {
     case 'notification_sent':
       return <>Promoted to {tierLabel(e.notifiedLevel ?? '')} — notification sent</>
     case 'deactivated':
-      return <>Deactivated</>
+      // The balance comes from the workflow's completion payload, so it is
+      // absent for a customer whose departure predates it and for the mock's
+      // older rows. Say only what we know.
+      return e.balance === undefined ? (
+        <>Deactivated</>
+      ) : (
+        <>
+          Deactivated — final balance {e.balance.toLocaleString()} ·{' '}
+          {tierLabel(e.level ?? '')}
+        </>
+      )
     default:
       return <>{e.kind}</>
   }

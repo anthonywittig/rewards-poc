@@ -287,8 +287,9 @@ export function CustomerDetailPage() {
               ) : (
                 <>
                   <p className="warn-copy">
-                    Cancel the workflow (graceful). Re-enrolling later starts over at
-                    zero points.
+                    Ends the workflow gracefully: their final balance is recorded and
+                    kept. This cannot be undone — the customer id cannot be enrolled
+                    again.
                   </p>
                   <div className="form-actions">
                     <button

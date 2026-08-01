@@ -82,21 +82,46 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
 
+	wfID := rewards.WorkflowID(req.CustomerID)
+
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
-		ID:        rewards.WorkflowID(req.CustomerID),
+		ID:        wfID,
 		TaskQueue: rewards.TaskQueue,
 		// Both are required for a duplicate enrollment to surface as an error.
 		// The conflict policy governs what the server does; the second flag
 		// governs whether the SDK tells us. PLAN.md 3.6 and 12.7.
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
+
+		// Departure is permanent: a customer who left cannot be re-enrolled
+		// under the same ID. The conflict policy above only governs a *running*
+		// execution; this governs a closed one, and the two are independent
+		// settings for two different situations.
+		//
+		// FAILED_ONLY rather than REJECT_DUPLICATE, and the difference is the
+		// whole reason this is expressible. The policy reuses an ID whose last
+		// run Failed, Canceled, Terminated or Timed Out, and refuses one whose
+		// last run Completed -- so it lands exactly on the line we want:
+		//
+		//	departed customer      Completed   refused, permanently
+		//	rejected enrollment    Failed      allowed, so a typo is fixable
+		//
+		// That second row is why this is not REJECT_DUPLICATE. An enrollment
+		// that failed validateEnrollment never became a customer, and burning
+		// their ID over a bad payload would be a poor way to report a typo.
+		//
+		// It also only works because the departure path now returns nil rather
+		// than the cancellation error (PLAN.md 3.6). Under the old Canceled
+		// close, a departed customer sat in the *first* column -- so this policy
+		// would have let them re-enroll and refused nothing at all.
+		WorkflowIDReusePolicy: enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 	}, rewards.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
 		Email:      req.Email,
 	})
 	if err != nil {
-		return mapStartError(err)
+		return s.mapEnrollError(r.Context(), wfID, err)
 	}
 
 	writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
@@ -105,6 +130,48 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		RunID:      run.GetRunID(),
 	})
 	return nil
+}
+
+// mapEnrollError decides which 409 a refused enrollment deserves.
+//
+// Both refusals arrive as the same WorkflowExecutionAlreadyStarted, because from
+// the server's side they are the same fact -- this workflow ID is spoken for --
+// and the two settings that produce it (conflict policy, reuse policy) are not
+// distinguishable from the error. But the caller's remedy is opposite in each
+// case, and getting it wrong is worse than unhelpful:
+//
+//	running    they are already a customer      go and look at them
+//	completed  they left, and cannot come back  pick a different ID
+//
+// So we ask the server which it is, exactly as updateWithRolloverRetry does for
+// its own ambiguous NotFound. The Describe only ever runs on the error path.
+//
+// The server's own message does distinguish them today ("already running" vs
+// "already finished successfully"), and matching on it would save a round trip.
+// It is not matched on: that wording is not part of any contract, and the one
+// place in this codebase that does match on a message says so at length and
+// only because there is genuinely no other signal (see isHistoryGone).
+func (s *Server) mapEnrollError(ctx context.Context, wfID string, err error) error {
+	var already *serviceerror.WorkflowExecutionAlreadyStarted
+	if !errors.As(err, &already) {
+		return mapStartError(err)
+	}
+
+	running, describeErr := s.hasRunningExecution(ctx, wfID)
+	if describeErr != nil {
+		// Degrade to the generic 409 rather than reporting the Describe's
+		// failure: the enrollment really was refused, and a 503 here would
+		// invite a retry that cannot succeed either way.
+		s.log.Warn("could not tell an active customer from a departed one on a refused enrollment",
+			"workflowId", wfID, "error", describeErr)
+		return mapStartError(err)
+	}
+	if running {
+		return mapStartError(err)
+	}
+
+	return &apiError{http.StatusConflict, CodeDeactivated,
+		"customer has left the rewards program; deactivation is permanent and their id cannot be reused"}
 }
 
 // listCustomers serves the customer list straight out of the visibility store.
@@ -240,10 +307,13 @@ func hasOrderBy(q string) bool {
 //	WorkflowId = 'customer-dup-check' AND status != CAN        Total: 1
 //
 // Excluding ContinuedAsNew leaves exactly the current generation, whatever its
-// final state: Running for an active customer, Canceled for a departed one, and
-// Failed for an enrollment that never validated. `IN ('Running','Canceled')`
+// final state: Running for an active customer, Completed for a departed one, and
+// Failed for an enrollment that never validated. `IN ('Running','Completed')`
 // would look equivalent and silently drop that last group — measured at 45
-// against 47 on the same data.
+// against 47 on the same data, back when a departure closed Canceled and the
+// enumerated form read `IN ('Running','Canceled')`. The lesson is the same one:
+// enumerate the states you want and you inherit responsibility for the ones you
+// forgot.
 //
 // Found by the Phase 7 datastore inspection, which is exactly the sort of thing
 // looking directly at Elasticsearch surfaces and an API test does not: every
@@ -472,9 +542,13 @@ func (s *Server) updateWithRolloverRetry(
 			return rewards.AddPointsResult{}, mapQueryError(describeErr)
 		}
 		if !running {
+			// No remedy to offer: departure is permanent, and the same ID
+			// cannot be enrolled again (see mapEnrollError). Saying so beats
+			// the advice this used to give -- "re-enroll them before adding
+			// points" -- which now describes something the API refuses.
 			return rewards.AddPointsResult{}, &apiError{
 				http.StatusConflict, CodeDeactivated,
-				"customer is deactivated; re-enroll them before adding points",
+				"customer has left the rewards program; their balance is final",
 			}
 		}
 
@@ -577,6 +651,12 @@ func (s *Server) sendUpdate(
 // NotFound that becomes a 404. That is exactly the REST semantics wanted here,
 // and it is why this handler is three lines while updateWithRolloverRetry needs
 // an extra Describe to decide the same question.
+//
+// Note the table has no Completed column, which is now the state a departed
+// customer closes in (PLAN.md 3.6). Cancel returned nil for every closed state
+// measured, so nil is the expectation there too -- but it is an inference, and
+// it is the one this handler's idempotency rests on. Worth re-measuring against
+// a live server.
 //
 // Reviewed on PR #6 as a suspected bug -- repeat DELETE misreporting 404 -- on
 // the reasonable assumption that Cancel behaves like Update. It does not.

@@ -121,6 +121,30 @@ type CustomerState struct {
 	NotifiedLevels []string `json:"notifiedLevels,omitempty"`
 }
 
+// DepartureSummary is the workflow's return value: the customer's standing at
+// the moment they left the program.
+//
+// It exists because the run closes Completed rather than Canceled (PLAN.md 3.6),
+// and only a completion carries a result payload. That payload lands in
+// WorkflowExecutionCompleted, so the final balance is readable from `temporal
+// workflow show`, from DescribeWorkflowExecution, and from the audit crawl --
+// without a Query and therefore without a worker, the same property the crawl
+// already relies on for LifetimeEarnEvents (PLAN.md 6.3).
+//
+// A CanceledError can carry details too, so this is not something completing
+// makes newly *possible*. What it makes is natural: details on a cancellation
+// read as "why this was aborted", and the customer's final standing is not that.
+type DepartureSummary struct {
+	CustomerID string `json:"customerId"`
+	// workflow.Now at the moment of departure, not time.Now -- PLAN.md 12.5.
+	DepartedAt         time.Time `json:"departedAt"`
+	FinalPoints        int       `json:"finalPoints"`
+	FinalLevel         string    `json:"finalLevel"`
+	LifetimeEarnEvents int       `json:"lifetimeEarnEvents"`
+	// The generation this customer left in, i.e. how many rollovers they saw.
+	Generation int `json:"generation"`
+}
+
 // Level derives the tier from a balance: the highest rung the balance reaches,
 // or basic if it reaches none.
 func Level(points int) string {

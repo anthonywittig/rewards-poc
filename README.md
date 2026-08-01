@@ -51,7 +51,7 @@ make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase   # basic
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make deactivate ID=c-001                          # cancel, not terminate
+make deactivate ID=c-001                          # cancel to request, completes to finish
 ```
 
 `make test` runs the unit tests; they need neither Docker nor a running server.
@@ -110,11 +110,18 @@ it.
 
 One customer is one long-lived Workflow Execution with the ID `customer-<id>`, which is why
 none of these commands need a lookup table. Points arrive as Updates, status is a Query, and
-deactivation is a cancellation.
+deactivation is requested by cancelling.
 
-**Re-enrolling a deactivated customer starts them over at zero.** The workflow ID is free once
-the execution closes, so enrollment succeeds — but it is a genuinely new enrollment, not a
-restoration. That is a decision, not an oversight; see §3.6 of the plan.
+**A departed customer's run closes `Completed`, not `Canceled`.** Cancel is how the departure
+is *requested*; the workflow then runs its own shutdown — drain, notify, record the final
+standing — and returns normally. `Canceled` stays free to mean "this stopped early", which is
+what you want it to mean when you find one. The completion carries a `DepartureSummary`, so the
+closing balance is readable from history without a Query and without a worker.
+
+**A deactivated customer cannot be re-enrolled.** Departure is permanent: the workflow ID reuse
+policy refuses an ID whose last run completed, and `POST /api/customers` returns 409
+`deactivated`. An ID whose last run *failed* validation is still reusable, so a typo'd
+enrollment is fixable. That is a decision, not an oversight; see §3.6 of the plan.
 
 ## The HTTP API
 
@@ -146,7 +153,7 @@ table, no local index. The `?q=` parameter is passed to Temporal essentially as 
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
 curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"        # Text, partial
-curl -sG localhost:8081/api/customers --data-urlencode "q=ExecutionStatus = 'Canceled'" # deactivated
+curl -sG localhost:8081/api/customers --data-urlencode "q=ExecutionStatus = 'Completed'" # deactivated
 ```
 
 **The same query works unchanged in the Temporal UI**, which is the point of registering search

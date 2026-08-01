@@ -155,9 +155,11 @@ func matches(c httpapi.CustomerResponse, q string) bool {
 		case strings.HasPrefix(clause, "RewardsLevel"):
 			ok = ok && strings.Contains(clause, `'`+c.Level+`'`)
 		case strings.HasPrefix(clause, "ExecutionStatus"):
+			// Completed, not Canceled: a departure closes the workflow normally.
+			// PLAN.md 3.6.
 			want := "Running"
 			if c.Status == "deactivated" {
-				want = "Canceled"
+				want = "Completed"
 			}
 			ok = ok && strings.Contains(clause, `'`+want+`'`)
 		case strings.HasPrefix(clause, "CustomerName"):
@@ -213,8 +215,16 @@ func (m *mock) enroll(w http.ResponseWriter, r *http.Request) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if existing, ok := m.customers[req.CustomerID]; ok && existing.Status == "active" {
-		writeErr(w, 409, "already_exists", "customer is already enrolled and active")
+	if existing, ok := m.customers[req.CustomerID]; ok {
+		// Two different 409s, as in the real API: the workflow ID reuse policy
+		// refuses a departed customer permanently, while an active one is an
+		// ordinary duplicate. PLAN.md 3.6.
+		if existing.Status == "active" {
+			writeErr(w, 409, "already_exists", "customer is already enrolled and active")
+			return
+		}
+		writeErr(w, 409, "deactivated",
+			"customer has left the rewards program; deactivation is permanent and their id cannot be reused")
 		return
 	}
 
@@ -344,6 +354,9 @@ func (m *mock) deactivate(w http.ResponseWriter, r *http.Request) {
 		a.Entries = append(a.Entries, httpapi.AuditEntry{
 			Kind: httpapi.AuditDeactivated, At: time.Now().UTC(),
 			Generation: c.Generation, RunID: c.RunID,
+			// The standing the customer left with, which the real API takes
+			// from the workflow's completion payload. PLAN.md 3.6.
+			Balance: c.Points, Level: c.Level,
 		})
 		m.audits[id] = a
 	}

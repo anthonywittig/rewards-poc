@@ -118,10 +118,22 @@ func (s *RewardsSuite) queryStatusAt(at time.Duration) *rewards.CustomerStatus {
 	return out
 }
 
-func (s *RewardsSuite) runToCancellation(state rewards.CustomerState) error {
+// runToDeparture runs the workflow until it closes and returns its error, which
+// on the departure path is nil: the run completes rather than cancelling, so
+// "no error" is the success signal here. See Test_Departure_ClosesAsCompleted.
+func (s *RewardsSuite) runToDeparture(state rewards.CustomerState) error {
 	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
 	s.Require().True(s.env.IsWorkflowCompleted())
 	return s.env.GetWorkflowError()
+}
+
+// departureSummary decodes the result payload of a completed departure. Fails
+// the test if the workflow closed any other way, since there is no payload then.
+func (s *RewardsSuite) departureSummary() rewards.DepartureSummary {
+	s.Require().NoError(s.env.GetWorkflowError())
+	var out rewards.DepartureSummary
+	s.Require().NoError(s.env.GetWorkflowResult(&out))
+	return out
 }
 
 // continuedState decodes the payload the workflow handed to its successor run,
@@ -186,7 +198,7 @@ func (s *RewardsSuite) Test_AddPoints_AppliesAndDerivesTier() {
 	add := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "signup bonus"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.NoError(add.rejected)
 	s.NoError(add.completed)
@@ -202,7 +214,7 @@ func (s *RewardsSuite) Test_AddPoints_CrossesGoldBoundary() {
 	second := s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 1, Reason: "purchase"})
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal(rewards.LevelBasic, first.value.Level, "499 points is still basic")
 	s.Equal(rewards.LevelGold, second.value.Level, "500 points promotes to gold")
@@ -215,7 +227,7 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	status := s.queryStatusAt(3 * time.Minute)
 	s.cancelAt(4 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal(350, status.Points)
 	s.Equal(2, status.LifetimeEarnEvents)
@@ -246,7 +258,7 @@ func (s *RewardsSuite) Test_AddPoints_ValidatorRejects() {
 	status := s.queryStatusAt(time.Duration(len(cases)+1) * time.Minute)
 	s.cancelAt(time.Duration(len(cases)+2) * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	for i, tc := range cases {
 		s.Require().Error(results[i].rejected, "%s should have been rejected by the validator", tc.name)
@@ -265,7 +277,7 @@ func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 	ok := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: rewards.MaxPointsPerTxn, Reason: "big"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.NoError(ok.rejected)
 	s.NoError(ok.completed)
@@ -288,7 +300,7 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	status := s.queryStatusAt(3 * time.Minute)
 	s.cancelAt(4 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runToDeparture(state)
 
 	// Accepted by the validator, then failed by the handler.
 	s.NoError(over.rejected, "the points cap must not be enforced in the validator")
@@ -313,7 +325,7 @@ func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 	status := s.queryStatusAt(2 * time.Minute)
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal("c-001", status.CustomerID)
 	s.Equal("Ada Lovelace", status.Name)
@@ -331,7 +343,7 @@ func (s *RewardsSuite) Test_GetStatus_NoNextTierAtPlatinum() {
 	status := s.queryStatusAt(2 * time.Minute)
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal(rewards.LevelPlatinum, status.Level)
 	s.Equal(0, status.NextTierAt)
@@ -348,7 +360,7 @@ func (s *RewardsSuite) Test_GetStatus_PreservesCarriedEnrolledAt() {
 	status := s.queryStatusAt(time.Minute)
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runToDeparture(state)
 
 	s.True(status.EnrolledAt.Equal(enrolled), "got %s, want %s", status.EnrolledAt, enrolled)
 	s.Equal(4, status.Generation)
@@ -436,7 +448,7 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	status := s.queryStatusAt(time.Minute)
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runToDeparture(state)
 
 	s.Equal(900, status.Points)
 	s.Equal(6, status.LifetimeEarnEvents)
@@ -461,7 +473,7 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 	}
 	s.cancelAt(time.Duration(len(adds)+1) * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	prev, want := 0, 0
 	for i, amount := range adds {
@@ -498,13 +510,12 @@ func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 	}
 	s.cancelAt(time.Duration(rewards.EarnsPerRun+1) * time.Minute)
 
-	err := s.runToCancellation(newState())
+	err := s.runToDeparture(newState())
 
-	// Cancelled, not continued-as-new.
+	// Departed, not continued-as-new.
 	var canErr *workflow.ContinueAsNewError
 	s.False(errors.As(err, &canErr), "should not have rolled on %d adds", rewards.EarnsPerRun-1)
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled))
+	s.NoError(err)
 }
 
 // What survives the rollover. This is the part the audit log depends on:
@@ -613,29 +624,64 @@ func (s *RewardsSuite) Test_ContinueAsNew_CancelWinsBeforeThreshold() {
 	s.addPoints(time.Minute, "u0", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.cancelAt(2 * time.Minute)
 
-	err := s.runToCancellation(newState())
+	err := s.runToDeparture(newState())
 
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled))
+	s.NoError(err)
+	var canErr *workflow.ContinueAsNewError
+	s.False(errors.As(err, &canErr), "departure must win over the roll")
 }
 
-// --- Cancellation (PLAN.md 3.6) ---------------------------------------------
+// --- Departure (PLAN.md 3.6) ------------------------------------------------
 
-// Cancel, not Terminate: the workflow's own code runs on the way out, and the
-// execution closes as Canceled so the customer list can tell active from
-// deactivated via ExecutionStatus.
-func (s *RewardsSuite) Test_Cancel_ClosesAsCanceled() {
+// Cancel is how departure is *requested*; Completed is how the run *ends*.
+//
+// Cancel, not Terminate, because Terminate skips workflow code entirely and none
+// of the departure procedure would run. But the workflow does not echo the
+// cancellation back: it finishes its own shutdown and returns nil, so the run
+// closes Completed. A customer leaving is the workflow's last job, not an
+// aborted one -- and it leaves Canceled free to mean "this stopped early", which
+// is what an operator terminating a stuck customer would want it to mean.
+//
+// This is the assertion the whole change turns on; every ExecutionStatus filter
+// downstream (the list query, the UI's status chip) reads the other side of it.
+func (s *RewardsSuite) Test_Departure_ClosesAsCompleted() {
 	s.cancelAt(time.Minute)
 
-	err := s.runToCancellation(newState())
+	err := s.runToDeparture(newState())
 
-	s.Require().Error(err)
+	s.Require().NoError(err, "a departure must close Completed, not Canceled")
 	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled), "want a CanceledError, got %T: %v", err, err)
+	s.False(errors.As(err, &canceled), "the cancellation must not be echoed back")
+}
+
+// The completion carries the customer's final standing -- the payload a
+// cancellation had nowhere natural to put. The audit crawl reads it to fill in
+// the deactivated row, which is the only place the closing balance survives once
+// the runs holding the point-adds are reaped.
+func (s *RewardsSuite) Test_Departure_ReturnsFinalStanding() {
+	s.mockNotify(0)
+
+	state := newState()
+	state.Generation = 2
+	state.Points = 400
+	state.LifetimeEarnEvents = 4
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 150, Reason: "purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToDeparture(state)
+	got := s.departureSummary()
+
+	s.Equal(testCustomerID, got.CustomerID)
+	s.Equal(550, got.FinalPoints, "400 carried + 150 earned this run")
+	s.Equal(rewards.LevelGold, got.FinalLevel, "derived from the final balance, not stored")
+	s.Equal(5, got.LifetimeEarnEvents, "4 carried + 1 this run")
+	s.Equal(2, got.Generation, "the generation they left in")
+	s.False(got.DepartedAt.IsZero(), "workflow.Now, so it survives replay")
 }
 
 // An Update delivered in the same instant as the cancellation still applies,
-// and the workflow still closes as Canceled.
+// and the workflow still closes cleanly.
 //
 // Note on what this does *not* cover: handleLeave's drain. The addPoints
 // handler never blocks -- it does arithmetic and returns -- so it has always
@@ -647,14 +693,15 @@ func (s *RewardsSuite) Test_Cancel_AppliesConcurrentUpdate() {
 	add := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 250, Reason: "purchase"})
 	s.cancelAt(time.Minute) // same instant as the update
 
-	err := s.runToCancellation(newState())
+	err := s.runToDeparture(newState())
 
 	s.NoError(add.rejected)
 	s.NoError(add.completed, "the concurrent update must still complete")
 	s.Equal(250, add.value.Balance)
 
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled))
+	s.NoError(err)
+	s.Equal(250, s.departureSummary().FinalPoints,
+		"and the points it applied are in the departure payload")
 }
 
 // --- Tier promotion notifications (PLAN.md 3.7) -----------------------------
@@ -742,7 +789,7 @@ func (s *RewardsSuite) Test_Notify_PromotionMidRunIsSent() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
 }
@@ -757,7 +804,7 @@ func (s *RewardsSuite) Test_Notify_BothTiersInOneRun() {
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelGold, rewards.LevelPlatinum},
 		calls.levels(rewards.NotifyEventPromoted))
@@ -772,7 +819,7 @@ func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Empty(calls.levels(rewards.NotifyEventPromoted))
 }
@@ -797,7 +844,7 @@ func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runToDeparture(state)
 
 	s.Empty(calls.levels(rewards.NotifyEventPromoted),
 		"gold was already notified; crossing it again must not re-send")
@@ -811,7 +858,7 @@ func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	sent := calls.all()
 	s.Require().Len(sent, 2, "expected a promotion and a departure, got %v", sent)
@@ -841,10 +888,9 @@ func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.cancelAt(time.Minute)
 
-	err := s.runToCancellation(newState())
+	err := s.runToDeparture(newState())
 
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled), "still closes as Canceled")
+	s.NoError(err, "still closes cleanly")
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"a promotion earned in the same instant as the departure must still be sent")
@@ -928,7 +974,7 @@ func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"a dropped promotion must be picked up by the next add, not lost for good")
@@ -946,7 +992,7 @@ func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
 	s.addPoints(3*time.Minute, "u3", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.cancelAt(4 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"gold is announced once, however many adds land inside it")
@@ -972,7 +1018,7 @@ func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne()
 		Amount: rewards.PlatinumThreshold, Reason: "one big purchase"})
 	s.cancelAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
 		"a customer who never sat at gold should not be congratulated for it")
@@ -997,7 +1043,7 @@ func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "b"})
 	s.cancelAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runToDeparture(newState())
 
 	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
 		"the failed gold notice is dropped; platinum, where they actually are, is sent")

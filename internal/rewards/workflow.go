@@ -53,18 +53,24 @@ type CustomerStatus struct {
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
-// The main loop is: wait for something to do, then cancel → notify → continue
+// The main loop is: wait for something to do, then depart → notify → continue
 // as new, in that order. Departure always wins over a roll; a pending promotion
 // is always drained before a roll. The Update handler never awaits the
 // notification Activity -- it only arms a flag the loop observes.
-func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
+//
+// It returns a DepartureSummary on the way out, which is why the signature is
+// not the bare `error` an entity workflow usually carries: the run closes
+// Completed, and a completion has a result payload worth filling in. Every other
+// exit -- a rejected enrollment, a rollover -- returns the zero value alongside
+// its error, since neither of those is a departure.
+func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) (DepartureSummary, error) {
 	logger := workflow.GetLogger(ctx)
 
 	// Nothing else will catch a bad payload, so this runs before anything is
 	// upserted or served. See validateEnrollment.
 	if err := validateEnrollment(ctx, &state); err != nil {
 		logger.Error("rejecting enrollment", "workflowId", workflow.GetInfo(ctx).WorkflowExecution.ID, "error", err)
-		return err
+		return DepartureSummary{}, err
 	}
 
 	// Successful adds in *this* run, as opposed to state.LifetimeEarnEvents
@@ -87,13 +93,13 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// Re-asserted every run rather than relying on continue-as-new inheritance.
 	// One code path establishes the invariant; see PLAN.md 4.
 	if err := upsertSearchAttributes(ctx, &state); err != nil {
-		return fmt.Errorf("upsert search attributes: %w", err)
+		return DepartureSummary{}, fmt.Errorf("upsert search attributes: %w", err)
 	}
 
 	if err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (CustomerStatus, error) {
 		return statusOf(&state), nil
 	}); err != nil {
-		return fmt.Errorf("register %s query: %w", QueryGetStatus, err)
+		return DepartureSummary{}, fmt.Errorf("register %s query: %w", QueryGetStatus, err)
 	}
 
 	err := workflow.SetUpdateHandlerWithOptions(ctx, UpdateAddPoints,
@@ -180,7 +186,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("register %s update: %w", UpdateAddPoints, err)
+		return DepartureSummary{}, fmt.Errorf("register %s update: %w", UpdateAddPoints, err)
 	}
 
 	logger.Info("customer enrolled",
@@ -210,7 +216,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		}); err != nil {
 			// Await itself saw the cancel (condition was still false). Same
 			// destination as the nil-return trap below.
-			return handleLeave(ctx, &state, &needsNotify)
+			return handleLeave(ctx, &state, &needsNotify), nil
 		}
 
 		// A nil error above does NOT mean "not cancelled". workflow.Await
@@ -233,7 +239,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		// stays active. Departure always wins -- the points are already
 		// recorded either way.
 		if ctx.Err() != nil {
-			return handleLeave(ctx, &state, &needsNotify)
+			return handleLeave(ctx, &state, &needsNotify), nil
 		}
 
 		// Drain promotions before rolling. Sending here (not in the Update
@@ -260,7 +266,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		if err := workflow.Await(ctx, func() bool {
 			return workflow.AllHandlersFinished(ctx)
 		}); err != nil || ctx.Err() != nil {
-			return handleLeave(ctx, &state, &needsNotify)
+			return handleLeave(ctx, &state, &needsNotify), nil
 		}
 		if needsNotify {
 			continue
@@ -274,15 +280,29 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			"earnsThisRun", earnsThisRun,
 			"points", state.Points)
 
-		return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
+		return DepartureSummary{}, workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 	}
 }
 
-// handleLeave records a graceful departure and closes the execution as Canceled.
+// handleLeave records a graceful departure and closes the execution as
+// Completed, returning the customer's final standing as the workflow result.
 //
 // Cancel rather than Terminate is what makes this reachable at all: Terminate
 // skips workflow code entirely, so none of this would run. PLAN.md 3.6.
-func handleLeave(ctx workflow.Context, state *CustomerState, needsNotify *bool) error {
+//
+// Note what this does *not* return: ctx.Err(). Returning the cancellation error
+// is the reflex, and it closes the execution as Canceled -- which is what this
+// workflow used to do. A customer leaving the program is not an aborted piece of
+// work, though; it is the last thing the workflow was for, and it runs to the
+// end of its own departure procedure before returning. Completed says that.
+// Canceled says the opposite, and reserving it leaves it free to mean what it
+// should: something went wrong and the work stopped early.
+//
+// The cancellation itself is still recorded -- WorkflowExecutionCancelRequested
+// is in history whatever we return, and it is the event the audit crawl reads
+// for the departure row. So nothing is hidden by not echoing it back; the run
+// simply closes on its own terms. PLAN.md 3.6.
+func handleLeave(ctx workflow.Context, state *CustomerState, needsNotify *bool) DepartureSummary {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("customer leaving rewards program",
 		"customerId", state.CustomerID,
@@ -319,10 +339,17 @@ func handleLeave(ctx workflow.Context, state *CustomerState, needsNotify *bool) 
 			"customerId", state.CustomerID, "error", err)
 	}
 
-	// Returning the cancellation error is what closes the execution as Canceled
-	// rather than Completed, which is the distinction the customer list reads to
-	// tell active from deactivated. PLAN.md 4.
-	return ctx.Err()
+	// workflow.Now on the disconnected context: the cancelled one still reports
+	// time perfectly well, but reading anything off ctx here invites the next
+	// person to reach for something that does need a live context.
+	return DepartureSummary{
+		CustomerID:         state.CustomerID,
+		DepartedAt:         workflow.Now(dctx),
+		FinalPoints:        state.Points,
+		FinalLevel:         Level(state.Points),
+		LifetimeEarnEvents: state.LifetimeEarnEvents,
+		Generation:         state.Generation,
+	}
 }
 
 // validateEnrollment rejects a start payload that is internally inconsistent or

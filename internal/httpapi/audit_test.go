@@ -10,9 +10,12 @@ import (
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The golden files in testdata/ are verbatim `temporal workflow show -o json`
@@ -21,6 +24,9 @@ import (
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
 //	run-deactivated.json   the last run: rolled into, 1 add, then cancelled
+//	                       (captured before PLAN.md 3.6 switched the close from
+//	                       Canceled to Completed -- see the departure-summary
+//	                       test for what that costs and how to fix it)
 //	run-rejection.json     a run containing a handler rejection at the cap
 //	events-notification.json  a real NotifyCustomer Activity pair (see below)
 //
@@ -168,6 +174,114 @@ func TestAuditRun_DeactivatedRun(t *testing.T) {
 	}
 	if run.entries[2].At.IsZero() {
 		t.Error("deactivation row needs a timestamp -- it is the last thing the page shows")
+	}
+}
+
+// The departure payload fills in the standing the customer left with, rather
+// than adding a row of its own.
+//
+// **The completion event below is hand-built, against this file's own rule.**
+// The note at the top says these tests run on recorded server output because
+// every phase has found the plan wrong about some platform detail, and a
+// synthetic history only proves the code agrees with whoever wrote the test.
+// That objection applies here in full. It is hand-built anyway because closing
+// Completed rather than Canceled (PLAN.md 3.6) postdates every golden file in
+// testdata/, and the environment this was written in has no Docker daemon, so
+// the stack could not be brought up to recapture them.
+//
+// What is therefore NOT verified: that the server writes the workflow's return
+// value into WorkflowExecutionCompletedEventAttributes.Result in the shape
+// assumed here. The payload is encoded with the same DataConverter the server
+// uses, so only the event envelope is taken on trust -- but that is exactly the
+// kind of assumption this file exists because of. Recapture
+// run-deactivated.json against a live stack and delete this paragraph.
+//
+// The composed history is also impossible on its face: run-deactivated.json was
+// captured under the old behaviour and already ends with
+// WorkflowExecutionCanceled, so this appends a second closing event. auditRun
+// ignores the cancelled one entirely, which is why it does not matter here --
+// but do not read the fixture below as a history any server would produce.
+func TestAuditRun_DepartureSummaryFillsInTheDeactivatedRow(t *testing.T) {
+	recorded := loadEvents(t, "run-deactivated.json")
+
+	// A workflow task after the cancel request, which is where the real event
+	// lands. Derived from the fixture rather than picked, so the ordering this
+	// test asserts holds whenever the fixture is recaptured.
+	cancelAt := eventTime(t, recorded, enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED)
+	completedAt := cancelAt.Add(time.Second)
+
+	result, err := converter.GetDefaultDataConverter().ToPayloads(rewards.DepartureSummary{
+		CustomerID:         "hist",
+		DepartedAt:         completedAt,
+		FinalPoints:        1200,
+		FinalLevel:         rewards.LevelPlatinum,
+		LifetimeEarnEvents: 7,
+		Generation:         2,
+	})
+	if err != nil {
+		t.Fatalf("encode departure summary: %v", err)
+	}
+
+	events := append(recorded, &historypb.HistoryEvent{
+		EventId:   9001,
+		EventTime: timestamppb.New(completedAt),
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
+		Attributes: &historypb.HistoryEvent_WorkflowExecutionCompletedEventAttributes{
+			WorkflowExecutionCompletedEventAttributes: &historypb.WorkflowExecutionCompletedEventAttributes{
+				Result: result,
+			},
+		},
+	})
+
+	run := auditRun("run-2", events)
+
+	// Same rows as without it: the completion enriches the deactivation, it does
+	// not announce a second departure.
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+
+	got := run.entries[2]
+	if got.Balance != 1200 || got.Level != rewards.LevelPlatinum {
+		t.Errorf("deactivated row = %d/%q, want 1200/%q", got.Balance, got.Level, rewards.LevelPlatinum)
+	}
+	// Anchored to the cancel request, not to the completion: the row says when
+	// the customer asked to leave, and only borrows the standing from the close.
+	if !got.At.Equal(cancelAt) {
+		t.Errorf("deactivated row at %v, want the cancel request's %v", got.At, cancelAt)
+	}
+}
+
+// eventTime returns the time of the first event of the given type, failing the
+// test if the fixture does not contain one.
+func eventTime(t *testing.T, events []*historypb.HistoryEvent, want enumspb.EventType) time.Time {
+	t.Helper()
+	for _, e := range events {
+		if e.GetEventType() == want {
+			return e.GetEventTime().AsTime()
+		}
+	}
+	t.Fatalf("fixture contains no %s event", want)
+	return time.Time{}
+}
+
+// A completion whose payload cannot be read leaves the timeline as it was. The
+// crawl is best-effort throughout (see decodeArg) and a departure with no
+// closing balance is still a departure.
+func TestAuditRun_UndecodableDepartureSummaryIsIgnored(t *testing.T) {
+	events := append(loadEvents(t, "run-deactivated.json"), &historypb.HistoryEvent{
+		EventId:   9001,
+		EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED,
+		Attributes: &historypb.HistoryEvent_WorkflowExecutionCompletedEventAttributes{
+			WorkflowExecutionCompletedEventAttributes: &historypb.WorkflowExecutionCompletedEventAttributes{},
+		},
+	})
+
+	run := auditRun("run-2", events)
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+	if run.entries[2].Balance != 0 {
+		t.Errorf("balance = %d, want 0 from an empty payload", run.entries[2].Balance)
 	}
 }
 

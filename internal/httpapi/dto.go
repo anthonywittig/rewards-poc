@@ -29,7 +29,7 @@ type AddPointsRequest struct {
 
 // CustomerResponse is the customer detail payload.
 //
-// Status comes from the execution rather than from workflow state: a cancelled
+// Status comes from the execution rather than from workflow state: a closed
 // execution is a deactivated customer, and the workflow cannot report its own
 // closure. PLAN.md 3.6.
 //
@@ -185,7 +185,7 @@ const (
 //	points_rejected    Amount, Reason, Failure, RequestID
 //	notification_sent  NotifiedLevel
 //	generation_rolled  Generation (the one being entered)
-//	deactivated        At, RunID
+//	deactivated        At, RunID, Balance, Level (the standing they left with)
 //
 // Note points_rejected only ever covers *handler*-side rejections. A validator
 // rejection writes nothing to history at all, so it is invisible here by

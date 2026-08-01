@@ -154,7 +154,8 @@ make inspect-es Q=indices
 A customer who continued-as-new twice shows **three** hits for the same
 `WorkflowId` (two `ContinuedAsNew` + one `Running`) until `make reap` removes
 the closed ones. List UIs that want "one row per customer" must filter to
-`ExecutionStatus = "Running"` (and treat canceled customers as a separate case).
+`ExecutionStatus = "Running"` (and treat departed customers, which close
+`Completed`, as a separate case).
 
 ### Sorting: ES can, Temporal ListWorkflow cannot
 
@@ -174,7 +175,7 @@ fetch the filtered set and sort in the API.
 
 ```sh
 make deactivate ID=leave
-make inspect-es Q=closed ID=leave     # ExecutionStatus=Canceled
+make inspect-es Q=closed ID=leave     # ExecutionStatus=Completed
 make reap WF=customer-leave
 # wait ~30s
 make inspect-es Q=closed ID=leave     # hits.total = 0

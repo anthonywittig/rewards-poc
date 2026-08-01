@@ -211,7 +211,7 @@ add: $(ENV) ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: $(ENV) ## Leave the program -- cancel, not terminate (make deactivate ID=c-001)
+deactivate: $(ENV) ## Leave the program -- cancel to request; the run closes Completed (make deactivate ID=c-001)
 	@$(TCLI) workflow cancel --workflow-id customer-$(ID)
 
 # The one target that goes through the API rather than the temporal CLI, because

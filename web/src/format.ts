@@ -53,7 +53,10 @@ export function buildListQuery(opts: {
   if (opts.status === 'active') {
     parts.push(`ExecutionStatus = 'Running'`)
   } else if (opts.status === 'deactivated') {
-    parts.push(`ExecutionStatus = 'Canceled'`)
+    // Completed, not Canceled: a departing customer's workflow runs its own
+    // shutdown and closes normally, so "deactivated" is the Completed status.
+    // See docs/PLAN.md 3.6.
+    parts.push(`ExecutionStatus = 'Completed'`)
   }
   return parts.join(' AND ')
 }

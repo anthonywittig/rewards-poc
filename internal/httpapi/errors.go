@@ -63,6 +63,12 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 // The 409 depends on the client being configured with
 // WorkflowExecutionErrorWhenAlreadyStarted -- without it the SDK returns the
 // existing run and a nil error, and there is nothing here to map. PLAN.md 3.6.
+//
+// AlreadyStarted also covers a *departed* customer, whose ID the reuse policy
+// refuses to hand out again -- and "already enrolled and active" is plainly
+// wrong for them. Telling the two apart needs a Describe, which is why the
+// enroll path goes through Server.mapEnrollError and only lands here once the
+// answer is known (or is unavailable).
 func mapStartError(err error) error {
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &already) {

@@ -353,9 +353,14 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			})
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
-			// The request, not WorkflowExecutionCanceled, because this is the
-			// moment the customer asked. The two are a workflow task apart and
-			// the second only exists if the workflow shut down cleanly.
+			// The request, not the closing event, because this is the moment the
+			// customer asked. The two are a workflow task apart and the second
+			// only exists if the workflow shut down cleanly.
+			//
+			// This is also why the row survived the switch from closing Canceled
+			// to closing Completed (PLAN.md 3.6): it was never anchored to the
+			// terminal state, only to the request, and the request is recorded
+			// identically either way.
 			out.entries = append(out.entries, AuditEntry{
 				Kind:       AuditDeactivated,
 				At:         e.GetEventTime().AsTime(),
@@ -363,6 +368,33 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				RunID:      runID,
 				EventID:    e.GetEventId(),
 			})
+
+		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_COMPLETED:
+			// The departure payload, which exists only because the run closes
+			// Completed -- a cancellation has no natural place to put it.
+			//
+			// It fills in the row above rather than adding one of its own: the
+			// customer left once, and CancelRequested already recorded when.
+			// What it adds is the standing they left with, which the timeline
+			// could otherwise only infer from the balance on the last
+			// points_added row -- and cannot infer at all once the run carrying
+			// that row has been reaped, which is exactly the case PLAN.md 6.3 is
+			// about.
+			//
+			// Reachable only on a departed customer's newest run: every earlier
+			// run closed ContinuedAsNew, and a live one has not closed at all.
+			var summary rewards.DepartureSummary
+			if !decodeArg(dc, e.GetWorkflowExecutionCompletedEventAttributes().GetResult(), &summary) {
+				continue
+			}
+			for i := len(out.entries) - 1; i >= 0; i-- {
+				if out.entries[i].Kind != AuditDeactivated {
+					continue
+				}
+				out.entries[i].Balance = summary.FinalPoints
+				out.entries[i].Level = summary.FinalLevel
+				break
+			}
 		}
 	}
 	return out

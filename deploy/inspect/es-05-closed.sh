@@ -6,7 +6,7 @@
 #
 # Usage:
 #   make deactivate ID=leave
-#   make inspect-es Q=closed ID=leave          # expect ExecutionStatus=Canceled
+#   make inspect-es Q=closed ID=leave          # expect ExecutionStatus=Completed
 #   make reap WF=customer-leave
 #   # wait ~30s
 #   make inspect-es Q=closed ID=leave          # expect hits.total=0
