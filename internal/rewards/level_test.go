@@ -8,9 +8,8 @@ import (
 
 // --- Tier derivation (FINDINGS.md#tiers-are-derived-never-stored) ----------
 //
-// Pure-function boundaries. Cheap to assert exhaustively, and these are the
-// numbers a stakeholder will ask about. They need no test environment, which is
-// the practical payoff of keeping the rules out of the workflow package.
+// Pure-function boundaries, asserted exhaustively. No test environment needed,
+// which is the payoff of keeping the rules out of the workflow package.
 
 func TestLevelBoundaries(t *testing.T) {
 	for _, tc := range []struct {

@@ -33,26 +33,18 @@ type RewardsSuite struct {
 const testCustomerID = "c-001"
 
 // testActivities is the struct the test env registers, and the receiver every
-// OnActivity mock names its method on.
-//
-// One shared instance rather than one per env: the mocks below replace the
-// method body outright, so nothing here is ever actually called, and the SDK
-// only needs the method value to resolve the Activity's registered name. A
-// per-test instance with real dependencies would be the shape to use the day an
-// Activity is exercised for real rather than mocked.
+// OnActivity mock names its method on. One shared instance is safe because the
+// mocks replace the method body outright; the SDK only needs the method value to
+// resolve the Activity's registered name.
 var testActivities = &activities.Activities{}
 
 func (s *RewardsSuite) SetupTest() { s.env = s.newEnv() }
 
-// newEnv builds a test environment the workflow will actually run in.
-//
-// Two things every test needs. The workflow validates that its payload's
-// customerId matches the workflow ID it was started under, so the env's
-// "default-test-workflow-id" has to be replaced with a real one. And since
-// Phase 6 the workflow schedules an Activity on soft-deactivate departure, so
-// an env with none registered fails those paths with "no activity is registered
-// for taskqueue 'rewards'" -- which is the test environment being right: the
-// workflow does now have a side effect, and pretending otherwise would hide it.
+// newEnv builds a test environment the workflow will actually run in. Two things
+// every test needs: the workflow validates its payload's customerId against the
+// workflow ID it was started under, so the env's "default-test-workflow-id" has
+// to be replaced; and it schedules an Activity on departure, so an env with none
+// registered fails those paths with "no activity is registered for taskqueue".
 func (s *RewardsSuite) newEnv() *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.SetStartWorkflowOptions(client.StartWorkflowOptions{
@@ -73,11 +65,10 @@ func newState() rewards.CustomerState {
 	}
 }
 
-// updateResult captures how an Update actually resolved. The three outcomes are
-// distinct and the distinction is the whole point of
-// FINDINGS.md#the-validatorhandler-split: rejected means the validator refused and
-// nothing was written to history; completed-with-error means the handler ran and
-// the failure *is* recorded.
+// updateResult captures how an Update actually resolved. rejected means the
+// validator refused and nothing was written to history; completed-with-error
+// means the handler ran and the failure *is* recorded.
+// FINDINGS.md#the-validatorhandler-split.
 type updateResult struct {
 	rejected  error
 	completed error
@@ -95,13 +86,11 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 			if err != nil {
 				return
 			}
-			// The test env hands back the concrete value the handler returned,
-			// and there are three of them now. Enumerated rather than
-			// type-asserted to one, so a handler that starts returning
-			// something else fails here instead of silently leaving the
-			// assertion reading a zero value -- which for DeactivateResult and
-			// ReactivateResult means Changed=false, the answer half these tests
-			// are trying to distinguish.
+			// Enumerated rather than type-asserted to one, so a handler that
+			// starts returning something else fails here instead of leaving
+			// the assertion reading a zero value -- which for the two
+			// membership results means Changed=false, the answer half these
+			// tests are trying to distinguish.
 			switch res := v.(type) {
 			case rewards.AddPointsResult:
 				r.value = res
@@ -335,7 +324,7 @@ func (s *RewardsSuite) Test_GetStatus_NoNextTierAtPlatinum() {
 }
 
 // Enrollment carries a prior EnrolledAt untouched, which is what makes the
-// value survive continue-as-new in Phase 2.
+// value survive continue-as-new.
 func (s *RewardsSuite) Test_GetStatus_PreservesCarriedEnrolledAt() {
 	enrolled := time.Date(2020, 3, 4, 5, 6, 7, 0, time.UTC)
 	state := newState()
@@ -407,11 +396,8 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 	}
 }
 
-// The bypass Bugbot found on PR #4: seed a large balance alongside a zero
-// lifetime total, and the handler's cap check has nothing to push against.
-// Collapsing the two fields removed the second number entirely, so the cap is
-// now measured against the only balance there is -- but the payload is still
-// rejected at the door, and this test stays as the regression guard.
+// A large seeded balance alongside a zero lifetime total once bypassed the
+// handler's cap check. Kept as the regression guard.
 func (s *RewardsSuite) Test_Enroll_RejectsCapBypass() {
 	state := newState()
 	state.Points = 5_000_000
@@ -447,8 +433,7 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 // operations can lower a balance. If a redemption feature ever arrives, this
 // test is the one that should fail first.
 func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
-	// Kept to one run's worth of adds: beyond EarnsPerRun the run rolls over and
-	// further updates belong to the next run, which is Phase 2's concern.
+	// One run's worth: beyond EarnsPerRun the run rolls over.
 	adds := []int{10, 250, 1}
 
 	results := make([]*updateResult, len(adds))
@@ -802,10 +787,7 @@ func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Dura
 // A promotion landing on the *third* add is the ordinary case at EarnsPerRun = 3,
 // and it is precisely when the run wants to continue as new. The main loop drains
 // needsNotify before rolling, so the promotion is sent in this run and
-// NotifiedLevels rides into the successor. (The earlier workflow.Go design needed
-// an explicit notifier.idle() guard for the same reason --
-// FINDINGS.md#allhandlersfinished-covers-handlers-not-goroutines -- and this test
-// failed without it.)
+// NotifiedLevels rides into the successor.
 func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
 	calls := s.mockNotify(50 * time.Millisecond)
 
@@ -869,13 +851,9 @@ func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
 }
 
 // The at-least-once dedup guard: a level already in NotifiedLevels is not
-// re-sent.
-//
-// Honest about what this is. Points only go up, so a customer cannot fall out of
-// gold and climb back in, which means the state below is not reachable by any
-// sequence of legal operations today -- it is constructed. The guard is here
-// because Activities are at-least-once and because the day a spend or expiry path
-// lands, this is the check that stops a customer being congratulated twice.
+// re-sent. Points only go up, so the state below is constructed rather than
+// reachable by legal operations today -- the guard exists because Activities are
+// at-least-once, and for the day a spend or expiry path lands.
 // FINDINGS.md#tier-promotion-notifications.
 func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 	calls := s.mockNotify(0)
@@ -1008,17 +986,12 @@ func (s *RewardsSuite) mockNotifyFailing(failures int) *notifyCalls {
 	return calls
 }
 
-// Raised on PR #15: a delivery that exhausts its retries was dropped for good.
+// A delivery that exhausts its retries must not be dropped for good.
 //
 // The Activity's own retry policy is bounded on purpose -- an unbounded one
-// would block continue-as-new for as long as the provider stayed down. So the
-// outer retry has to come from somewhere else, and "notify a tier the customer
-// has reached but not been told about" is that somewhere: any later add picks it
-// up, because the condition is a property of the customer rather than an event
-// that has already gone past.
-//
-// Before the fix this failed with no notifications at all: the crossing had
-// happened once, so nothing ever re-queued it.
+// would block continue-as-new for as long as the provider stayed down -- so the
+// outer retry comes from PromotionFor asking whether the customer's tier has
+// been announced, which any later add picks up.
 func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
 	// notifyMaxAttempts failures exhausts exactly one send.
 	calls := s.mockNotifyFailing(3)
@@ -1056,15 +1029,9 @@ func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
 // platinum starts at 1000, so one add from zero lands a customer straight in
 // platinum without ever being observed at gold.
 //
-// One notification, naming where they are. Raised on PR #15 as a missed
-// promotion; recorded here as a decision instead. Announcing gold and then
-// immediately platinum tells the customer something that was true for no
-// measurable time, and "Welcome to Gold" arriving beside "Welcome to Platinum"
-// reads as a bug to the person receiving it.
-//
-// It is also not a change: the original crossing rule compared Level(before) to
-// Level(after) and likewise produced only platinum. Pinned so that if a later
-// phase decides differently, it decides deliberately.
+// One notification, naming where they are. "Welcome to Gold" arriving beside
+// "Welcome to Platinum" reads as a bug to the person receiving it. Pinned so
+// that deciding otherwise is a deliberate act.
 func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne() {
 	calls := s.mockNotify(0)
 
@@ -1078,18 +1045,14 @@ func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne()
 		"a customer who never sat at gold should not be congratulated for it")
 }
 
-// The boundary of the retry added for PR #15, stated exactly.
+// The boundary of that retry, stated exactly: a failed delivery is re-offered by
+// later adds *while the customer stays at that tier*. Advance a tier first and
+// the lower one is dropped for good, since PromotionFor only ever offers the
+// tier they are at now.
 //
-// A failed delivery is re-offered by later adds *while the customer stays at
-// that tier*. Advance a tier first and the lower one is dropped for good, since
-// promotionFor only ever offers the tier they are at now.
-//
-// That is the intended behaviour rather than a gap in it: the customer is
-// platinum, and platinum is what they get told. A belated "you reached gold",
-// sent after they are already past it, would be worse than silence. Worth
-// pinning because the obvious reading of "retried on the next add" is broader
-// than what actually happens, and that over-claim is what the first round of
-// review on this PR caught in a comment.
+// Intended rather than a gap -- a belated "you reached gold" sent after they are
+// past it would be worse than silence -- but worth pinning, because the obvious
+// reading of "retried on the next add" is broader than what happens.
 func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
 	calls := s.mockNotifyFailing(3) // exhausts exactly the gold delivery
 

@@ -2,15 +2,13 @@
 // and Query handlers. See docs/FINDINGS.md#workflow-design.
 //
 // Everything here runs under the workflow's determinism constraints. The rules
-// it applies -- tiers, enrollment validity, which promotion is owed -- live in
-// the parent internal/rewards package as plain functions, so this package is
-// orchestration and little else: what to await, what to schedule, when to roll.
+// it applies live in the parent internal/rewards package as plain functions, so
+// this package is orchestration: what to await, what to schedule, when to roll.
 //
 // It deliberately does not import internal/rewards/activities. The Go SDK has no
-// workflow sandbox, so an import of the Activity package is an import of its
-// dependencies, and calling one of those directly from here is a determinism bug
-// the compiler would be happy to accept. Activities are named by the
-// rewards.ActivityNotifyCustomer string constant instead.
+// workflow sandbox, so importing the Activity package imports its dependencies,
+// and calling one directly from here is a determinism bug the compiler would
+// accept. Activities are named by the rewards.ActivityNotifyCustomer constant.
 package workflows
 
 import (
@@ -26,18 +24,13 @@ import (
 // Versioning markers for workflow.GetVersion.
 // FINDINGS.md#versioning-is-the-real-risk.
 //
-// Entity workflows outlive deploys by design, so a change that alters the
-// commands a run emits has to be gated or it breaks every execution already in
-// flight. These names are recorded in Event History and can never be reused or
-// renamed -- a marker is as permanent as the history it sits in.
-//
-// They are unexported and live beside the workflow rather than with the domain
-// types, because a version marker means nothing outside the code it gates.
+// Entity workflows outlive deploys, so a change that alters the commands a run
+// emits has to be gated or it breaks every execution already in flight. These
+// names are recorded in Event History and can never be reused or renamed.
 const (
-	// changeTierNotifications gates the Phase 6 notification Activity. Runs
-	// started before it keep the Phase 5 behaviour for the rest of their lives,
-	// and pick notifications up at their next continue-as-new -- at most
-	// rewards.EarnsPerRun adds away.
+	// changeTierNotifications gates the notification Activity. Runs started
+	// before it keep the old behaviour for the rest of their lives, and pick
+	// notifications up at their next continue-as-new.
 	changeTierNotifications  = "tier-notifications"
 	versionTierNotifications = 1
 )
@@ -70,30 +63,19 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
 
-	// Phase 6 added the notification Activity, and adding it is a *breaking*
-	// change to every run already in flight: the new code emits a
-	// ScheduleActivityTask command where the recorded history has no matching
-	// event, so replay fails and the workflow task retries forever. Every
-	// existing customer would wedge on deploy.
+	// Adding the notification Activity was a *breaking* change to every run
+	// already in flight: the new code emits a ScheduleActivityTask command where
+	// the recorded history has no matching event, so replay fails and the
+	// workflow task retries forever. Runs whose history predates this marker
+	// resolve to DefaultVersion and keep behaving as they did.
 	//
-	// Not a hypothetical -- replay_test.go reproduces it against histories
-	// recorded by the Phase 5 worker:
-	//
-	//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
-	//	  (ActivityType:(Name:NotifyCustomer) ...)
-	//
-	// GetVersion is the fix. Runs whose history predates this marker resolve to
-	// DefaultVersion and keep behaving exactly as they did; new runs record
-	// version 1 and notify. FINDINGS.md#versioning-is-the-real-risk.
-	//
-	// One population it cannot save, and the gate should be honest about it:
-	// executions created by the *ungated* Phase 6 build. Their history contains
-	// the Activity and no marker, so they resolve to DefaultVersion too, and
-	// replay then omits an Activity the history demands. GetVersion cannot tell
-	// "predates the change" from "ran the change before it was gated" -- the
-	// marker is the only signal, and neither has one. Find them with
-	// TemporalChangeVersion IS NULL plus a StartTime lower bound, and reset them.
-	// Pinned by TestReplay_UngatedPhase6HistoriesCannotBeRescued.
+	// One population the gate cannot save: executions created by the *ungated*
+	// build. Their history contains the Activity and no marker, so they resolve
+	// to DefaultVersion too, and replay then omits an Activity the history
+	// demands. GetVersion cannot tell "predates the change" from "ran the change
+	// before it was gated". Find them with TemporalChangeVersion IS NULL plus a
+	// StartTime lower bound, and reset them. Pinned by
+	// TestReplay_UngatedPhase6HistoriesCannotBeRescued.
 	//
 	// The lesson is upstream: gate a command-changing edit in the same commit
 	// that introduces it.
@@ -186,23 +168,23 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				return rewards.DeactivateResult{Changed: false}, nil
 			}
 
-			// Staged on a copy and committed only once the upsert is issued, so a
-			// failed Update really did change nothing. Mutating first and returning
-			// the error would leave the customer deactivated, the departure notice
-			// armed, and addPoints 409ing -- while the caller was told it failed.
+			// Staged on a copy and committed only once the upsert is issued, so
+			// a failed Update really did change nothing. Mutating first would
+			// leave the customer deactivated and addPoints 409ing while the
+			// caller was told it failed.
 			//
 			// The upsert has to be part of that: if visibility cannot record
-			// Active=false the list falls back to ExecutionStatus=Running and shows
-			// them active, so a leave visibility never saw is not a leave.
+			// Active=false the list falls back to ExecutionStatus=Running and
+			// shows them active, so a leave visibility never saw is not a leave.
 			next := state
 			next.Deactivated = true
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
 				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
-			// Gated for the same reason as the promotion above: the departure notice
-			// schedules the same Activity, and a pre-marker run being deactivated
-			// after the deploy must not emit a command its history cannot account for.
+			// Gated for the same reason as the promotion above: a pre-marker run
+			// deactivated after the deploy must not emit a command its history
+			// cannot account for.
 			needsDeparture = notifyEnabled
 
 			logger.Info("customer deactivated",
@@ -217,9 +199,9 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	if err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateReactivate,
 		func(ctx workflow.Context, req rewards.ReactivateRequest) (rewards.ReactivateResult, error) {
 			// Not an error: re-enrolling an active customer is a duplicate, and
-			// the API turns Changed=false into the 409 it owes them. Reported
-			// rather than applied, so a racing enroll cannot quietly overwrite a
-			// live customer's name and email with a second signup's.
+			// the API turns Changed=false into a 409. Reported rather than
+			// applied, so a racing enroll cannot overwrite a live customer's
+			// name and email with a second signup's.
 			if !state.Deactivated {
 				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
 			}
@@ -266,9 +248,8 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		"points", state.Points,
 		"deactivated", state.Deactivated)
 
-	// Production should roll on GetContinueAsNewSuggested() rather than a fixed earn
-	// count -- see the longer note that used to live here, and
-	// FINDINGS.md#continue-as-new.
+	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
+	// earn count. FINDINGS.md#continue-as-new.
 	for {
 		if err := workflow.Await(ctx, func() bool {
 			return needsNotify || needsDeparture || earnsThisRun >= rewards.EarnsPerRun
