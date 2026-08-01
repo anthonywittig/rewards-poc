@@ -22,6 +22,11 @@ export function formatDate(iso: string): string {
   })
 }
 
+/**
+ * Title-case a tier for display. Tier values travel lowercase everywhere else
+ * -- API payloads, visibility queries, CSS class names -- so every place that
+ * puts one on screen goes through here and nowhere else.
+ */
 export function tierLabel(level: string): string {
   return level.charAt(0).toUpperCase() + level.slice(1)
 }
