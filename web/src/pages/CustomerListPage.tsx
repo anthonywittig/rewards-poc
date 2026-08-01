@@ -15,6 +15,17 @@ const TIERS = ['basic', 'gold', 'platinum'] as const
 /** Long enough to coalesce a burst of keystrokes, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 250
 
+/** A response tagged with the query that produced it. */
+interface Loaded {
+  query: string
+  res: CustomerListResponse
+}
+
+interface Failed {
+  query: string
+  err: unknown
+}
+
 export function CustomerListPage() {
   const [tier, setTier] = useState<string | null>(null)
   const [status, setStatus] = useState<'active' | 'deactivated' | 'any'>('active')
@@ -22,10 +33,9 @@ export function CustomerListPage() {
   const [name, setName] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>(null)
   const [sortDir, setSortDir] = useState<SortDir>('desc')
-  const [data, setData] = useState<CustomerListResponse | null>(null)
+  const [loaded, setLoaded] = useState<Loaded | null>(null)
+  const [failed, setFailed] = useState<Failed | null>(null)
   const [pending, setPending] = useState(() => readPending())
-  const [error, setError] = useState<unknown>(null)
-  const [loading, setLoading] = useState(true)
 
   const query = useMemo(
     () => buildListQuery({ tier, status, name }),
@@ -38,20 +48,22 @@ export function CustomerListPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
+  // Tagging responses with their query makes "does this belong to the filter on
+  // screen?" a derived value, so rows still cannot render under a query they did
+  // not match — but nothing has to be torn down and rebuilt to guarantee that.
+  const data = loaded?.query === query ? loaded.res : null
+  const error = failed?.query === query ? failed.err : null
+  const loading = !data && !error
+
   useEffect(() => {
     let cancelled = false
-    // Drop the previous filter’s rows immediately so they cannot render under the new query.
-    setData(null)
-    setLoading(true)
-    setError(null)
 
     async function run() {
-      setLoading(true)
-      setError(null)
       try {
         const res = await listCustomers(query)
         if (cancelled) return
-        setData(res)
+        setLoaded({ query, res })
+        setFailed(null)
         const ids = new Set(res.items.map((i) => i.customerId))
         for (const p of readPending()) {
           if (ids.has(p.customerId)) clearPending(p.customerId)
@@ -59,24 +71,31 @@ export function CustomerListPage() {
         setPending(readPending())
       } catch (err) {
         if (cancelled) return
-        setError(err)
-        setData(null)
-      } finally {
-        if (!cancelled) setLoading(false)
+        setFailed({ query, err })
       }
     }
 
     void run()
-    // Visibility lag: re-fetch once shortly after mount / query change.
-    const t = window.setTimeout(() => {
-      if (!cancelled) void run()
-    }, 500)
+
+    // Visibility lag only has something to catch up to while an optimistic row
+    // is still waiting to be indexed. Re-checking on every query change instead
+    // doubled every search and made the table settle twice, half a second apart.
+    const t = readPending().length
+      ? window.setTimeout(() => {
+          if (!cancelled) void run()
+        }, 500)
+      : undefined
 
     return () => {
       cancelled = true
-      window.clearTimeout(t)
+      if (t !== undefined) window.clearTimeout(t)
     }
   }, [query])
+
+  // Notices and the sort affordance stay on the last response while the next one
+  // loads. Unmounting them shifted the table up ~90px and back on every pause in
+  // typing; they describe the result set, not the rows, so holding them is safe.
+  const chrome = data ?? (loading ? loaded?.res ?? null : null)
 
   const items = useMemo(() => {
     // Keep optimistic rows visible even when the list request failed.
@@ -88,15 +107,21 @@ export function CustomerListPage() {
     return rows
   }, [data, pending, sortKey, sortDir, query])
 
+  // Blank rows standing in for the ones the previous query left on screen, so the
+  // body holds its height instead of collapsing to a single “Loading…” row.
+  const placeholders = loading
+    ? Math.max((loaded?.res.items.length ?? 0) - items.length, items.length ? 0 : 1)
+    : 0
+
   const incompleteNotice = useMemo(() => {
-    if (!data || data.complete) return null
+    if (!chrome || chrome.complete) return null
     const of =
-      data.total < 0 ? 'many' : String(data.total)
-    return `Showing ${data.items.length} of ${of} — filter to find additional results`
-  }, [data])
+      chrome.total < 0 ? 'many' : String(chrome.total)
+    return `Showing ${chrome.items.length} of ${of} — filter to find additional results`
+  }, [chrome])
 
   function toggleSort(key: SortKey) {
-    if (!data?.complete || !key) return
+    if (!chrome?.complete || !key) return
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
@@ -205,14 +230,14 @@ export function CustomerListPage() {
       <ErrorBanner error={error} />
 
       {incompleteNotice ? <p className="notice">{incompleteNotice}</p> : null}
-      {!data?.complete && data ? (
+      {chrome && !chrome.complete ? (
         <p className="hint" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
           Sorting is disabled until the result set fits in one page — sorting five
           arbitrary rows of a larger match would look authoritative and be wrong.
         </p>
       ) : null}
 
-      <div className="table-wrap">
+      <div className="table-wrap" aria-busy={loading}>
         <table>
           <thead>
             <tr>
@@ -220,7 +245,7 @@ export function CustomerListPage() {
                 label="Name"
                 active={sortKey === 'name'}
                 dir={sortDir}
-                enabled={!!data?.complete}
+                enabled={!!chrome?.complete}
                 onClick={() => toggleSort('name')}
               />
               <th>Tier</th>
@@ -228,7 +253,7 @@ export function CustomerListPage() {
                 label="Points"
                 active={sortKey === 'points'}
                 dir={sortDir}
-                enabled={!!data?.complete}
+                enabled={!!chrome?.complete}
                 onClick={() => toggleSort('points')}
               />
               <th>Status</th>
@@ -236,20 +261,13 @@ export function CustomerListPage() {
                 label="Enrolled"
                 active={sortKey === 'enrolledAt'}
                 dir={sortDir}
-                enabled={!!data?.complete}
+                enabled={!!chrome?.complete}
                 onClick={() => toggleSort('enrolledAt')}
               />
               <th>Gen</th>
             </tr>
           </thead>
           <tbody>
-            {loading && !data && items.length === 0 ? (
-              <tr>
-                <td colSpan={6} className="muted">
-                  Loading…
-                </td>
-              </tr>
-            ) : null}
             {!loading && items.length === 0 ? (
               <tr>
                 <td colSpan={6} className="muted">
@@ -264,7 +282,7 @@ export function CustomerListPage() {
               <tr key={c.customerId}>
                 <td>
                   <Link to={`/customers/${c.customerId}`}>{c.name}</Link>
-                  <div className="muted" style={{ fontSize: '0.78rem' }}>
+                  <div className="muted row-sub">
                     {c.customerId} · {c.email}
                   </div>
                 </td>
@@ -277,6 +295,20 @@ export function CustomerListPage() {
                 </td>
                 <td>{formatDate(c.enrolledAt)}</td>
                 <td>{c.generation}</td>
+              </tr>
+            ))}
+            {Array.from({ length: placeholders }, (_, i) => (
+              <tr key={`placeholder-${i}`} className="row-placeholder">
+                <td>
+                  {i === 0 && items.length === 0 ? 'Loading…' : ' '}
+                  {/* Mirrors the id · email line so the row is the same height. */}
+                  <div className="row-sub">&nbsp;</div>
+                </td>
+                <td />
+                <td />
+                <td />
+                <td />
+                <td />
               </tr>
             ))}
           </tbody>
