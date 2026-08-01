@@ -300,13 +300,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 
 	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
 	// earn count -- see the longer note that used to live here, and PLAN.md 3.5.
-	// An Await error here is a cancellation, and cancellation is no longer a
-	// product path -- leaving is the deactivate Update, which keeps the run
-	// alive. What is left is an operator running `temporal workflow cancel`, so
-	// we return it and let the execution close as Canceled, without draining
-	// handlers or sending a departure notice. The SDK may log an
-	// unfinished-handler warning on the way out; that is the honest report of
-	// what an out-of-band cancel does to an in-flight Update.
 	for {
 		if err := workflow.Await(ctx, func() bool {
 			return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun

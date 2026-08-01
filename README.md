@@ -127,10 +127,12 @@ an Update against the same execution rather than a fresh Start. Points, tier and
 `lifetimeEarnEvents` are all still there, and the timeline shows a `deactivated` row followed by
 a `reactivated` one. See §3.6 of the plan.
 
-Two consequences worth knowing. A customer who was *cancelled* out of band (`temporal workflow
-cancel`) is genuinely closed, and re-enrolling them does start over at zero — that is the ops
-path, not the product one. And membership no longer lives in `ExecutionStatus`: it is the
-`RewardsActive` search attribute, which is what the list and its filter chips read.
+Two consequences worth knowing. Membership no longer lives in `ExecutionStatus`: it is the
+`RewardsActive` search attribute, which is what the list and its filter chips read. And
+**cancellation is not part of the model** — nothing cancels a customer's workflow, and the code
+does not handle it. `temporal workflow cancel` is unsupported rather than defended against: it
+closes the execution without upserting `RewardsActive`, leaving a customer the list still calls
+active, the detail page calls deactivated, and re-enrollment starts over at zero.
 
 ## The HTTP API
 
@@ -343,7 +345,7 @@ just happened. "Did this add cross a boundary" is an event — it occurs once an
 so a delivery that exhausted its retries could never be attempted again. "Is this customer at
 an unannounced tier" is a property, so the next add picks it up.
 
-Delivery happens in the workflow's main loop, which runs **cancel → notify → continue-as-new**
+Delivery happens in the workflow's main loop, which runs **notify → depart → continue-as-new**
 in that order and re-enters after each step. Departure always wins over a roll; a pending
 promotion is always sent before one.
 
