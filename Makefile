@@ -3,7 +3,7 @@
 # Every target runs against one stack, selected by ENV. Default is .env when
 # present, otherwise .env.example (so a fresh checkout can `make up` with no
 # copy step). For a second stack side by side, copy .env.example to .env.beta
-# with a different STACK_NAME and ports, then: make up ENV=.env.beta
+# with a different COMPOSE_PROJECT_NAME and ports, then: make up ENV=.env.beta
 
 ENV ?= $(shell test -f .env && echo .env || echo .env.example)
 COMPOSE := docker compose --env-file $(ENV) -f deploy/docker-compose.yml
