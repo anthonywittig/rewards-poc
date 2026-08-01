@@ -16,6 +16,8 @@ import (
 )
 
 func main() {
+	// Command-line arguments are deliberately ignored; `make api` passes a
+	// trailing stack=<name> marker for pkill scoping. See cmd/worker.
 	address := env("TEMPORAL_HOSTPORT", "localhost:7233")
 	namespace := env("TEMPORAL_NAMESPACE", "rewards")
 	addr := ":" + env("API_PORT", "8081")

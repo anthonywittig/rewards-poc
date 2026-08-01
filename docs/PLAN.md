@@ -992,6 +992,7 @@ TEMPORAL_RETENTION=1h
 TEMPORAL_GRPC_PORT=7233
 TEMPORAL_UI_PORT=8080
 API_PORT=8081
+WEB_PORT=5173
 POSTGRES_PORT=5432
 ES_PORT=9200
 
@@ -1000,9 +1001,8 @@ ES_JAVA_OPTS=-Xms256m -Xmx256m
 
 A second stack is `cp .env.example .env.beta`, bump `COMPOSE_PROJECT_NAME` and every port,
 then `make up ENV=.env.beta`. Named volumes are project-prefixed automatically, so data
-isolation is free. The UI's own port is the exception: `web/vite.config.ts` pins 5173
-(`strictPort`), so the second stack reuses the one UI — `make web ENV=.env.beta` serves on
-5173 but proxies to beta's API and links to beta's Temporal UI.
+isolation is free. The UI follows too: `make web ENV=.env.beta` serves on beta's `WEB_PORT`
+(`strictPort`, so a port clash fails loudly) and points at beta's API and Temporal UI.
 
 Two things to call out in the README:
 

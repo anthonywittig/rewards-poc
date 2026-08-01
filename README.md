@@ -82,7 +82,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 |---|---|
 | `make up` / `down` / `destroy` | start + bootstrap / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
-| `make worker` / `workers` / `worker-stop` | run the worker / list them / kill them all |
+| `make worker` / `workers` / `worker-stop` | run / list / kill this stack's workers |
 | `make api` / `api-stop` | run the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
@@ -94,9 +94,8 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
 `.env.example` to `.env.beta`, set a different `COMPOSE_PROJECT_NAME` and bump every `*_PORT`,
 then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
-and volumes. The UI is the one port that doesn't move: Vite pins `:5173` (`strictPort`), so
-run one `make web` at a time — `make web ENV=.env.beta` still serves on 5173 but proxies to
-beta's API and links to beta's Temporal UI.
+and volumes, and `make web ENV=.env.beta` serves on beta's `WEB_PORT`, proxying to beta's API
+and linking to beta's Temporal UI.
 Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
 on one stack is much cheaper if you only need isolated workflows.
 
@@ -255,8 +254,8 @@ the obvious `pkill` misses it and it keeps serving *old* code against the same t
 silently, and looking exactly like a bug in the workflow.
 
 ```sh
-make workers       # should list exactly one
-make worker-stop   # kills them all, including orphans
+make workers       # should list exactly one for this stack
+make worker-stop   # kills this stack's workers, including orphans
 ```
 
 Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic.
