@@ -275,8 +275,11 @@ audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 # so nothing here can reset a customer -- `make reset` is the clean slate.
 #
 # `make up` runs this, so the target is for re-running it after a `make reset`.
-# It is the one thing in `make up` that still runs on the host: seeding over the
-# published port exercises the same path a user takes, and Go is a prerequisite
-# for `make test` anyway.
+#
+# It runs in the stack rather than on the host, off the same image as the worker
+# and the api, so `make up` needs Docker and nothing else -- no Go toolchain for
+# a step that is only meant to fill a demo stack. `run --rm` because it exits;
+# --build so it is never older than cmd/seed; -T because there is no terminal to
+# attach to when make calls it.
 seed: $(ENV) ## Seed demo customers (idempotent; `make reset` first for a clean slate)
-	API_BASE=http://localhost:$(API_PORT) go run ./cmd/seed
+	$(COMPOSE) run --rm -T --build seed

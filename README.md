@@ -18,9 +18,10 @@ first is [versioning](docs/FINDINGS.md#versioning-is-the-real-risk).
 
 ## Quick start
 
-Prerequisites: **Docker** with Compose v2 (~1.5 GB of images, ~1 GB of RAM), **Go** 1.25.4 or
-newer (the Temporal Go SDK's floor, not ours — on an older Go the default `GOTOOLCHAIN=auto`
-fetches it), and **Node** 20+ for the UI.
+Prerequisites: **Docker** with Compose v2 (~1.5 GB of images, ~1 GB of RAM) is all `make up`
+needs — the Go services are compiled inside their images. **Node** 20+ is for the UI, and **Go**
+1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an older Go the default
+`GOTOOLCHAIN=auto` fetches it) only for `make test` and `make workflowcheck`.
 
 Configuration defaults come from `.env.example`, so a fresh checkout needs no copy step. Copy it
 to `.env` only when you want local overrides.
@@ -29,8 +30,8 @@ to `.env` only when you want local overrides.
 # 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
 #    namespace and search-attribute bootstrap, then the workflow worker and the
 #    HTTP API, then eighteen demo customers, six per tier, including the
-#    interesting edge cases. Takes a minute the first time (it builds the worker
-#    and api images too).
+#    interesting edge cases. Takes a minute the first time, since it compiles the
+#    Go services into their images on the way up.
 make up
 
 # 2. The React UI on :5173, in its own terminal.
@@ -49,7 +50,8 @@ That's everything up. Where it all is:
 
 Neither the worker nor the API has a terminal of its own — both are Compose services, so
 `make worker-logs` / `make api-logs` tail them, and `make worker` / `make api` rebuild and
-restart them after a code change. Only the Vite dev server still runs on the host.
+restart them after a code change. The seed is a Compose one-shot off the same image. Only the
+Vite dev server still runs on the host, which is why `make up` needs Docker and nothing else.
 
 `make test` runs the Go unit tests and needs neither Docker nor a running server. `make down`
 stops the stack and keeps the data; `make destroy` deletes the volumes too.
@@ -339,7 +341,7 @@ internal/httpapi/
 web/                          the React UI
 deploy/
   docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker + api
-  Dockerfile                  the worker and api images, built from the repo root
+  Dockerfile                  the worker, api and seed images, built from the repo root
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions

@@ -1,6 +1,6 @@
 # Postgres (persistence) + Elasticsearch (visibility) + Temporal + the workflow
-# worker + the HTTP API. Only the Vite dev server runs on the host, via
-# `make web`.
+# worker + the HTTP API, plus the seed one-shot behind a profile. Only the Vite
+# dev server runs on the host, via `make web`.
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
@@ -161,6 +161,26 @@ services:
       timeout: 5s
       retries: 10
     restart: unless-stopped
+
+  # A one-shot, not a service: the `tools` profile keeps `compose up` from
+  # starting it, and `make seed` runs it with `run --rm`. depends_on carries the
+  # ordering, so seeding waits for a healthy API whether it is `make up` running
+  # it or `make seed` on its own.
+  seed:
+    profiles: [tools]
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args:
+        CMD: seed
+        GO_VERSION: ${GO_VERSION}
+        ALPINE_VERSION: ${ALPINE_VERSION}
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # In-network, so the container port rather than the published one.
+      - API_BASE=http://api:8081
 
 volumes:
   postgres-data:
