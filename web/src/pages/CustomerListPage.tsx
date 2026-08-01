@@ -116,11 +116,20 @@ export function CustomerListPage() {
     return rows
   }, [data, shown, pending, sortKey, sortDir, query])
 
+  // Whether to say "nothing matched". True when the rows are empty *because the
+  // response was*, not because a new query filtered the held-over rows out — so
+  // the notice stays on screen across a refetch rather than being swapped for a
+  // loading row and back on every pause in typing. `aria-busy` below is the
+  // loading signal; the row does not have to move to carry one.
+  const showEmpty = items.length === 0 && (shown ? shown.items.length === 0 : !loading)
+
   // Blank rows so the body holds its height instead of collapsing to a single
-  // “Loading…” row.
-  const placeholders = loading
-    ? Math.max((loaded?.res.items.length ?? 0) - items.length, items.length ? 0 : 1)
-    : 0
+  // “Loading…” row. The empty-state row holds the body on its own, so this only
+  // covers replacing rows with rows, and the first load with nothing on screen.
+  const placeholders =
+    loading && !showEmpty
+      ? Math.max((loaded?.res.items.length ?? 0) - items.length, items.length ? 0 : 1)
+      : 0
 
   const incompleteNotice = useMemo(() => {
     if (!shown || shown.complete) return null
@@ -277,7 +286,7 @@ export function CustomerListPage() {
             </tr>
           </thead>
           <tbody>
-            {!loading && items.length === 0 ? (
+            {showEmpty ? (
               <tr>
                 <td colSpan={6} className="muted">
                   No customers match this filter.
