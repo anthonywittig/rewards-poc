@@ -339,15 +339,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     if err := workflow.Await(ctx, func() bool {
         return earnsThisRun >= EarnsPerRun
     }); err != nil {
-        // Cancelled — graceful departure. Cleanup, if any, needs a
-        // disconnected context because ctx is already cancelled.
-        return handleLeave(ctx, &state)
-    }
-    // Await returns nil the moment its condition holds, without checking
-    // the context — so a cancel arriving in the same transition lands
-    // here with err == nil. Departure wins. See §12.9.
-    if ctx.Err() != nil {
-        return handleLeave(ctx, &state)
+        // Await's only error is a cancellation, which is not part of this
+        // model — leaving is the deactivate Update (§3.6). Returned, not
+        // handled: §12.9 has what the cancel-based design needed here and
+        // why none of it survived.
+        return err
     }
 
     // Let any concurrently-accepted update finish before we roll the run.
@@ -356,10 +352,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
     if err := workflow.Await(ctx, func() bool {
         return workflow.AllHandlersFinished(ctx)
     }); err != nil {
-        return handleLeave(ctx, &state)
-    }
-    if ctx.Err() != nil {
-        return handleLeave(ctx, &state)
+        return err
     }
 
     state.Generation++
@@ -479,23 +472,27 @@ loop** observes that flag and runs the Activity:
 ```go
 for {
     workflow.Await(ctx, func() bool {
-        return ctx.Err() != nil || needsNotify || earnsThisRun >= EarnsPerRun
+        return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun
     })
-    if ctx.Err() != nil { return handleLeave(...) }   // departure always wins
 
-    if needsNotify {                                  // ...then promotions
+    if needsNotify {                                  // promotions first
         needsNotify = false
-        dctx, cancel := workflow.NewDisconnectedContext(ctx)
-        deliverPromotion(dctx, &state)
-        cancel()
+        deliverPromotion(ctx, &state)
+        continue
+    }
+
+    if needsDeparture {                               // ...then the departure notice
+        needsDeparture = false
+        sendNotify(ctx, departureNotice(&state))
         continue
     }
     ...                                               // ...then the roll
 }
 ```
 
-Cancel → notify → continue-as-new, in that order, with the loop re-entered after each step so
-the ordering holds however many things arrive at once.
+Notify → depart → continue-as-new, in that order, with the loop re-entered after each step so
+the ordering holds however many things arrive at once. A pending promotion is always drained
+before the departure notice, and both before a roll.
 
 #### The trap this avoids
 
@@ -514,16 +511,20 @@ main coroutine there is no side goroutine for `AllHandlersFinished` to miss, so 
 not needed — the trap is removed rather than defended against. The platform fact is still worth
 knowing, and is recorded at [§12.6](#12-sharp-edges); it is simply no longer load-bearing here.
 
-One detail the sketch keeps for a reason:
+Two details of the sketch worth calling out:
 
-- **Delivery runs on a disconnected context.** On the workflow's own context, a cancellation
-  mid-delivery would cancel a promotion the customer had already earned. Soft deactivate does
-  not cancel the workflow, but the disconnected context stays: the main loop delivers any
-  armed promotion before the departure notice, and neither delivery should die with an
-  operator cancel arriving mid-flight.
-- **The Activity's retries must be bounded.** The default policy retries forever, and the
-  continue-as-new guard waits for the notifier to go idle, so an unreachable notification
-  provider would stop the customer's workflow rolling for as long as it stayed down. A cosmetic
+- **Delivery runs on the workflow's own context — it used to run on a disconnected one.** While
+  leaving was a cancellation, delivering on `ctx` meant a deactivation arriving mid-delivery
+  cancelled a promotion the customer had already earned, so the loop wrapped it in
+  `workflow.NewDisconnectedContext`. Soft deactivation removed the premise: nothing cancels the
+  workflow, so there is no cancellation for the delivery to outlive, and the wrapper went with
+  it. Ordering carries the guarantee instead — the loop drains any armed promotion *before* the
+  departure notice, so a customer who reached gold and then left still hears about gold.
+- **The Activity's retries must be bounded.** The default policy retries forever, and delivery
+  now happens inline in the main loop, so an unreachable notification provider would hold the
+  loop itself — and with it the roll — for as long as it stayed down. (The same conclusion held
+  for the goroutine design that preceded it, by a different route: the continue-as-new guard
+  waited for the notifier to go idle.) A cosmetic
   outage would become a stuck entity workflow. `MaximumAttempts: 3`.
 
 #### At-least-once, and what that means here
@@ -558,9 +559,9 @@ One row it does *not* produce is the departure notice — see [§12.31](#12-shar
 
 #### Reuse for departure
 
-Soft deactivate arms a departure notice; the main loop delivers it with
-`Event: "departed"` on a disconnected context — the same Activity as promotions, no separate
-cleanup Activity. An out-of-band cancel skips that path entirely (see [§3.6](#36-soft-deactivation)).
+Soft deactivate arms a departure notice; the main loop delivers it with `Event: "departed"` on
+the workflow's own context — the same Activity as promotions, no separate cleanup Activity. An
+out-of-band cancel skips that path entirely (see [§3.6](#36-soft-deactivation)).
 
 ---
 
@@ -800,7 +801,8 @@ like it should be fragile is the most available thing here.
 | `WorkflowExecutionUpdateAccepted` | the request: update name, `Amount`, `Reason`, update ID |
 | `WorkflowExecutionUpdateCompleted` | the outcome: new balance and level, or failure message |
 | `ActivityTaskScheduled` + `ActivityTaskCompleted` | Promotion notification sent (§3.7) |
-| `WorkflowExecutionCancelRequested` | Deactivated |
+| `WorkflowExecutionUpdateCompleted` (`deactivate`, `changed: true`) | Deactivated |
+| `WorkflowExecutionUpdateCompleted` (`reactivate`, `changed: true`) | Reactivated |
 
 Accepted and Completed are separate events; pair them via `AcceptedEventId` on the completed
 event to render one row with both the request and its result. Payloads are `Payloads` protos
@@ -1366,10 +1368,15 @@ Things not in the original brief that will come up.
    | `CancelWorkflow` | `nil` | `nil` | `nil` | `NotFound` |
    | `UpdateWorkflow` | `NotFound` | — | — | `NotFound` |
 
-   Cancel is idempotent server-side; Update is not. So `DELETE` needs no disambiguation and is
-   naturally idempotent, while `POST /points` needs the extra `Describe` above. Assuming the two
-   behave alike is a reasonable guess and a wrong one — it was raised as a bug against `DELETE`
-   on PR #6 and disproved by measurement.
+   Cancel is idempotent server-side; Update is not. Assuming the two behave alike is a
+   reasonable guess and a wrong one — it was raised as a bug against `DELETE` on PR #6 and
+   disproved by measurement.
+
+   **That asymmetry stopped protecting `DELETE` when it stopped being a cancel.** It is the
+   `deactivate` Update now ([§3.6](#36-soft-deactivation)), so it needs the same rollover
+   disambiguation `POST /points` does, and its idempotency comes from the handler rather than
+   the server: a repeat returns `Changed: false`, which is also what keeps a second DELETE from
+   drawing a second row on the timeline.
 3. Update dedup via `UpdateID` is scoped to a single run, so it does **not** survive
    continue-as-new. A retry that straddles a rollover can double-apply. The UI should send a
    UUID per click, and we should document that per-run dedup is not sufficient for real money.
@@ -1429,8 +1436,13 @@ Things not in the original brief that will come up.
    wrong whenever cancellation can race it. In §3.5 that meant a cancel arriving in the same
    workflow task as the Nth point-add would roll the run instead of deactivating — and strand
    the departure permanently, because continue-as-new starts a fresh run while the cancellation
-   targeted the run that just ended. The customer clicks deactivate and stays active. Re-check
-   `ctx.Err()` after every such `Await`. Found by review on PR #5.
+   targeted the run that just ended. The customer clicks deactivate and stays active. Found by
+   review on PR #5, and fixed by re-checking `ctx.Err()` after every such `Await`.
+
+   **The platform fact is permanent; the prescription is not.** Soft deactivation removed the
+   race by removing the racer — leaving is an Update, nothing cancels the workflow, and the
+   `ctx.Err()` re-checks came out in #22. The mechanic still bites any `Await` in a workflow
+   that *does* take cancellation seriously, which is why it stays recorded here.
 10. **Continue-as-new races the read path too, not just the write path.** Item 2 anticipates an
     Update being aborted by a rollover. A **Query** immediately after a point-add that triggered
     one can also fail, with `Workflow task is not scheduled yet.` — the successor run exists but
@@ -1665,10 +1677,17 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     Raised by review on PR #15.
 
 34. **Background work that must outlive cancellation needs a disconnected context of its own.**
-    The notifier goroutine runs on one, so that deactivating a customer mid-delivery does not
-    cancel a promotion they had already earned. Running it on the workflow's own context looks
-    natural and silently loses that notification — `handleLeave` then waits for a drain that
-    can never happen, because the thing doing the draining died with the context.
+    While leaving was a cancellation, the notifier ran on one, so that deactivating a customer
+    mid-delivery did not cancel a promotion they had already earned. Running it on the
+    workflow's own context looks natural and silently loses that notification — `handleLeave`
+    then waits for a drain that can never happen, because the thing doing the draining died
+    with the context.
+
+    **No longer load-bearing here.** The notifier goroutine went in #18 and the disconnected
+    context in #19: nothing cancels the workflow now, so there is no cancellation for a
+    delivery to outlive ([§3.7](#37-tier-promotion-notifications)). Recorded because the
+    platform fact outlives this design — the failure is silent, which is what makes it worth
+    knowing before you need it.
 
 **From the Phase 9 replay test.**
 
