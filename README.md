@@ -332,24 +332,28 @@ side effects at all, which is rather the argument. Having exactly one Activity m
 boundary visible.
 
 It fires when a point-add leaves the customer at a tier they have not been told about, and
-again when a customer leaves. The handler does **not** await it: it applies the points, queues
-a notification and returns, so a notification provider being down can neither fail a point-add
-that is already recorded nor put a network call on the UI's critical path.
+again when a customer leaves. The handler does **not** await it: it applies the points, arms a
+flag and returns, so a notification provider being down can neither fail a point-add that is
+already recorded nor put a network call on the UI's critical path.
 
 That condition is deliberately about the customer's *state* rather than about the add that
 just happened. "Did this add cross a boundary" is an event — it occurs once and is then gone,
 so a delivery that exhausted its retries could never be attempted again. "Is this customer at
 an unannounced tier" is a property, so the next add picks it up.
 
-That queue is drained by a `workflow.Go` goroutine, and it is where the most instructive bug in
-the design lives:
+Delivery happens in the workflow's main loop, which runs **cancel → notify → continue-as-new**
+in that order and re-enters after each step. Departure always wins over a roll; a pending
+promotion is always sent before one.
+
+It did not start that way, and the detour is the most instructive thing in the design. The first
+version drained a queue from a `workflow.Go` goroutine, which walks straight into:
 
 > **`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
 > and Signal handlers only.
 
-So the pre-continue-as-new drain that Phase 2 added is not enough. A promotion landing on the
-third add — the ordinary case at three adds per run — is queued, the handler returns,
-`AllHandlersFinished` goes true, and the run rolls away from a notification nobody ever sent.
+So the pre-continue-as-new drain that Phase 2 added was not enough. A promotion landing on the
+third add — the ordinary case at three adds per run — was queued, the handler returned,
+`AllHandlersFinished` went true, and the run rolled away from a notification nobody ever sent.
 No error, no retry, no trace in history.
 
 The test for it was written before the fix, and failed:
@@ -359,8 +363,10 @@ The test for it was written before the fix, and failed:
     expected the promotion to survive the roll, got []
 ```
 
-The fix is one clause — `AllHandlersFinished(ctx) && n.idle()` — and the same clause is needed
-again on the departure path.
+That was first patched with an extra `&& n.idle()` clause on the roll condition. Moving delivery
+into the main loop removed the need for it entirely: with no side goroutine, there is nothing
+for `AllHandlersFinished` to miss and no invariant to remember. The platform fact is still worth
+knowing; it is just no longer load-bearing here.
 
 ```sh
 make enroll ID=c-003
@@ -560,7 +566,7 @@ internal/rewards/
   workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
-  notifier.go                 the drain goroutine and the continue-as-new guard
+  notifier.go                 promotion detection and delivery, run from the main loop
   activity.go                 NotifyCustomer -- the only side effect in the system
   workflow_test.go            unit tests (no Docker required)
   replay_test.go              deploy rehearsal against recorded histories

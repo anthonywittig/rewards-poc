@@ -321,11 +321,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
         return handleLeave(ctx, &state)
     }
 
-    // Let any concurrently-accepted update AND any in-flight notification
-    // finish before we roll the run. See §3.7 for why the second clause
-    // is not covered by AllHandlersFinished.
+    // Let any concurrently-accepted update finish before we roll the run.
+    // Notifications are delivered by this same loop before it reaches here
+    // (§3.7), so there is no background work for this to miss.
     if err := workflow.Await(ctx, func() bool {
-        return workflow.AllHandlersFinished(ctx) && notifier.Idle()
+        return workflow.AllHandlersFinished(ctx)
     }); err != nil {
         return handleLeave(ctx, &state)
     }
@@ -435,47 +435,54 @@ does not return until the customer has been notified. Don't:
   unreachable notifier would retry indefinitely, so the Update hangs until the client times
   out — with the points still awarded. The worst possible UX for the clearest possible reason.
 
-So the handler stays synchronous and cheap: it applies the points, detects the crossing,
-appends to a pending-notification slice, and returns the new balance immediately. A
-`workflow.Go` goroutine drains that slice and runs the Activity:
+So the handler stays synchronous and cheap: it applies the points, notices that the customer
+sits at an unannounced tier, arms a flag, and returns the new balance immediately. **The main
+loop** observes that flag and runs the Activity:
 
 ```go
-workflow.Go(ctx, func(gctx workflow.Context) {
-    for {
-        if err := workflow.Await(gctx, func() bool { return len(pending) > 0 }); err != nil {
-            return // cancelled
-        }
-        n := pending[0]
-        pending = pending[1:]
-        inFlight = true
-        _ = workflow.ExecuteActivity(actCtx, NotifyCustomer, n).Get(gctx, nil)
-        state.NotifiedLevels = append(state.NotifiedLevels, n.Level)
-        inFlight = false
+for {
+    workflow.Await(ctx, func() bool {
+        return ctx.Err() != nil || needsNotify || earnsThisRun >= EarnsPerRun
+    })
+    if ctx.Err() != nil { return handleLeave(...) }   // departure always wins
+
+    if needsNotify {                                  // ...then promotions
+        needsNotify = false
+        dctx, cancel := workflow.NewDisconnectedContext(ctx)
+        deliverPromotion(dctx, &state)
+        cancel()
+        continue
     }
-})
+    ...                                               // ...then the roll
+}
 ```
 
-#### The trap this creates
+Cancel → notify → continue-as-new, in that order, with the loop re-entered after each step so
+the ordering holds however many things arrive at once.
+
+#### The trap this avoids
 
 **`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
-and Signal handlers only. So the pre-continue-as-new await in §3.5 would happily roll the run
-while a notification is still in flight, silently dropping it — and at `EarnsPerRun = 3`, a
-promotion landing on the third add is exactly when that happens. Hence the extra
-`notifier.Idle()` clause (`len(pending) == 0 && !inFlight`).
+and Signal handlers only. The first version of this delivered from a `workflow.Go` goroutine
+draining a queue, and the pre-continue-as-new await in §3.5 would happily roll the run while a
+notification was still in flight, dropping it silently — at `EarnsPerRun = 3`, a promotion
+landing on the third add is exactly when that happens.
 
-This is the most instructive bug in the whole design, and it is worth writing the test that
-catches it before writing the fix.
+That version was written first, along with the test [§10](#10-testing) asks for, and the test
+failed: `Test_Notify_PromotionOnTheRollingAddIsNotDropped` reported no notifications at all.
+The fix at the time was an extra `notifier.Idle()` clause on the roll condition.
 
-**It was, and it failed.** `Test_Notify_PromotionOnTheRollingAddIsNotDropped` reported no
-notifications at all against the unguarded workflow — see [§12.6](#12-sharp-edges) for the
-output. Adding `&& n.idle()` to the pre-roll await turned it green.
+**The loop above is the better answer, and it is what the code does now.** With delivery in the
+main coroutine there is no side goroutine for `AllHandlersFinished` to miss, so the guard is
+not needed — the trap is removed rather than defended against. The platform fact is still worth
+knowing, and is recorded at [§12.6](#12-sharp-edges); it is simply no longer load-bearing here.
 
-Two things the sketch above leaves out, both learned building it:
+One detail the sketch keeps for a reason:
 
-- **The goroutine runs on a disconnected context.** On the workflow's own context, deactivating
-  a customer mid-delivery cancels a promotion they had already earned — and then `handleLeave`
-  waits for a drain that can never complete, because the goroutine died with the context. A
-  promotion is not unmade by the customer leaving a moment later.
+- **Delivery runs on a disconnected context.** On the workflow's own context, deactivating a
+  customer mid-delivery cancels a promotion they had already earned. A promotion is not unmade
+  by the customer leaving a moment later, so `handleLeave` delivers any armed promotion before
+  sending the departure notice.
 - **The Activity's retries must be bounded.** The default policy retries forever, and the
   continue-as-new guard waits for the notifier to go idle, so an unreachable notification
   provider would stop the customer's workflow rolling for as long as it stayed down. A cosmetic
@@ -1245,7 +1252,9 @@ Findings for §12 live in `web/NOTES.md`.
 - **The §3.7 race specifically**: a promotion landing on the third point-add must still be
   notified, not dropped by the continue-as-new. Mock `NotifyCustomer` with a delay so the
   Activity is genuinely in flight when the run tries to roll, and assert it was called.
-  Without the `notifier.Idle()` guard this test fails — write it first.
+  Without a guard this test fails — write it first. (It did: see
+  [§12.6](#12-sharp-edges). The guard was later made unnecessary by moving delivery into the
+  main loop, but the test remains the thing that catches a regression.)
 - **Replay test** against a checked-in history JSON. **Done, and it earned its place
   immediately**: it caught Phase 6 as a change that would have wedged every existing customer
   ([§12.11](#12-sharp-edges)). `internal/rewards/testdata/pre-notification-*` are histories
@@ -1269,7 +1278,7 @@ Findings for §12 live in `web/NOTES.md`.
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
-| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
+| 6 | `NotifyCustomer` Activity: unannounced-tier detection, main-loop delivery, `NotifiedLevels` dedup and retry, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | **Done.** The replay test caught Phase 6 as a breaking change for every running customer, fixed with `GetVersion` — [§12.11](#12-sharp-edges) |
@@ -1338,8 +1347,15 @@ Things not in the original brief that will come up.
    ```
 
    No error, no retry, no trace in history: the run rolled while the notification sat in a
-   queue that `AllHandlersFinished` knows nothing about. Adding `&& n.idle()` to the pre-roll
-   await fixed it. The same clause is needed in the departure path for the same reason.
+   queue that `AllHandlersFinished` knows nothing about. The fix at the time was an
+   `&& notifier.idle()` clause on the roll condition, and the same clause in the departure path.
+
+   **The code no longer relies on any of that, and the reason is the real lesson.** Delivery
+   moved into the workflow's main loop (§3.7), so there is no side goroutine for
+   `AllHandlersFinished` to miss and no guard to forget — the trap was removed rather than
+   defended against. A `workflow.Go` goroutine buys concurrency the workflow did not need, and
+   charges for it in an invariant nothing enforces. Reach for the loop first; this item still
+   stands for the cases where you genuinely cannot.
 7. **A duplicate start is silent by default.** `WorkflowIDConflictPolicy: FAIL` is not enough
    to make `ExecuteWorkflow` return an error — it also needs
    `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
@@ -1548,10 +1564,10 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     (§5.1). Worth naming as the cost of freezing — the freeze bought a UI built in parallel,
     and charged for it here.
 
-32. **`EarnsPerRun` is a floor, not an exact count — and Phase 6 widened the gap.** The pre-roll
-    guard holds the run open until the notifier is idle, and the Update handler keeps accepting
-    adds the whole time, so a run that has already decided to roll can take on more. Measured
-    on the real stack with six rapid adds:
+32. **`EarnsPerRun` is a floor, not an exact count — and Phase 6 widened the gap.** The run
+    delivers any pending promotion before rolling, and the Update handler keeps accepting adds
+    for the duration of that Activity, so a run that has already decided to roll can take on
+    more. Measured on the real stack with six rapid adds:
 
     ```
     no tier crossing (6x50, stays basic)     adds per generation {0: 3, 1: 3}
@@ -1559,7 +1575,9 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     ```
 
     Reproducible, and isolated to the notification: the difference is exactly the time the
-    promotion Activity holds the run open. Harmless — the extra add is applied, recorded and
+    promotion Activity holds the run open. It survived the rewrite from a drain goroutine to a
+    main-loop delivery unchanged, which is what you would expect — the cause is the Activity's
+    round trip, not the structure around it. Harmless — the extra add is applied, recorded and
     carried forward, and the roll still happens once — but "three adds per run" is an
     approximation under load rather than a rule.
 
