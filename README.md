@@ -144,7 +144,8 @@ development.
 
 The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
 deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
-the one that survives into production. `VITE_API_PROXY_TARGET` points it elsewhere. See
+the one that survives into production. `make web` sets `VITE_API_PROXY_TARGET` from the selected
+env file, so the UI follows `API_PORT` and a second stack proxies to its own API. See
 [web/NOTES.md](web/NOTES.md).
 
 ## Things worth seeing

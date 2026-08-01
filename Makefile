@@ -172,8 +172,14 @@ api-stop: ## Stop every running API process, including orphaned ones
 # One target from a cold checkout: installs dependencies, typechecks and builds
 # (so a type error stops here rather than after the dev server is already up),
 # then serves. Ctrl-C to stop.
-web: ## Install, typecheck/build, and run the Vite UI (proxies /api to :8081)
-	cd web && npm install && npm run build && npm run dev
+#
+# The proxy target is passed from $(ENV) rather than left to vite.config.ts's
+# :8081 default, so `make web ENV=.env.beta` proxies to beta's API instead of
+# alpha's. A shell variable outranks web/.env* in Vite's loadEnv, so this wins
+# over a local override file.
+web: $(ENV) ## Install, typecheck/build, and run the Vite UI (proxies /api to the API)
+	cd web && npm install && npm run build && \
+	  VITE_API_PROXY_TARGET=http://localhost:$(API_PORT) npm run dev
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.
