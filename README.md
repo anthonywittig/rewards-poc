@@ -96,7 +96,7 @@ Every target runs against one stack, selected by `ENV`. For a second stack side 
 then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
 and volumes. The UI is the one port that doesn't move: Vite pins `:5173` (`strictPort`), so
 run one `make web` at a time — `make web ENV=.env.beta` still serves on 5173 but proxies to
-beta's API.
+beta's API and links to beta's Temporal UI.
 Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
 on one stack is much cheaper if you only need isolated workflows.
 

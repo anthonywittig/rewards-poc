@@ -1002,7 +1002,7 @@ A second stack is `cp .env.example .env.beta`, bump `COMPOSE_PROJECT_NAME` and e
 then `make up ENV=.env.beta`. Named volumes are project-prefixed automatically, so data
 isolation is free. The UI's own port is the exception: `web/vite.config.ts` pins 5173
 (`strictPort`), so the second stack reuses the one UI — `make web ENV=.env.beta` serves on
-5173 but proxies to beta's API.
+5173 but proxies to beta's API and links to beta's Temporal UI.
 
 Two things to call out in the README:
 
