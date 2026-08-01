@@ -1,13 +1,19 @@
 package rewards_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"reflect"
+	"runtime"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -26,15 +32,25 @@ type RewardsSuite struct {
 
 const testCustomerID = "c-001"
 
-func (s *RewardsSuite) SetupTest() {
-	s.env = s.NewTestWorkflowEnvironment()
-	// The workflow validates that its payload's customerId matches the workflow
-	// ID it was started under, so the test env's "default-test-workflow-id" has
-	// to be replaced with a real one.
-	s.env.SetStartWorkflowOptions(client.StartWorkflowOptions{
+func (s *RewardsSuite) SetupTest() { s.env = s.newEnv() }
+
+// newEnv builds a test environment the workflow will actually run in.
+//
+// Two things every test needs. The workflow validates that its payload's
+// customerId matches the workflow ID it was started under, so the env's
+// "default-test-workflow-id" has to be replaced with a real one. And since
+// Phase 6 the workflow schedules an Activity on departure, so an env with none
+// registered fails every cancellation path with "no activity is registered for
+// taskqueue 'rewards'" -- which is the test environment being right: the
+// workflow does now have a side effect, and pretending otherwise would hide it.
+func (s *RewardsSuite) newEnv() *testsuite.TestWorkflowEnvironment {
+	env := s.NewTestWorkflowEnvironment()
+	env.SetStartWorkflowOptions(client.StartWorkflowOptions{
 		ID:        rewards.WorkflowID(testCustomerID),
 		TaskQueue: rewards.TaskQueue,
 	})
+	env.RegisterActivity(rewards.NotifyCustomer)
+	return env
 }
 
 func (s *RewardsSuite) AfterTest(_, _ string) { s.env.AssertExpectations(s.T()) }
@@ -375,11 +391,7 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 
 	for _, tc := range cases {
 		s.Run(tc.name, func() {
-			env := s.NewTestWorkflowEnvironment()
-			env.SetStartWorkflowOptions(client.StartWorkflowOptions{
-				ID:        rewards.WorkflowID(testCustomerID),
-				TaskQueue: rewards.TaskQueue,
-			})
+			env := s.newEnv()
 
 			state := newState()
 			tc.mutar(&state)
@@ -536,11 +548,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 	next := s.continuedState()
 
 	// Second run, same customer, one add short of the threshold.
-	env2 := s.NewTestWorkflowEnvironment()
-	env2.SetStartWorkflowOptions(client.StartWorkflowOptions{
-		ID:        rewards.WorkflowID(testCustomerID),
-		TaskQueue: rewards.TaskQueue,
-	})
+	env2 := s.newEnv()
 	for i := 0; i < rewards.EarnsPerRun-1; i++ {
 		i := i
 		env2.RegisterDelayedCallback(func() {
@@ -629,15 +637,12 @@ func (s *RewardsSuite) Test_Cancel_ClosesAsCanceled() {
 // An Update delivered in the same instant as the cancellation still applies,
 // and the workflow still closes as Canceled.
 //
-// Note on what this does *not* cover: handleLeave drains handlers on a
-// disconnected context before returning, and that drain is not exercised here.
-// The Phase 1 handler never blocks -- it does arithmetic and returns -- so it
-// has always finished by the time cancellation is processed, and the test still
-// passes with the drain removed (verified by mutation). The drain only becomes
-// load-bearing in Phase 6, when the handler queues work for an Activity that
-// can genuinely still be in flight; PLAN.md 10 calls for writing that test
-// before the fix. It is kept here because removing and re-adding it later is
-// pure churn, not because this test proves it.
+// Note on what this does *not* cover: handleLeave's drain. The addPoints
+// handler never blocks -- it does arithmetic and returns -- so it has always
+// finished by the time cancellation is processed, and this test still passes
+// with the drain removed. Phase 6 made that guard testable at last, via the one
+// thing that genuinely can still be outstanding at departure: see
+// Test_Notify_DepartureDrainsAQueuedPromotion.
 func (s *RewardsSuite) Test_Cancel_AppliesConcurrentUpdate() {
 	add := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 250, Reason: "purchase"})
 	s.cancelAt(time.Minute) // same instant as the update
@@ -650,4 +655,371 @@ func (s *RewardsSuite) Test_Cancel_AppliesConcurrentUpdate() {
 
 	var canceled *temporal.CanceledError
 	s.True(errors.As(err, &canceled))
+}
+
+// --- Tier promotion notifications (PLAN.md 3.7) -----------------------------
+
+// notifyCalls records what the mocked Activity was actually asked to send.
+type notifyCalls struct {
+	mu   sync.Mutex
+	reqs []rewards.NotifyRequest
+}
+
+func (c *notifyCalls) add(req rewards.NotifyRequest) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.reqs = append(c.reqs, req)
+}
+
+func (c *notifyCalls) all() []rewards.NotifyRequest {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]rewards.NotifyRequest(nil), c.reqs...)
+}
+
+func (c *notifyCalls) levels(event string) []string {
+	var out []string
+	for _, r := range c.all() {
+		if r.Event == event {
+			out = append(out, r.Level)
+		}
+	}
+	return out
+}
+
+// mockNotify installs the Activity mock with one delay for every delivery.
+// A delay keeps a delivery genuinely in flight, which is what makes the
+// continue-as-new race reachable rather than theoretical.
+func (s *RewardsSuite) mockNotify(delay time.Duration) *notifyCalls {
+	return s.mockNotifyPer(func(rewards.NotifyRequest) time.Duration { return delay })
+}
+
+// mockNotifyPer varies the delay by request, which some tests need: a guard that
+// waits for delivery A is only exercised if delivery B can finish first.
+func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Duration) *notifyCalls {
+	calls := &notifyCalls{}
+	s.env.OnActivity(rewards.NotifyCustomer, mock.Anything, mock.Anything).
+		Return(func(_ context.Context, req rewards.NotifyRequest) error {
+			if d := delay(req); d > 0 {
+				time.Sleep(d)
+			}
+			calls.add(req)
+			return nil
+		}).Maybe()
+	return calls
+}
+
+// THE test PLAN.md 10 asks for, and the reason it says to write it first.
+//
+// A promotion landing on the *third* add is the ordinary case at
+// EarnsPerRun = 3, and it is precisely when the run wants to continue as new.
+// workflow.AllHandlersFinished returns true the moment the Update handler
+// returns -- it knows nothing about the workflow.Go goroutine still holding a
+// queued notification (PLAN.md 12.6) -- so without notifier.idle() in the
+// pre-roll condition the roll wins and the notification is dropped silently.
+//
+// Verified to fail before the guard existed:
+//
+//	--- FAIL: Test_Notify_PromotionOnTheRollingAddIsNotDropped
+//	    expected the promotion to survive the roll, got no notifications
+func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
+	calls := s.mockNotify(50 * time.Millisecond)
+
+	// 200 + 200 + 200 = 600: basic until the third add, gold on it.
+	for i := 0; i < rewards.EarnsPerRun; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
+	}
+	// No cancel: the roll is what ends this run.
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	s.Require().Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"expected the promotion to survive the roll, got %v", calls.all())
+
+	// ...and the successor must know it was sent, or the next run re-notifies.
+	next := s.continuedState()
+	s.Equal([]string{rewards.LevelGold}, next.NotifiedLevels)
+}
+
+// A promotion that is not racing the roll takes the ordinary path.
+func (s *RewardsSuite) Test_Notify_PromotionMidRunIsSent() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
+}
+
+// Both boundaries crossed inside one run produce two notifications, in order.
+// Worth pinning because the queue is drained one at a time by a single
+// goroutine, so a second promotion arriving while the first is in flight has to
+// wait rather than be lost.
+func (s *RewardsSuite) Test_Notify_BothTiersInOneRun() {
+	calls := s.mockNotify(20 * time.Millisecond)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold, rewards.LevelPlatinum},
+		calls.levels(rewards.NotifyEventPromoted))
+}
+
+// An add that stays inside a tier notifies nobody. The obvious case, and the one
+// that would make the demo unbearable if it were wrong.
+func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Empty(calls.levels(rewards.NotifyEventPromoted))
+}
+
+// The at-least-once dedup guard: a level already in NotifiedLevels is not
+// re-sent.
+//
+// Honest about what this is. Points only go up, so a customer cannot fall out of
+// gold and climb back in, which means the state below is not reachable by any
+// sequence of legal operations today -- it is constructed. The guard is here
+// because Activities are at-least-once and because the day a spend or expiry
+// path lands, this is the check that stops a customer being congratulated twice.
+// PLAN.md 3.7.
+func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
+	calls := s.mockNotify(0)
+
+	state := newState()
+	state.Points = 400
+	state.LifetimeEarnEvents = 4
+	state.NotifiedLevels = []string{rewards.LevelGold}
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(state)
+
+	s.Empty(calls.levels(rewards.NotifyEventPromoted),
+		"gold was already notified; crossing it again must not re-send")
+}
+
+// Departure reuses the same Activity, which is why there is no separate cleanup
+// Activity in the design. PLAN.md 3.7.
+func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	sent := calls.all()
+	s.Require().Len(sent, 2, "expected a promotion and a departure, got %v", sent)
+
+	departed := sent[1]
+	s.Equal(rewards.NotifyEventDeparted, departed.Event)
+	s.Equal(rewards.LevelGold, departed.Level, "the departure carries their final tier")
+	s.Equal("c-001:departed", departed.IdempotencyKey)
+	s.Equal("ada@example.com", departed.Email)
+}
+
+// The departure drain, which until now could not be tested.
+//
+// PLAN.md 3.5 and the Phase 2 tests both carried a note that handleLeave's drain
+// was unfalsifiable: the handler did arithmetic and returned, so it had always
+// finished by the time cancellation was processed, and the tests passed with the
+// drain removed. A queued notification is the first thing that can genuinely
+// still be outstanding when the customer leaves -- so this is the test that
+// makes that guard real, and it fails if the notifier clause is dropped from
+// handleLeave's await.
+func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
+	// The delays are asymmetric on purpose. With both slow, the departure's own
+	// round trip happens to hold the workflow open long enough for the promotion
+	// to land alongside it, and the test passes whether or not the drain exists
+	// -- which it did, until a mutation run showed the guard could be deleted
+	// with everything still green. A promotion that outlives an instant
+	// departure is the only shape that actually needs the drain.
+	calls := s.mockNotifyPer(func(r rewards.NotifyRequest) time.Duration {
+		if r.Event == rewards.NotifyEventPromoted {
+			return 200 * time.Millisecond
+		}
+		return 0
+	})
+
+	// The promotion and the cancellation land in the same instant.
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.cancelAt(time.Minute)
+
+	err := s.runToCancellation(newState())
+
+	var canceled *temporal.CanceledError
+	s.True(errors.As(err, &canceled), "still closes as Canceled")
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"a promotion earned in the same instant as the departure must still be sent")
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted),
+		"and the departure notice still goes out after it")
+}
+
+// NotifiedLevels rides the continue-as-new payload, so the successor run does
+// not re-congratulate a customer for a tier they were told about last run.
+func (s *RewardsSuite) Test_Notify_NotifiedLevelsSurviveTheRoll() {
+	s.mockNotify(0)
+
+	state := newState()
+	state.Points = 400
+	state.LifetimeEarnEvents = 4
+
+	for i := 0; i < rewards.EarnsPerRun; i++ {
+		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
+			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	}
+	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+
+	s.Require().True(s.env.IsWorkflowCompleted())
+	next := s.continuedState()
+	s.Equal([]string{rewards.LevelGold}, next.NotifiedLevels,
+		"crossed gold at 500; the successor must know it was announced")
+	s.Equal(700, next.Points)
+}
+
+// The audit crawl decides what is a notification row by matching the Activity's
+// registered name against ActivityNotifyCustomer (internal/httpapi/audit.go).
+// If the constant and the name the SDK registers ever diverge, notification rows
+// simply stop appearing -- no error, just a quietly poorer timeline. Derive the
+// registered name the same way the SDK does and compare.
+func TestActivityNameMatchesRegistration(t *testing.T) {
+	fn := runtime.FuncForPC(reflect.ValueOf(rewards.NotifyCustomer).Pointer()).Name()
+	registered := fn
+	if i := strings.LastIndex(fn, "."); i >= 0 {
+		registered = fn[i+1:]
+	}
+	if registered != rewards.ActivityNotifyCustomer {
+		t.Errorf("ActivityNotifyCustomer = %q but the SDK would register %q (from %q)",
+			rewards.ActivityNotifyCustomer, registered, fn)
+	}
+}
+
+// mockNotifyFailing fails the first failures deliveries and succeeds after, so a
+// send can exhaust its retry budget and a later attempt can still land.
+func (s *RewardsSuite) mockNotifyFailing(failures int) *notifyCalls {
+	calls := &notifyCalls{}
+	var n int
+	s.env.OnActivity(rewards.NotifyCustomer, mock.Anything, mock.Anything).
+		Return(func(_ context.Context, req rewards.NotifyRequest) error {
+			n++
+			if n <= failures {
+				return fmt.Errorf("notification provider unreachable (attempt %d)", n)
+			}
+			calls.add(req)
+			return nil
+		}).Maybe()
+	return calls
+}
+
+// Raised on PR #15: a delivery that exhausts its retries was dropped for good.
+//
+// The Activity's own retry policy is bounded on purpose -- an unbounded one
+// would block continue-as-new for as long as the provider stayed down. So the
+// outer retry has to come from somewhere else, and "notify a tier the customer
+// has reached but not been told about" is that somewhere: any later add picks it
+// up, because the condition is a property of the customer rather than an event
+// that has already gone past.
+//
+// Before the fix this failed with no notifications at all: the crossing had
+// happened once, so nothing ever re-queued it.
+func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
+	// notifyMaxAttempts failures exhausts exactly one send.
+	calls := s.mockNotifyFailing(3)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	// Stays gold: no boundary is crossed by this one, which is the whole point.
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"a dropped promotion must be picked up by the next add, not lost for good")
+}
+
+// ...and the flip side: re-offering the tier on every add must not mean
+// announcing it on every add.
+//
+// Note this passes by way of NotifiedLevels rather than by way of the queue's
+// own idempotence -- the delivery succeeds before the next add lands, so the
+// duplicate never reaches the queue. The queue guard is tested directly in
+// notifier_test.go, because from out here the two are indistinguishable.
+func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
+	calls := s.mockNotifyFailing(0)
+
+	// Three adds, all inside gold after the first.
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.addPoints(3*time.Minute, "u3", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.cancelAt(4 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
+		"gold is announced once, however many adds land inside it")
+}
+
+// A single add can clear two thresholds at once: MaxPointsPerTxn is 1000 and
+// platinum starts at 1000, so one add from zero lands a customer straight in
+// platinum without ever being observed at gold.
+//
+// One notification, naming where they are. Raised on PR #15 as a missed
+// promotion; recorded here as a decision instead. Announcing gold and then
+// immediately platinum tells the customer something that was true for no
+// measurable time, and "Welcome to Gold" arriving beside "Welcome to Platinum"
+// reads as a bug to the person receiving it.
+//
+// It is also not a change: the original crossing rule compared Level(before) to
+// Level(after) and likewise produced only platinum. Pinned so that if a later
+// phase decides differently, it decides deliberately.
+func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne() {
+	calls := s.mockNotify(0)
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{
+		Amount: rewards.PlatinumThreshold, Reason: "one big purchase"})
+	s.cancelAt(2 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
+		"a customer who never sat at gold should not be congratulated for it")
+}
+
+// The boundary of the retry added for PR #15, stated exactly.
+//
+// A failed delivery is re-offered by later adds *while the customer stays at
+// that tier*. Advance a tier first and the lower one is dropped for good, since
+// promotionFor only ever offers the tier they are at now.
+//
+// That is the intended behaviour rather than a gap in it: the customer is
+// platinum, and platinum is what they get told. A belated "you reached gold",
+// sent after they are already past it, would be worse than silence. Worth
+// pinning because the obvious reading of "retried on the next add" is broader
+// than what actually happens, and that over-claim is what the first round of
+// review on this PR caught in a comment.
+func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
+	calls := s.mockNotifyFailing(3) // exhausts exactly the gold delivery
+
+	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "a"})
+	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "b"})
+	s.cancelAt(3 * time.Minute)
+
+	_ = s.runToCancellation(newState())
+
+	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
+		"the failed gold notice is dropped; platinum, where they actually are, is sent")
 }

@@ -35,6 +35,9 @@ func main() {
 
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(rewards.CustomerRewardsWorkflow)
+	// Registered under its function name, which is what rewards.ActivityNotifyCustomer
+	// holds and what the audit crawl matches on to render notification rows.
+	w.RegisterActivity(rewards.NotifyCustomer)
 
 	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
 		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)

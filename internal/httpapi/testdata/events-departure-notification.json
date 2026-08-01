@@ -1,0 +1,54 @@
+{
+  "events": [
+    {
+      "eventId": "10",
+      "eventTime": "2026-07-31T21:49:45.702108862Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_SCHEDULED",
+      "taskId": "8388705",
+      "activityTaskScheduledEventAttributes": {
+        "activityId": "10",
+        "activityType": {
+          "name": "NotifyCustomer"
+        },
+        "taskQueue": {
+          "name": "rewards",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "header": {},
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjdXN0b21lcklkIjoibm90aWZ5MSIsImVtYWlsIjoibm90aWZ5MUBleGFtcGxlLmNvbSIsImV2ZW50IjoiZGVwYXJ0ZWQiLCJsZXZlbCI6ImdvbGQiLCJpZGVtcG90ZW5jeUtleSI6Im5vdGlmeTE6ZGVwYXJ0ZWQifQ=="
+            }
+          ]
+        },
+        "scheduleToCloseTimeout": "0s",
+        "scheduleToStartTimeout": "0s",
+        "startToCloseTimeout": "10s",
+        "heartbeatTimeout": "0s",
+        "workflowTaskCompletedEventId": "9",
+        "retryPolicy": {
+          "initialInterval": "1s",
+          "backoffCoefficient": 2,
+          "maximumInterval": "100s",
+          "maximumAttempts": 3
+        },
+        "useWorkflowBuildId": true
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": "2026-07-31T21:49:45.719362180Z",
+      "eventType": "EVENT_TYPE_ACTIVITY_TASK_COMPLETED",
+      "taskId": "8388711",
+      "activityTaskCompletedEventAttributes": {
+        "scheduledEventId": "10",
+        "startedEventId": "11",
+        "identity": "7822@vm@"
+      }
+    }
+  ]
+}

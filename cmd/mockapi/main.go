@@ -286,11 +286,13 @@ func (m *mock) addPoints(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	before := c.Level
 	c.Points += req.Amount
 	c.Level = level(c.Points)
 	c.NextTierAt = nextTierAt(c.Points)
 	c.LifetimeEarnEvents++
 	m.customers[id] = c
+	promoted := c.Level != before
 
 	a := m.audits[id]
 	a.Entries = append(a.Entries, httpapi.AuditEntry{
@@ -299,6 +301,22 @@ func (m *mock) addPoints(w http.ResponseWriter, r *http.Request) {
 		Amount: req.Amount, Reason: req.Reason, Balance: c.Points, Level: c.Level,
 		RequestID: req.RequestID,
 	})
+
+	// Phase 6: a tier crossing schedules the notification Activity, and because
+	// Activities are history events the crawl renders a row for it. Reproduced
+	// here so the UI sees promotion rows arrive from ordinary use rather than
+	// only in the canned fixtures.
+	//
+	// Only promotions. The departure notice uses the same Activity but produces
+	// no audit row, because notification_sent carries a level and nothing else --
+	// see PLAN.md 12.31. The real API behaves the same way.
+	if promoted {
+		a.Entries = append(a.Entries, httpapi.AuditEntry{
+			Kind: httpapi.AuditNotificationSent, At: time.Now().UTC(),
+			Generation: c.Generation, RunID: c.RunID,
+			NotifiedLevel: c.Level,
+		})
+	}
 	a.ShownEarnEvents++
 	a.LifetimeEarnEvents++
 	m.audits[id] = a

@@ -84,6 +84,14 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
 
+	// The tier-promotion notifier (PLAN.md 3.7). It runs on a disconnected
+	// context so that a deactivation cannot cancel a promotion that was already
+	// earned; handleLeave waits for it rather than racing it.
+	n := &notifier{}
+	nctx, stopNotifier := workflow.NewDisconnectedContext(ctx)
+	defer stopNotifier()
+	workflow.Go(nctx, func(gctx workflow.Context) { n.run(gctx, &state) })
+
 	if err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (CustomerStatus, error) {
 		return statusOf(&state), nil
 	}); err != nil {
@@ -111,6 +119,15 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// The only mutation of Points in the system, and it only ever adds.
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
+
+			// Queue, never await. An awaited Activity here would couple the
+			// point-add to the notifier's availability -- the points are already
+			// earned and recorded, so a notification provider being down must
+			// not fail them or hold the caller open. PLAN.md 3.7.
+			if note, ok := promotionFor(&state); ok && n.queue(note) {
+				logger.Info("tier promotion queued",
+					"customerId", state.CustomerID, "level", note.Level)
+			}
 
 			// Drives continue-as-new. The handler only counts -- the roll itself
 			// happens in the main function, because continue-as-new is not
@@ -191,7 +208,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// Doing so also sidesteps the versioning hazard on EarnsPerRun: there is no
 	// constant to change, so nothing to break running workflows with.
 	if err := workflow.Await(ctx, func() bool { return earnsThisRun >= EarnsPerRun }); err != nil {
-		return handleLeave(ctx, &state)
+		return handleLeave(ctx, &state, n)
 	}
 
 	// A nil error above does NOT mean "not cancelled". workflow.Await evaluates
@@ -212,33 +229,38 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// just ended. The customer clicks deactivate and stays active. Departure
 	// always wins -- the points are already recorded either way.
 	if ctx.Err() != nil {
-		return handleLeave(ctx, &state)
+		return handleLeave(ctx, &state, n)
 	}
 
-	// An Update accepted just before the roll condition fired is still running.
-	// Rolling now would abort it -- the caller gets an error for points that
-	// were about to be applied. Wait for handlers to drain first. PLAN.md 3.5.
+	// Nothing may be left half-done when the run ends. Two separate things can
+	// be, and only one of them is the SDK's business:
 	//
-	// Two honest caveats:
+	//  1. An Update accepted just before the roll condition fired is still
+	//     running. Rolling would abort it, and the caller would get an error for
+	//     points that were about to be applied. AllHandlersFinished covers this.
 	//
-	//  1. This is currently unfalsifiable. The handler does arithmetic and
-	//     returns without ever blocking, so it has always finished by the time
-	//     this is evaluated -- the tests still pass with this Await removed
-	//     (verified by mutation). It is here because Phase 6 makes it real, not
-	//     because Phase 2 proves it.
-	//  2. It covers Update and Signal handlers only. The workflow.Go goroutine
-	//     Phase 6 adds is NOT covered by AllHandlersFinished and needs its own
-	//     drain clause alongside this one, or its notification is silently
-	//     dropped by the roll. PLAN.md 3.7 and 12.6 -- write that test first.
-	if err := workflow.Await(ctx, func() bool { return workflow.AllHandlersFinished(ctx) }); err != nil {
-		return handleLeave(ctx, &state)
+	//  2. A promotion notification is queued or in flight in the notifier
+	//     goroutine. **AllHandlersFinished does not cover workflow.Go
+	//     goroutines** -- it tracks Update and Signal handlers only -- so this
+	//     needs its own clause. PLAN.md 12.6.
+	//
+	// The second half is not defensive coding. A promotion landing on the third
+	// add is the ordinary case at EarnsPerRun = 3, and it is exactly when the
+	// run wants to roll. Without idle() the notification is dropped in silence:
+	// no error, no retry, no trace in history, and a customer who reached gold
+	// is never told. Test_Notify_PromotionOnTheRollingAddIsNotDropped fails
+	// without it, and was written before it existed -- PLAN.md 10.
+	if err := workflow.Await(ctx, func() bool {
+		return workflow.AllHandlersFinished(ctx) && n.idle()
+	}); err != nil {
+		return handleLeave(ctx, &state, n)
 	}
 
 	// Same trap as above, and a wider window: handlers are usually already
 	// finished, so this Await frequently returns nil on its first condition
 	// check without ever consulting ctx.
 	if ctx.Err() != nil {
-		return handleLeave(ctx, &state)
+		return handleLeave(ctx, &state, n)
 	}
 
 	state.Generation++
@@ -256,7 +278,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 //
 // Cancel rather than Terminate is what makes this reachable at all: Terminate
 // skips workflow code entirely, so none of this would run. PLAN.md 3.6.
-func handleLeave(ctx workflow.Context, state *CustomerState) error {
+func handleLeave(ctx workflow.Context, state *CustomerState, n *notifier) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("customer leaving rewards program",
 		"customerId", state.CustomerID,
@@ -265,13 +287,27 @@ func handleLeave(ctx workflow.Context, state *CustomerState) error {
 		"lifetimeEarnEvents", state.LifetimeEarnEvents)
 
 	// ctx is already cancelled, so anything that needs to actually run here has
-	// to use a disconnected context. Draining in-flight handlers is the one
-	// thing we always do: returning while an addPoints update is mid-flight
-	// loses its result and logs an unfinished-handler warning.
+	// to use a disconnected context.
 	dctx, cancel := workflow.NewDisconnectedContext(ctx)
 	defer cancel()
-	if err := workflow.Await(dctx, func() bool { return workflow.AllHandlersFinished(dctx) }); err != nil {
-		logger.Warn("failed waiting for handlers to drain on departure", "error", err)
+
+	// Drain both kinds of in-flight work, for the same reasons as the pre-roll
+	// guard above: returning while an addPoints update is mid-flight loses its
+	// result, and returning while a promotion is queued drops it. A customer who
+	// reached gold and then left still reached gold.
+	if err := workflow.Await(dctx, func() bool {
+		return workflow.AllHandlersFinished(dctx) && n.idle()
+	}); err != nil {
+		logger.Warn("failed waiting for in-flight work to drain on departure", "error", err)
+	}
+
+	// The departure notice reuses the promotion Activity rather than adding a
+	// second one -- which is why there is no cleanup Activity in this design.
+	// Sent synchronously because it is the last thing that happens; there is no
+	// run left for a queue to be drained by. PLAN.md 3.7.
+	if err := n.send(dctx, departureNotice(state)); err != nil {
+		logger.Error("departure notification failed after retries",
+			"customerId", state.CustomerID, "error", err)
 	}
 
 	// Returning the cancellation error is what closes the execution as Canceled

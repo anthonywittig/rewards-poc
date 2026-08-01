@@ -326,6 +326,23 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				continue // some other Activity, or one we never saw scheduled
 			}
 			delete(activities, a.GetScheduledEventId())
+
+			// Promotions only. The same Activity delivers the departure notice
+			// (PLAN.md 3.7), but AuditEntry's notification_sent kind carries a
+			// level and nothing else -- so a departure row is indistinguishable
+			// from a promotion, and the UI renders every one of them as
+			// "Promoted to Gold — notification sent". For a customer who just
+			// left, directly beneath their own deactivated row, that is the
+			// audit log inventing a promotion.
+			//
+			// Dropping the row loses nothing a reader needs: the deactivated row
+			// immediately above it already says they left, and the departure
+			// notice is a consequence of it rather than a separate fact. The
+			// alternative was an event field on AuditEntry, which is frozen.
+			// PLAN.md 12.31.
+			if req.Event != rewards.NotifyEventPromoted {
+				continue
+			}
 			out.entries = append(out.entries, AuditEntry{
 				Kind:          AuditNotificationSent,
 				At:            e.GetEventTime().AsTime(),

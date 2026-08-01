@@ -402,14 +402,25 @@ doesn't imply on its own.
 
 ### 3.7 Tier promotion notifications
 
-The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Email, Event,
+**Done.** The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Email, Event,
 Level})` logs a line saying what would be sent, and returns. The body is a stub — production
 would call an email or push service here — but everything *around* it is real, and that is
 the part worth building.
 
-Triggered when a point-add crosses a tier boundary. Because tiers are derived (§3.2) this is
-a pure comparison inside the handler: compute `Level(before)` and `Level(after)`, and if they
-differ, a promotion happened.
+Triggered when a point-add leaves the customer at a tier they have not been told about. Because
+tiers are derived (§3.2) this is a pure comparison inside the handler: is `Level(points)` absent
+from `NotifiedLevels`?
+
+**One notification per customer per tier reached, naming where they are now — not one per
+threshold passed.** `MaxPointsPerTxn` is 1000 and platinum starts at 1000, so a single add from
+zero lands a customer in platinum having never been observed at gold, and only platinum is
+announced. Sending "Welcome to Gold" beside "Welcome to Platinum" would describe a state that
+held for no measurable time. The original crossing rule behaved identically; it is a decision,
+not a consequence of the retry rewrite.
+
+**Not** "did this add cross a boundary", which is what this said first and is subtly wrong: a
+crossing is an event that happens once, so a delivery that failed could never be reattempted.
+See [§12.33](#12-sharp-edges).
 
 #### Where it runs, and why not in the handler
 
@@ -455,6 +466,21 @@ promotion landing on the third add is exactly when that happens. Hence the extra
 This is the most instructive bug in the whole design, and it is worth writing the test that
 catches it before writing the fix.
 
+**It was, and it failed.** `Test_Notify_PromotionOnTheRollingAddIsNotDropped` reported no
+notifications at all against the unguarded workflow — see [§12.6](#12-sharp-edges) for the
+output. Adding `&& n.idle()` to the pre-roll await turned it green.
+
+Two things the sketch above leaves out, both learned building it:
+
+- **The goroutine runs on a disconnected context.** On the workflow's own context, deactivating
+  a customer mid-delivery cancels a promotion they had already earned — and then `handleLeave`
+  waits for a drain that can never complete, because the goroutine died with the context. A
+  promotion is not unmade by the customer leaving a moment later.
+- **The Activity's retries must be bounded.** The default policy retries forever, and the
+  continue-as-new guard waits for the notifier to go idle, so an unreachable notification
+  provider would stop the customer's workflow rolling for as long as it stayed down. A cosmetic
+  outage would become a stuck entity workflow. `MaximumAttempts: 3`.
+
 #### At-least-once, and what that means here
 
 Activities are at-least-once: a worker crash after `NotifyCustomer` runs but before its
@@ -464,7 +490,9 @@ someone's inbox.
 Two mitigations, both cheap:
 
 - Carry `NotifiedLevels []string` in `CustomerState` (so it survives continue-as-new) and skip
-  any level already in it. This is the workflow-side guard.
+  any level already in it. This is the workflow-side guard, and it is also the retry ledger: a
+  level stays out of it until a delivery actually succeeds, so a failed one is re-offered by
+  the next add.
 - Pass an idempotency key of `<customerID>:<level>` to the Activity, since a customer reaches
   gold exactly once. This is the guard a real notification service would honour, and including
   it in the stub documents the contract even though the stub ignores it.
@@ -475,6 +503,13 @@ Two mitigations, both cheap:
 them up with no extra work — the customer detail page gets "Promoted to gold — notification
 sent" rows interleaved with the point-adds. That is a nice demonstration that the audit log
 reflects *everything* the workflow did, not just the parts we explicitly designed it around.
+
+It really was free, but only because Phase 5 declared `NotifyRequest` and
+`ActivityNotifyCustomer` a phase early so the crawl could compile against the real shape rather
+than guess at one. Registering the Activity was the whole integration: the rows appeared with
+no change to `internal/httpapi/audit.go`.
+
+One row it does *not* produce is the departure notice — see [§12.31](#12-sharp-edges).
 
 #### Reuse for departure
 
@@ -1231,7 +1266,7 @@ Findings for §12 live in `web/NOTES.md`.
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
-| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | Write the dropped-notification test *before* the fix. The audit crawl already renders notification rows against `rewards.NotifyRequest`; register the Activity under `rewards.ActivityNotifyCustomer` and they appear |
+| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | |
@@ -1289,6 +1324,19 @@ Things not in the original brief that will come up.
 6. **`AllHandlersFinished` covers Update and Signal handlers, not `workflow.Go` goroutines.**
    Any background work spawned that way needs its own drain condition before continue-as-new
    or workflow completion, or it is silently dropped ([§3.7](#37-tier-promotion-notifications)).
+
+   **Confirmed in Phase 6, and it is not a corner case.** Written as a test before the guard
+   existed, exactly as [§10](#10-testing) asks: three adds where the third crosses into gold —
+   the ordinary shape at `EarnsPerRun = 3` — and the promotion vanished.
+
+   ```
+   --- FAIL: Test_Notify_PromotionOnTheRollingAddIsNotDropped
+       expected the promotion to survive the roll, got []
+   ```
+
+   No error, no retry, no trace in history: the run rolled while the notification sat in a
+   queue that `AllHandlersFinished` knows nothing about. Adding `&& n.idle()` to the pre-roll
+   await fixed it. The same clause is needed in the departure path for the same reason.
 7. **A duplicate start is silent by default.** `WorkflowIDConflictPolicy: FAIL` is not enough
    to make `ExecuteWorkflow` return an error — it also needs
    `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
@@ -1433,12 +1481,83 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     advertising `Access-Control-Allow-Origin: *` is a shape worth not copying out of a POC. The
     mock has it precisely because it is meant to be hit directly with no stack running.
 
+**From the Phase 6 notification Activity.**
+
+31. **A frozen contract cannot express a fact discovered after it was frozen.** The departure
+    notice reuses the promotion Activity ([§3.7](#37-tier-promotion-notifications)), so both
+    arrive at the audit crawl as a completed `NotifyCustomer` — but `AuditEntry`'s
+    `notification_sent` kind carries a level and nothing else, and the UI renders every one of
+    them as *"Promoted to Gold — notification sent"*. A customer who left therefore got an
+    invented promotion rendered directly beneath their own `deactivated` row.
+
+    Resolved by dropping the departure row rather than by adding an event field: the
+    `deactivated` row above it already carries the fact, and the contract is frozen for the UI
+    (§5.1). Worth naming as the cost of freezing — the freeze bought a UI built in parallel,
+    and charged for it here.
+
+32. **`EarnsPerRun` is a floor, not an exact count — and Phase 6 widened the gap.** The pre-roll
+    guard holds the run open until the notifier is idle, and the Update handler keeps accepting
+    adds the whole time, so a run that has already decided to roll can take on more. Measured
+    on the real stack with six rapid adds:
+
+    ```
+    no tier crossing (6x50, stays basic)     adds per generation {0: 3, 1: 3}
+    crosses gold on the 3rd (6x200)          adds per generation {0: 4, 1: 2}
+    ```
+
+    Reproducible, and isolated to the notification: the difference is exactly the time the
+    promotion Activity holds the run open. Harmless — the extra add is applied, recorded and
+    carried forward, and the roll still happens once — but "three adds per run" is an
+    approximation under load rather than a rule.
+
+    It is also a second argument for what [§3.5](#35-continue-as-new-after-3-updates) already
+    says: a fixed count is the wrong trigger, `GetContinueAsNewSuggested` is what production
+    should roll on, and a rule the system only approximately keeps is a poor thing to have
+    written into a constant.
+
+33. **An event-shaped condition cannot be retried; a state-shaped one can.** The promotion
+    trigger started as *"did this add cross a tier boundary"*, which is an event: it happens
+    once and is then gone. So a delivery that exhausted the Activity's (deliberately bounded)
+    retries was lost for good — points only go up, so the boundary could never be crossed
+    again, and nothing would ever re-offer it.
+
+    Rewriting the condition as *"is the customer at a tier nobody has told them about"* makes
+    it a property of the customer, so a later add retries it, and the state it reads is
+    already carried across continue-as-new.
+
+    **The retry is narrower than that sounds, and deliberately so.** It only re-offers the tier
+    the customer is at *now*, so a failed gold notice is retried while they are still gold and
+    dropped once they reach platinum. That is the right outcome — they get told where they are,
+    and a belated "you reached gold" arriving after they are past it would be worse than
+    silence — but the unqualified phrase "retried on the next add" over-claims it. Same class of
+    over-claim as the comment that started this, so it is pinned by a test rather than trusted
+    to a sentence. Same information, and the difference between a
+    notification that can be recovered and one that cannot.
+
+    It also made `NotifiedLevels` genuinely load-bearing. Under the crossing rule the monotonic
+    balance did the deduplication and the field was belt-and-braces; now it is both the dedup
+    and the retry ledger.
+
+    Two consequences worth knowing. The queue has to reject a level it is already holding or
+    delivering, or a provider that is down accumulates one entry per add and delays the roll
+    without bound — reintroducing, one level up, exactly the failure that bounding the
+    Activity's retries prevented. And the starting tier needs excluding explicitly: under the
+    old rule `basic` could never be crossed into, and under this one it has to be said.
+
+    Raised by review on PR #15.
+
+34. **Background work that must outlive cancellation needs a disconnected context of its own.**
+    The notifier goroutine runs on one, so that deactivating a customer mid-delivery does not
+    cancel a promotion they had already earned. Running it on the workflow's own context looks
+    natural and silently loses that notification — `handleLeave` then waits for a drain that
+    can never happen, because the thing doing the draining died with the context.
+
 **Design**
 
-31. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+35. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-32. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+36. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

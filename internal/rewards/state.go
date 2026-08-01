@@ -48,6 +48,11 @@ const (
 // new. Artificially low so the rollover is easy to watch -- see the note at the
 // continue-as-new itself for what production should do instead.
 //
+// It is also a floor rather than an exact count. The pre-roll drain holds the run
+// open while a promotion notification finishes, and the handler keeps accepting
+// adds throughout -- measured at 4 adds in the rolling run when a tier crossing
+// lands in it, against exactly 3 when none does. PLAN.md 12.32.
+//
 // CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history already records a
 // roll after 3 adds will, on replay under a different value, not produce that
 // command at that point, and a command that does not match the recorded event
