@@ -9,6 +9,6 @@ make web       # :5173 — /api proxied to the API on :8081
 ```
 
 Browser requests stay same-origin. Vite proxies `/api` (and `/healthz`) to
-`VITE_API_PROXY_TARGET` (default `http://localhost:8081`). The Go API does not
-send CORS headers, so pointing the browser at `:8081` directly fails — use the
-proxy.
+`VITE_API_PROXY_TARGET` (default `http://localhost:8081`); `make web` sets it
+from the stack's env file so it follows `API_PORT`. The Go API does not send
+CORS headers, so pointing the browser at `:8081` directly fails — use the proxy.
