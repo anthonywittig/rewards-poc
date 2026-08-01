@@ -913,6 +913,7 @@ an intact audit log is visible side by side.
   | active, intact history | 200 | 200, `truncated: false` |
   | active, old generations reaped | 200 | 200, `truncated: true`, e.g. shown 1 of 100 |
   | deactivated, not yet reaped | 200 | 200, ending in a `deactivated` row |
+  | re-enrolled after leaving | 200 | 200, `deactivated` then `reactivated`, balance carried through |
   | reaped entirely | 404 | 404 |
 
   The middle row is the demo: `make reap WF=customer-x` on an *active* customer leaves the

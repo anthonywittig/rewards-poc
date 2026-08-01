@@ -84,8 +84,8 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 
 	wfID := rewards.WorkflowID(req.CustomerID)
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
-		ID:        wfID,
-		TaskQueue: rewards.TaskQueue,
+		ID:                                       wfID,
+		TaskQueue:                                rewards.TaskQueue,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, rewards.CustomerRewardsWorkflow, rewards.CustomerState{
@@ -108,29 +108,40 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	// ID is taken. Active → 409. Soft-deactivated → reactivate and restore.
-	enc, qerr := s.queryStatus(r.Context(), wfID)
-	if qerr != nil {
-		return qerr
+	active, aerr := s.isActive(r.Context(), wfID)
+	if aerr != nil {
+		return aerr
 	}
-	var st rewards.CustomerStatus
-	if err := enc.Get(&st); err != nil {
-		return err
-	}
-	if st.Active {
+	if active {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
 	}
 
-	if _, err = s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
+	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
 		Name:  req.Name,
 		Email: req.Email,
-	}); err != nil {
+	})
+	if err != nil {
 		return err
 	}
+	// The customer went active between the check above and the Update -- a
+	// concurrent enroll won. The handler reports that rather than applying our
+	// name and email over theirs, so this is still the duplicate 409.
+	if !res.Changed {
+		return &apiError{http.StatusConflict, CodeAlreadyExists,
+			"customer is already enrolled and active"}
+	}
+
 	desc, derr := s.temporal.DescribeWorkflowExecution(r.Context(), wfID, "")
 	runID := ""
 	if derr == nil {
 		runID = desc.GetWorkflowExecutionInfo().GetExecution().GetRunId()
+	} else {
+		// Not fatal: the reactivation landed, and the run ID is a convenience
+		// for the caller rather than part of the outcome. Logged because an
+		// empty runId in a 200 body is otherwise unexplainable.
+		s.log.Warn("reactivated, but describe failed so the response carries no runId",
+			"workflowId", wfID, "error", derr)
 	}
 
 	writeJSON(w, s.log, http.StatusOK, EnrollResponse{
@@ -523,6 +534,46 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
+// isActive answers "is this customer currently enrolled and active", preferring
+// the workflow's own word and degrading to visibility when no worker answers.
+//
+// The degrade is what keeps a duplicate enroll a 409 with the worker down. The
+// Query is authoritative and cheap, but making it *required* would have turned
+// the commonest rejection in the API -- signing up an ID that already exists --
+// into a 503, when the search attributes already on the execution record answer
+// it perfectly well. Only the reactivate that follows genuinely needs a worker.
+//
+// Unknown means active: a customer whose attributes predate RewardsActive, or
+// whose record cannot be read at all, must not be quietly overwritten by a
+// second enrollment. A wrong 409 is a retry; a wrong reactivate is data loss.
+func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
+	enc, qerr := s.queryStatus(ctx, wfID)
+	if qerr == nil {
+		var st rewards.CustomerStatus
+		if err := enc.Get(&st); err != nil {
+			return false, err
+		}
+		return st.Active, nil
+	}
+
+	desc, derr := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
+	if derr != nil {
+		// Nothing answered. Report the Query failure rather than the Describe
+		// one: the Query is what we actually wanted, and its mapper knows to
+		// blame the worker.
+		return false, qerr
+	}
+	s.log.Info("enroll conflict check fell back to search attributes",
+		"workflowId", wfID, "error", qerr)
+
+	info := desc.GetWorkflowExecutionInfo()
+	if info.GetStatus() != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
+		return false, nil
+	}
+	v := decodeSearchAttributes(info.GetSearchAttributes())
+	return v.Active == nil || *v.Active, nil
+}
+
 // queryTimeout bounds how long a Query may wait for a worker.
 //
 // Deliberately aggressive, because the failure mode it guards against is not
@@ -581,7 +632,7 @@ func (s *Server) sendUpdate(
 
 func (s *Server) sendReactivate(
 	ctx context.Context, wfID string, req rewards.ReactivateRequest,
-) (rewards.CustomerStatus, error) {
+) (rewards.ReactivateResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
 
@@ -592,13 +643,13 @@ func (s *Server) sendReactivate(
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
-		return rewards.CustomerStatus{}, err
+		return rewards.ReactivateResult{}, err
 	}
-	var st rewards.CustomerStatus
-	if err := handle.Get(ctx, &st); err != nil {
-		return rewards.CustomerStatus{}, err
+	var res rewards.ReactivateResult
+	if err := handle.Get(ctx, &res); err != nil {
+		return rewards.ReactivateResult{}, err
 	}
-	return st, nil
+	return res, nil
 }
 
 func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.DeactivateResult, error) {
@@ -624,22 +675,22 @@ func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.Deact
 // races continue-as-new must retry against the successor rather than 404.
 func (s *Server) reactivateWithRolloverRetry(
 	ctx context.Context, wfID string, req rewards.ReactivateRequest,
-) (rewards.CustomerStatus, error) {
+) (rewards.ReactivateResult, error) {
 	const attempts = 2
 	for attempt := 1; attempt <= attempts; attempt++ {
-		st, err := s.sendReactivate(ctx, wfID, req)
+		res, err := s.sendReactivate(ctx, wfID, req)
 		if err == nil {
-			return st, nil
+			return res, nil
 		}
 		if !isClosedRun(err) {
-			return rewards.CustomerStatus{}, mapUpdateError(err)
+			return rewards.ReactivateResult{}, mapUpdateError(err)
 		}
 		running, describeErr := s.hasRunningExecution(ctx, wfID)
 		if describeErr != nil {
-			return rewards.CustomerStatus{}, mapQueryError(describeErr)
+			return rewards.ReactivateResult{}, mapQueryError(describeErr)
 		}
 		if !running {
-			return rewards.CustomerStatus{}, &apiError{
+			return rewards.ReactivateResult{}, &apiError{
 				http.StatusConflict, CodeDeactivated,
 				"customer workflow is closed; enroll them again to start fresh",
 			}
@@ -647,7 +698,7 @@ func (s *Server) reactivateWithRolloverRetry(
 		s.log.Info("reactivate lost its run to continue-as-new, retrying against the successor",
 			"workflowId", wfID, "attempt", attempt)
 	}
-	return rewards.CustomerStatus{}, &apiError{
+	return rewards.ReactivateResult{}, &apiError{
 		http.StatusConflict, CodeRolloverRace,
 		"the customer's workflow rolled over while reactivating; please retry",
 	}
@@ -778,10 +829,14 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 	out.Generation = v.Generation
 	out.EnrolledAt = v.EnrolledAt
 
+	// Derived rather than stored, so it stays consistent with the balance we
+	// just recovered. PLAN.md 3.2.
 	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
-	if v.Active != nil && !*v.Active {
-		out.Status = "deactivated"
-	}
+
+	// Status is deliberately not set here. Deciding active from deactivated
+	// needs the execution status as well as RewardsActive, and the caller has
+	// both -- see getCustomer, which reaches this only once it has already
+	// concluded "deactivated".
 }
 
 func decodeJSON(r *http.Request, dst any) error {

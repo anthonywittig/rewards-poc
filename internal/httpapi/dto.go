@@ -168,6 +168,7 @@ const (
 	AuditNotificationSent AuditEntryKind = "notification_sent"
 	AuditGenerationRolled AuditEntryKind = "generation_rolled"
 	AuditDeactivated      AuditEntryKind = "deactivated"
+	AuditReactivated      AuditEntryKind = "reactivated"
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
