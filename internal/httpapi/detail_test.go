@@ -74,37 +74,6 @@ func TestGetCustomer_LadderComesFromTheWorkerNotTheAPI(t *testing.T) {
 	}
 }
 
-// A worker built before CustomerStatus carried the ladder answers without one,
-// which is an ordinary state during a rolling deploy -- and `tiers: null` would
-// reach the client, where the bar has nothing to compute a floor from. Falling
-// back to this build's ladder is right and not merely non-nil: a worker that old
-// is necessarily running the thresholds compiled into this binary, because they
-// are still a constant.
-func TestGetCustomer_LadderFallsBackWhenTheWorkerOmitsIt(t *testing.T) {
-	h := newTestServer(&stubTemporal{
-		describeInfo: runningExecution(nil),
-		queryStatus: &rewards.CustomerStatus{
-			CustomerID: "ada",
-			Points:     600,
-			Level:      rewards.LevelGold,
-			NextTierAt: rewards.PlatinumThreshold,
-			// Tiers deliberately unset: the old worker.
-			Active: true,
-		},
-	})
-
-	got := getCustomerDetail(t, h, "ada")
-	want := rewards.Ladder()
-	if len(got.Tiers) != len(want) {
-		t.Fatalf("tiers = %+v, want this build's ladder %+v", got.Tiers, want)
-	}
-	for i, w := range want {
-		if got.Tiers[i] != w {
-			t.Errorf("tiers[%d] = %+v, want %+v", i, got.Tiers[i], w)
-		}
-	}
-}
-
 // The degraded path serves a customer no worker can be asked about, and the
 // detail page it feeds draws the same bar. Dropping the ladder here would render
 // it against an empty one.

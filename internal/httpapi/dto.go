@@ -53,9 +53,9 @@ type CustomerResponse struct {
 	// hardcoding the ladder there -- which then goes stale silently, because a
 	// wrong bar width renders perfectly.
 	//
-	// Never null: a Query that predates the field falls back to the API's own
-	// ladder. Basic is not in it; the span from zero to the first rung is
-	// implied. See rewards.Ladder.
+	// Answered by the worker, so these rungs are the ones Level and NextTierAt
+	// above were actually derived from. Basic is not in it; the span from zero
+	// to the first rung is implied. See rewards.Ladder.
 	Tiers []rewards.Tier `json:"tiers"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`

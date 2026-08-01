@@ -163,7 +163,9 @@ wrong width renders perfectly. The response now carries the whole ladder (`tiers
 `basic` absent) and the client derives its floor from that. The ladder comes back from the
 **Query** rather than being attached by the API, because `api` and `worker` are separate
 binaries on separate deploys — an API pairing its own rungs with a `nextTierAt` from another
-build could name a target that is not on the ladder printed beside it.
+build could name a target that is not on the ladder printed beside it. Which also means a
+`make api` without a `make worker` serves `tiers: null` until the worker catches up; the bar
+degrades to spanning the whole climb rather than the current segment.
 
 **Which direction `promotionFor` walks the ladder is the "only the tier they are at" decision**
 ([notifications](#tier-promotion-notifications)), and it is where you would go to decide

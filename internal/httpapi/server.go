@@ -345,14 +345,6 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		out.Level = st.Level
 		out.NextTierAt = st.NextTierAt
 		out.Tiers = st.Tiers
-		// A worker built before CustomerStatus carried the ladder answers
-		// without one, which is an ordinary state during a rolling deploy. Our
-		// own copy is the right fallback and not merely a non-nil one: that
-		// worker is necessarily running the thresholds this build was compiled
-		// with, since they are still a constant.
-		if len(out.Tiers) == 0 {
-			out.Tiers = rewards.Ladder()
-		}
 		out.EnrolledAt = st.EnrolledAt
 		out.LifetimeEarnEvents = st.LifetimeEarnEvents
 		out.Generation = st.Generation
