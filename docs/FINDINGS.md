@@ -1086,15 +1086,20 @@ optional only for workflows that never look at their own identity.
 
 ### Stale workers
 
-**Stale processes are invisible and look exactly like a code bug.** `go run` execs its binary out
-of `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker` nor
-`exe/worker` — so the obvious `pkill -f cmd/worker` leaves it alive and happily polling the same
-task queue with the *old* code.
+**Stale processes are invisible and look exactly like a code bug.** This cost real debugging
+time: continue-as-new was correct and unit-tested, but an old worker kept winning the tasks, so
+`generation` stayed 0 and the feature looked broken.
 
-This cost real debugging time: continue-as-new was correct and unit-tested, but a stale worker
-kept winning the tasks, so `generation` stayed 0 and the feature looked broken. Use
-`make worker-stop` (which matches the cache path) and `make workers` to confirm exactly one is
-running before concluding anything about workflow behaviour.
+The worker used to run on the host under `go run`, which execs its binary out of
+`/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker` nor `exe/worker`
+— so the obvious `pkill -f cmd/worker` left it alive and happily polling the same task queue with
+the *old* code. That is why the worker is now a Compose service: `make worker` rebuilds the image
+and recreates the container in one step, and `make ps` shows the one worker that exists. There is
+no build cache path to miss and no way to end up with two.
+
+The shape of the trap survives the move, in a milder form: an image is a snapshot, so a worker
+started before an edit still serves the old code until it is rebuilt. It is now visible
+(`make ps` gives the container's age, `make worker-logs` its startup line) rather than silent.
 
 Worth pairing with the versioning discipline above: stale *workflows* and stale *workers* fail in
 opposite directions — one errors loudly on replay, the other succeeds quietly with the wrong
@@ -1105,7 +1110,7 @@ logic.
 ## The local stack
 
 `postgres` (persistence), `elasticsearch` (visibility), `temporal` (auto-setup image),
-`temporal-ui` in Compose; `worker`, `api` and `web` run on the host via `make`.
+`temporal-ui` and `worker` in Compose; `api` and `web` run on the host via `make`.
 `temporalio/auto-setup` with `DB=postgres12`, `ENABLE_ES=true`, `ES_SEEDS=elasticsearch` creates
 schemas and installs the ES index template for us.
 
