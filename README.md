@@ -26,18 +26,16 @@ Configuration defaults come from `.env.example`, so a fresh checkout needs no co
 to `.env` only when you want local overrides.
 
 ```sh
-# 1. The stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then namespace
-#    and search-attribute bootstrap, then the workflow worker. Takes a minute the
-#    first time (it builds the worker image too).
+# 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
+#    namespace and search-attribute bootstrap, then the workflow worker and the
+#    HTTP API. Takes a minute the first time (it builds their images too), and
+#    returns once the API answers.
 make up
 
-# 2. The HTTP API on :8081, in its own terminal. Leave it running.
-make api
-
-# 3. Eighteen demo customers, six per tier, including the interesting edge cases.
+# 2. Eighteen demo customers, six per tier, including the interesting edge cases.
 make seed
 
-# 4. The React UI on :5173, in its own terminal.
+# 3. The React UI on :5173, in its own terminal.
 #    Installs dependencies and typechecks on the way up, so the first run is slower.
 make web
 ```
@@ -51,8 +49,9 @@ That's everything up. Where it all is:
 | Temporal UI | <http://localhost:8080> |
 | Temporal gRPC | `localhost:7233`, namespace `rewards` |
 
-The worker has no terminal of its own — it is a Compose service now, so `make worker-logs` tails
-it and `make worker` rebuilds and restarts it after a workflow code change.
+Neither the worker nor the API has a terminal of its own — both are Compose services, so
+`make worker-logs` / `make api-logs` tail them, and `make worker` / `make api` rebuild and
+restart them after a code change. Only the Vite dev server still runs on the host.
 
 `make test` runs the Go unit tests and needs neither Docker nor a running server. `make down`
 stops the stack and keeps the data; `make destroy` deletes the volumes too.
@@ -84,7 +83,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 | `make up` / `down` / `destroy` | start + bootstrap / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
 | `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
-| `make api` / `api-stop` | run the HTTP API on `:8081` |
+| `make api` / `api-logs` / `api-stop` | the same three for the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
 | `make workflowcheck` | static determinism check on workflow code, no Docker needed |
@@ -284,12 +283,14 @@ value in that one line and no change anywhere else.
 ## Troubleshooting
 
 **If the workflow seems to ignore a code change, the worker is still running the old image.**
-The worker runs in the stack, built from `deploy/worker.Dockerfile`, so editing workflow code
+The worker and the API both run in the stack, built from `deploy/Dockerfile`, so editing Go code
 does nothing until the image is rebuilt:
 
 ```sh
 make worker        # rebuild from the current code and restart the container
 make worker-logs   # tail it -- the startup line names the task queue and namespace
+make api           # the same for the API
+make api-logs
 ```
 
 Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic, so
@@ -339,8 +340,8 @@ internal/httpapi/
   testdata/                   real run histories, for the crawl's golden tests
 web/                          the React UI
 deploy/
-  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker
-  worker.Dockerfile           the worker image, built from the repo root
+  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker + api
+  Dockerfile                  the worker and api images, built from the repo root
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions

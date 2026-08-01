@@ -1127,11 +1127,11 @@ time: continue-as-new was correct and unit-tested, but an old worker kept winnin
 The worker used to run on the host under `go run`, which execs its binary out of
 `/root/.cache/go-build/<hash>/worker` — a path containing neither `cmd/worker` nor `exe/worker`
 — so the obvious `pkill -f cmd/worker` left it alive and happily polling the same task queue with
-the *old* code. That is why the worker is now a Compose service: `make worker` rebuilds the image
-and recreates the container in one step, and `make ps` shows the one worker that exists. There is
-no build cache path to miss and no way to end up with two.
+the *old* code. That is why the worker and the API are now Compose services: `make worker` and
+`make api` rebuild the image and recreate the container in one step, and `make ps` shows the one
+of each that exists. There is no build cache path to miss and no way to end up with two.
 
-The shape of the trap survives the move, in a milder form: an image is a snapshot, so a worker
+The shape of the trap survives the move, in a milder form: an image is a snapshot, so a container
 started before an edit still serves the old code until it is rebuilt. It is now visible
 (`make ps` gives the container's age, `make worker-logs` its startup line) rather than silent.
 
@@ -1144,7 +1144,8 @@ logic.
 ## The local stack
 
 `postgres` (persistence), `elasticsearch` (visibility), `temporal` (auto-setup image),
-`temporal-ui` and `worker` in Compose; `api` and `web` run on the host via `make`.
+`temporal-ui`, `worker` and `api` in Compose; only the Vite dev server runs on the host, via
+`make web`.
 `temporalio/auto-setup` with `DB=postgres12`, `ENABLE_ES=true`, `ES_SEEDS=elasticsearch` creates
 schemas and installs the ES index template for us.
 

@@ -13,13 +13,11 @@ NAMESPACE = $(shell grep -E '^TEMPORAL_NAMESPACE=' $(ENV) | cut -d= -f2)
 RETENTION = $(shell grep -E '^TEMPORAL_RETENTION=' $(ENV) | cut -d= -f2)
 REFRESH   = $(shell grep -E '^ES_REFRESH_INTERVAL=' $(ENV) | cut -d= -f2)
 UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
-GRPC_PORT = $(shell grep -E '^TEMPORAL_GRPC_PORT=' $(ENV) | cut -d= -f2)
 API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
-STACK     = $(shell grep -E '^COMPOSE_PROJECT_NAME=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-logs worker-stop api api-stop test workflowcheck enroll status add deactivate reactivate \
+        worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -37,11 +35,14 @@ $(ENV):
 up: $(ENV) ## Start the stack and bootstrap it
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
 	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
-# Started after bootstrap, so the worker never polls a namespace that doesn't
-# exist yet; --build so a fresh checkout gets a worker built from its own code.
-	$(COMPOSE) up -d --build worker
+# Started after bootstrap, so neither one talks to a namespace that doesn't
+# exist yet; --build so a fresh checkout runs code built from its own tree.
+# --wait holds until the API answers /healthz, which is what `make seed`
+# immediately after `make up` depends on.
+	$(COMPOSE) up -d --build --wait worker api
 	@echo
 	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
+	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
 	@echo "Namespace:    $(NAMESPACE) (retention $(RETENTION))"
 
 down: $(ENV) ## Stop the stack, keep data
@@ -168,11 +169,11 @@ workflowcheck: ## Static determinism check on workflow code
 	  go install go.temporal.io/sdk/contrib/tools/workflowcheck@$(WORKFLOWCHECK_VERSION)
 	$(WORKFLOWCHECK) ./...
 
-# The worker is a Compose service (deploy/worker.Dockerfile), started by
+# The worker and the api are Compose services (deploy/Dockerfile), started by
 # `make up` and isolated per stack by COMPOSE_PROJECT_NAME like everything else.
-# A code change is therefore a rebuild rather than a Ctrl-C, and this target is
-# both halves of it: --build recompiles, `up -d` recreates the container. The
-# running worker is never older than the source tree it was last run from.
+# A code change is therefore a rebuild rather than a Ctrl-C, and these targets
+# are both halves of it: --build recompiles, `up -d` recreates the container.
+# What is running is never older than the source tree it was last built from.
 worker: $(ENV) ## Rebuild and restart the worker with the current code
 	$(COMPOSE) up -d --build worker
 
@@ -185,20 +186,14 @@ worker-logs: $(ENV) ## Tail the worker's logs (Ctrl-C to stop tailing)
 worker-stop: $(ENV) ## Stop the worker (leaves the rest of the stack up)
 	$(COMPOSE) stop worker
 
-# The trailing stack=… argument is ignored by the program (it reads env vars
-# only); it exists so this stack's API process is identifiable in ps output, and
-# so api-stop can match on it rather than killing both stacks' at once.
-# pkill/pgrep match on the command line, and env vars are not on it.
-api: $(ENV) ## Run the HTTP API in the foreground (Ctrl-C to stop)
-	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
-	  API_PORT=$(API_PORT) go run ./cmd/api stack=$(STACK)
+api: $(ENV) ## Rebuild and restart the HTTP API with the current code
+	$(COMPOSE) up -d --build --wait api
 
-api-stop: $(ENV) ## Stop this stack's API processes, including orphaned ones
-	@pkill -f 'go-build.*/api stack=$(STACK)$$' 2>/dev/null; \
-	 pkill -f 'go run \./cmd/api stack=$(STACK)$$' 2>/dev/null; \
-	 pkill -f 'go-build.*/api$$' 2>/dev/null; \
-	 pkill -f 'go run \./cmd/api$$' 2>/dev/null; \
-	 sleep 1; echo "stopped"
+api-logs: $(ENV) ## Tail the API's logs (Ctrl-C to stop tailing)
+	$(COMPOSE) logs -f api
+
+api-stop: $(ENV) ## Stop the API (leaves the rest of the stack up)
+	$(COMPOSE) stop api
 
 # One target from a cold checkout: installs dependencies, typechecks and builds
 # (so a type error stops here rather than after the dev server is already up),
@@ -265,7 +260,7 @@ reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAM
 #   $(COMPOSE) exec temporal temporal workflow show --workflow-id customer-c-001
 audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
-	  || { echo "no API on :$(API_PORT) -- is 'make api' running?" >&2; exit 1; }
+	  || { echo "no API on :$(API_PORT) -- check 'make ps'" >&2; exit 1; }
 
 # Fills a running stack with a demo dataset, driving the HTTP API rather than
 # the Temporal client so seeding exercises the path a user takes -- rollover

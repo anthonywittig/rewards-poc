@@ -1,0 +1,32 @@
+# The Go services -- worker and api. One file for both, selected by CMD, because
+# the only difference between them is which package under cmd/ gets built.
+#
+# Built from the repo root rather than from deploy/ -- see build.context in
+# docker-compose.yml -- because the binaries need cmd/ and internal/, which live
+# above this file. What lands in the context is an allowlist in the root
+# .dockerignore: go.mod, go.sum, cmd/ and internal/. Nothing else, so
+# web/node_modules and any .env never reach the daemon.
+ARG GO_VERSION
+ARG ALPINE_VERSION
+
+FROM golang:${GO_VERSION}-alpine AS build
+ARG CMD
+WORKDIR /src
+
+# Module download is its own layer so editing workflow code doesn't re-fetch the
+# SDK, and the cache mounts persist between builds. Together they keep a rebuild
+# after a code change to a few seconds, which is what makes `make worker` and
+# `make api` usable as the edit-restart loop. The two services share both the
+# layer and the caches, so building the second is nearly free.
+COPY go.mod go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod \
+    go mod download
+
+COPY . .
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    CGO_ENABLED=0 go build -o /out/service ./cmd/${CMD}
+
+FROM alpine:${ALPINE_VERSION}
+COPY --from=build /out/service /usr/local/bin/service
+ENTRYPOINT ["service"]
