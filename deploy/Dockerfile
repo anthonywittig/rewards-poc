@@ -7,10 +7,12 @@
 # above this file. What lands in the context is an allowlist in the root
 # .dockerignore: go.mod, go.sum, cmd/ and internal/. Nothing else, so
 # web/node_modules and any .env never reach the daemon.
-ARG GO_VERSION
-ARG ALPINE_VERSION
-
-FROM golang:${GO_VERSION}-alpine AS build
+#
+# The two base images are pinned here rather than in the env file, unlike the
+# server images: they are a property of how this repo builds, not of a stack.
+# Keep golang in step with go.mod's toolchain directive -- on a lower patch the
+# build still works, but GOTOOLCHAIN=auto fetches the right one every time.
+FROM golang:1.25.12-alpine AS build
 ARG CMD
 WORKDIR /src
 
@@ -28,6 +30,6 @@ RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 go build -o /out/service ./cmd/${CMD}
 
-FROM alpine:${ALPINE_VERSION}
+FROM alpine:3.22
 COPY --from=build /out/service /usr/local/bin/service
 ENTRYPOINT ["service"]

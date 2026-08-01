@@ -116,8 +116,6 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         CMD: worker
-        GO_VERSION: ${GO_VERSION}
-        ALPINE_VERSION: ${ALPINE_VERSION}
     depends_on:
       temporal:
         condition: service_healthy
@@ -138,8 +136,6 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         CMD: api
-        GO_VERSION: ${GO_VERSION}
-        ALPINE_VERSION: ${ALPINE_VERSION}
     depends_on:
       temporal:
         condition: service_healthy
@@ -173,8 +169,6 @@ services:
       dockerfile: deploy/Dockerfile
       args:
         CMD: seed
-        GO_VERSION: ${GO_VERSION}
-        ALPINE_VERSION: ${ALPINE_VERSION}
     depends_on:
       api:
         condition: service_healthy
