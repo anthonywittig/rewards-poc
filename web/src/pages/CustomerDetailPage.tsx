@@ -135,10 +135,9 @@ export function CustomerDetailPage() {
     }
   }
 
-  // Re-enrollment is the same POST /api/customers a new signup uses -- the
-  // server sees the ID is taken and inactive, and reactivates instead of
-  // starting. Sending the name and email we already hold keeps the button a
-  // one-click restore rather than a second trip through the enroll form.
+  // Re-enrollment is the same POST /api/customers a new signup uses: the server
+  // sees the ID is taken and inactive, and reactivates instead of starting.
+  // Resending the name and email we already hold keeps this one click.
   async function onReactivate() {
     if (!customer) return
     const requestedId = customer.customerId
