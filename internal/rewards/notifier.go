@@ -8,118 +8,62 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// The tier-promotion notifier. PLAN.md 3.7.
+// Tier-promotion delivery helpers. PLAN.md 3.7.
 //
-// The Update handler does not await the Activity. It applies the points,
-// notices the tier crossing, queues a notification and returns -- so a
-// notification provider being slow or down cannot fail a point-add that has
-// already been recorded in history, and cannot put a network call on the UI's
-// critical path. Draining the queue is this file's job.
+// The Update handler does not await the Activity. It applies the points, notices
+// an unannounced tier, sets a flag, and returns -- so a notification provider
+// being slow or down cannot fail a point-add that has already been recorded in
+// history, and cannot put a network call on the UI's critical path. The workflow
+// main loop observes the flag and runs the Activity there.
 
 // notifyTimeout bounds one delivery attempt, and notifyMaxAttempts bounds the
 // retries.
 //
 // Bounding the retries is load-bearing rather than tidiness. The default policy
-// retries forever, and the continue-as-new guard waits for the notifier to go
-// idle -- so an unreachable notification provider would stop the customer's
-// workflow rolling for as long as it stayed down, turning a cosmetic outage into
-// a stuck entity workflow.
+// retries forever, and a failed send is only re-offered on a later add -- so an
+// unreachable provider must not pin the main loop in a retry spin that also
+// blocks continue-as-new for as long as the outage lasts.
 const (
 	notifyTimeout     = 10 * time.Second
 	notifyMaxAttempts = 3
 )
 
-// notifier holds the queue and the delivery currently in flight.
-type notifier struct {
-	pending []NotifyRequest
-	current *NotifyRequest // nil when nothing is being delivered
-}
-
-// idle reports whether there is nothing queued and nothing in flight.
+// deliverPromotion runs NotifyCustomer for the customer's current unannounced
+// tier, if any, and records success in NotifiedLevels.
 //
-// This is the whole reason the type exists. workflow.AllHandlersFinished covers
-// Update and Signal handlers and says nothing about workflow.Go goroutines
-// (PLAN.md 12.6), so without idle() in the pre-roll condition the run continues
-// as new while a notification is still queued or executing, and it is silently
-// dropped. At EarnsPerRun = 3 a promotion landing on the third add is exactly
-// when that happens, which is common rather than exotic.
-func (n *notifier) idle() bool { return len(n.pending) == 0 && n.current == nil }
-
-// queue adds a notification for the drain goroutine to pick up, and reports
-// whether it did.
-//
-// Idempotent per (event, level). Since a promotion is now re-queued by any add
-// that finds the customer's tier unannounced (see promotionFor), a provider that
-// is down would otherwise accumulate one identical entry per add -- and because
-// continue-as-new waits for the queue to drain, that would delay the roll
-// without bound. Which is the exact failure that bounding the Activity's retries
-// was meant to prevent, reintroduced one level up.
-func (n *notifier) queue(req NotifyRequest) bool {
-	if n.alreadyHas(req) {
-		return false
+// Callers should run this on a disconnected context when a cancel may be in
+// flight: a promotion already earned is not unmade by the customer leaving a
+// moment later.
+func deliverPromotion(ctx workflow.Context, state *CustomerState) {
+	note, ok := promotionFor(state)
+	if !ok {
+		return
 	}
-	n.pending = append(n.pending, req)
-	return true
-}
 
-// alreadyHas reports whether an equivalent notification is queued or in flight.
-func (n *notifier) alreadyHas(req NotifyRequest) bool {
-	if n.current != nil && n.current.Event == req.Event && n.current.Level == req.Level {
-		return true
-	}
-	for _, p := range n.pending {
-		if p.Event == req.Event && p.Level == req.Level {
-			return true
-		}
-	}
-	return false
-}
-
-// run drains the queue until the workflow ends.
-//
-// Started on a *disconnected* context, so a deactivation arriving while a
-// promotion is being delivered does not cancel the delivery. The customer
-// genuinely earned the tier; that they left immediately afterwards does not
-// unmake it, and handleLeave waits for this to finish before departing.
-func (n *notifier) run(ctx workflow.Context, state *CustomerState) {
 	logger := workflow.GetLogger(ctx)
-	for {
-		if err := workflow.Await(ctx, func() bool { return len(n.pending) > 0 }); err != nil {
-			return // the workflow is going away
-		}
-
-		// Dequeue and mark in-flight with no yield in between, so idle() is
-		// never transiently true while a notification is outstanding. A yield
-		// here would reopen exactly the hole idle() exists to close.
-		req := n.pending[0]
-		n.pending = n.pending[1:]
-		n.current = &req
-
-		if err := n.send(ctx, req); err != nil {
-			// The Activity's own retries are exhausted by this point, and they
-			// are bounded on purpose. Failing the workflow over an undelivered
-			// stub notification would be worse than the notification, so this
-			// attempt is recorded and abandoned -- but *not* given up on: the
-			// level stays out of NotifiedLevels, so the next add re-queues it.
-			// That is the outer retry, and it is why promotionFor asks whether
-			// the customer's tier has been announced rather than whether this
-			// particular add crossed a line.
-			logger.Error("notification delivery failed after retries; will retry on the next add",
-				"customerId", req.CustomerID, "event", req.Event,
-				"level", req.Level, "error", err)
-		} else if req.Event == NotifyEventPromoted {
-			// Recorded only on success, and only for promotions. Marking a level
-			// notified that was never delivered would suppress exactly the retry
-			// described above.
-			state.NotifiedLevels = append(state.NotifiedLevels, req.Level)
-		}
-
-		n.current = nil
+	if err := sendNotify(ctx, note); err != nil {
+		// The Activity's own retries are exhausted by this point, and they are
+		// bounded on purpose. Failing the workflow over an undelivered stub
+		// notification would be worse than the notification, so this attempt is
+		// recorded and abandoned -- but *not* given up on: the level stays out
+		// of NotifiedLevels, so the next add re-arms the main loop. That is the
+		// outer retry, and it is why promotionFor asks whether the customer's
+		// tier has been announced rather than whether this particular add
+		// crossed a line.
+		logger.Error("notification delivery failed after retries; will retry on the next add",
+			"customerId", note.CustomerID, "event", note.Event,
+			"level", note.Level, "error", err)
+		return
 	}
+
+	// Recorded only on success, and only for promotions. Marking a level
+	// notified that was never delivered would suppress exactly the retry
+	// described above.
+	state.NotifiedLevels = append(state.NotifiedLevels, note.Level)
 }
 
-// send runs the Activity and waits for it.
-func (n *notifier) send(ctx workflow.Context, req NotifyRequest) error {
+// sendNotify runs the Activity and waits for it.
+func sendNotify(ctx workflow.Context, req NotifyRequest) error {
 	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
 		StartToCloseTimeout: notifyTimeout,
 		RetryPolicy: &temporal.RetryPolicy{
