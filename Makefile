@@ -21,7 +21,7 @@ MOCK_PORT ?= 8082
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers api api-stop mockapi mockapi-stop test enroll status add deactivate \
-        inspect inspect-pg inspect-es write-trace audit web web-build
+        inspect inspect-pg inspect-es write-trace audit web web-build seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -82,6 +82,12 @@ verify-config: $(ENV) ## Check the platform behaviour the plan depends on
 
 reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
 	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) WF="$(WF)" bash /reap.sh
+
+# Distinct from reap, which spares running executions on purpose. This one takes
+# everything, for when workflow code has changed under live executions and the
+# dev answer is to start over. See PLAN.md 12.11.
+reset: $(ENV) ## Delete EVERY customer workflow, running included (dev only)
+	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) bash /reset.sh
 
 # --- Datastore inspection (Phase 7 / PLAN.md §8) -----------------------------
 # Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
@@ -223,3 +229,10 @@ deactivate: $(ENV) ## Leave the program -- cancel, not terminate (make deactivat
 audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
 	  || { echo "no API on :$(API_PORT) -- is 'make api' running?" >&2; exit 1; }
+
+# Fills a running stack with the same customers cmd/mockapi serves from
+# fixtures, so the UI shows the same people whichever backend it points at.
+# Drives the HTTP API rather than the Temporal client, so seeding exercises the
+# path a user takes -- rollover retries and error mapping included.
+seed: $(ENV) ## Seed demo customers (make seed FRESH=1 to replace existing ones)
+	API_BASE=http://localhost:$(API_PORT) FRESH=$(FRESH) go run ./cmd/seed

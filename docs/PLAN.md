@@ -1246,9 +1246,12 @@ Findings for §12 live in `web/NOTES.md`.
   notified, not dropped by the continue-as-new. Mock `NotifyCustomer` with a delay so the
   Activity is genuinely in flight when the run tries to roll, and assert it was called.
   Without the `notifier.Idle()` guard this test fails — write it first.
-- **Replay test** against a checked-in history JSON. Especially valuable here: entity
-  workflows are long-lived, so they *will* outlive a deploy, and this is the single highest
-  operational risk in the design.
+- **Replay test** against a checked-in history JSON. **Done, and it earned its place
+  immediately**: it caught Phase 6 as a change that would have wedged every existing customer
+  ([§12.11](#12-sharp-edges)). `internal/rewards/testdata/pre-notification-*` are histories
+  recorded by the Phase 5 worker, so replaying them is a rehearsal of that deploy. Note the
+  replayer needs `OriginalExecution` or it invents a workflow ID and fails misleadingly
+  ([§12.35](#12-sharp-edges)).
 - **Integration**: `temporal server start-dev` with `--search-attribute` flags, exercising
   the API end to end. Runs in CI without Docker or Elasticsearch — note that `start-dev` uses
   SQLite visibility, so it will not reproduce the ES lag of §7.5. That behaviour needs the
@@ -1269,7 +1272,7 @@ Findings for §12 live in `web/NOTES.md`.
 | 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | **Done.** Built against `make mockapi`; see `web/` and `web/NOTES.md` |
-| 9 | Replay test, seed script, README | |
+| 9 | Replay test, seed script, README | **Done.** The replay test caught Phase 6 as a breaking change for every running customer, fixed with `GetVersion` — [§12.11](#12-sharp-edges) |
 
 Phases 1–2 are the substance and Phase 7 is the other headline deliverable; the rest is
 scaffolding around them. Phase 6 slots in after the history crawl so the notification events
@@ -1384,9 +1387,27 @@ Things not in the original brief that will come up.
 **Operational**
 
 11. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
-   changing workflow code under a running execution causes non-determinism errors. In dev,
-   terminate stale workflows between changes. Document Worker Versioning / patching as the
-   production answer, and add a `make reset` that wipes all customer workflows.
+   changing workflow code under a running execution causes non-determinism errors.
+
+   **Confirmed in Phase 9, and it had already happened.** Phase 6 shipped a change that would
+   have wedged every customer with an open run. Adding the notification Activity emits a
+   `ScheduleActivityTask` command that histories recorded by the Phase 5 worker have no event
+   for, so replay fails, the workflow task retries forever, and the customer is stuck — with no
+   error surface anywhere a user or an operator would look:
+
+   ```
+   nondeterministic workflow: extra replay command for ScheduleActivityTask:
+     (ActivityType:(Name:NotifyCustomer) ...)
+   ```
+
+   Nothing in Phases 6–8 caught it. Unit tests pass, the API works, the UI renders; the damage
+   only exists for executions that started *before* the deploy, and the only thing that looks at
+   those is a replay test. That is the whole argument for [§10](#10-testing) insisting on one.
+
+   Fixed with `workflow.GetVersion` gating the Activity, so runs recorded before the marker keep
+   the old behaviour for the rest of their lives and pick notifications up at their next
+   continue-as-new — at most `EarnsPerRun` adds away. `make reset` is still worth having for
+   dev, but it is a convenience, not the answer.
 12. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
@@ -1552,12 +1573,40 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     natural and silently loses that notification — `handleLeave` then waits for a drain that
     can never happen, because the thing doing the draining died with the context.
 
+**From the Phase 9 replay test.**
+
+35. **`ReplayWorkflowHistory` substitutes a fake workflow ID, and the failure blames innocent
+    code.** The replayer runs the workflow as `"ReplayId"` unless
+    `ReplayWorkflowHistoryWithOptions` is given an `OriginalExecution`. Any workflow that reads
+    its own ID therefore behaves differently under replay — ours rejects the enrollment payload
+    (`validateEnrollment`, §3.1), returns before emitting a single command, and reports:
+
+    ```
+    nondeterministic workflow: missing replay command for UpsertWorkflowSearchAttributes
+    ```
+
+    Which names a line that is entirely innocent, and says "nondeterministic", so it reads as a
+    versioning problem rather than a harness one. The option's doc comment calls it "Optional".
+    It is optional only for workflows that never look at their own identity.
+
+36. **`GetVersion` writes two events, not one**: the `Version` marker *and* an automatic upsert
+    of the built-in `TemporalChangeVersion` search attribute. The second one is a gift —
+    executions become queryable by which version of the code they are running, which is exactly
+    what you want during a migration:
+
+    ```
+    WorkflowType = 'CustomerRewardsWorkflow' AND TemporalChangeVersion = 'tier-notifications-1'
+    ```
+
+    That answers "how many customers have picked up the change yet?" from the Temporal UI, with
+    no instrumentation of our own.
+
 **Design**
 
-35. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+37. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-36. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+38. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

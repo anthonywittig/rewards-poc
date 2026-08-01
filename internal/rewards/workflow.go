@@ -84,13 +84,36 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
 
+	// Phase 6 added the notification Activity, and adding it is a *breaking*
+	// change to every run already in flight: the new code emits a
+	// ScheduleActivityTask command where the recorded history has no matching
+	// event, so replay fails and the workflow task retries forever. Every
+	// existing customer would wedge on deploy.
+	//
+	// That is not a hypothetical -- the replay test in replay_test.go reproduces
+	// it against histories recorded by the Phase 5 worker:
+	//
+	//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
+	//	  (ActivityType:(Name:NotifyCustomer) ...)
+	//
+	// GetVersion is the fix. Runs whose history predates this marker resolve to
+	// DefaultVersion and keep behaving exactly as they did; new runs record
+	// version 1 and notify. PLAN.md 12.11.
+	//
+	// Called unconditionally and before anything reads it, because the marker's
+	// position in history is itself part of the replayable sequence.
+	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
+		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
+
 	// The tier-promotion notifier (PLAN.md 3.7). It runs on a disconnected
 	// context so that a deactivation cannot cancel a promotion that was already
 	// earned; handleLeave waits for it rather than racing it.
 	n := &notifier{}
-	nctx, stopNotifier := workflow.NewDisconnectedContext(ctx)
-	defer stopNotifier()
-	workflow.Go(nctx, func(gctx workflow.Context) { n.run(gctx, &state) })
+	if notifyEnabled {
+		nctx, stopNotifier := workflow.NewDisconnectedContext(ctx)
+		defer stopNotifier()
+		workflow.Go(nctx, func(gctx workflow.Context) { n.run(gctx, &state) })
+	}
 
 	if err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (CustomerStatus, error) {
 		return statusOf(&state), nil
@@ -124,9 +147,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// point-add to the notifier's availability -- the points are already
 			// earned and recorded, so a notification provider being down must
 			// not fail them or hold the caller open. PLAN.md 3.7.
-			if note, ok := promotionFor(&state); ok && n.queue(note) {
-				logger.Info("tier promotion queued",
-					"customerId", state.CustomerID, "level", note.Level)
+			if notifyEnabled {
+				if note, ok := promotionFor(&state); ok && n.queue(note) {
+					logger.Info("tier promotion queued",
+						"customerId", state.CustomerID, "level", note.Level)
+				}
 			}
 
 			// Drives continue-as-new. The handler only counts -- the roll itself
@@ -208,7 +233,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// Doing so also sidesteps the versioning hazard on EarnsPerRun: there is no
 	// constant to change, so nothing to break running workflows with.
 	if err := workflow.Await(ctx, func() bool { return earnsThisRun >= EarnsPerRun }); err != nil {
-		return handleLeave(ctx, &state, n)
+		return handleLeave(ctx, &state, n, notifyEnabled)
 	}
 
 	// A nil error above does NOT mean "not cancelled". workflow.Await evaluates
@@ -229,7 +254,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// just ended. The customer clicks deactivate and stays active. Departure
 	// always wins -- the points are already recorded either way.
 	if ctx.Err() != nil {
-		return handleLeave(ctx, &state, n)
+		return handleLeave(ctx, &state, n, notifyEnabled)
 	}
 
 	// Nothing may be left half-done when the run ends. Two separate things can
@@ -253,14 +278,14 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	if err := workflow.Await(ctx, func() bool {
 		return workflow.AllHandlersFinished(ctx) && n.idle()
 	}); err != nil {
-		return handleLeave(ctx, &state, n)
+		return handleLeave(ctx, &state, n, notifyEnabled)
 	}
 
 	// Same trap as above, and a wider window: handlers are usually already
 	// finished, so this Await frequently returns nil on its first condition
 	// check without ever consulting ctx.
 	if ctx.Err() != nil {
-		return handleLeave(ctx, &state, n)
+		return handleLeave(ctx, &state, n, notifyEnabled)
 	}
 
 	state.Generation++
@@ -278,7 +303,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 //
 // Cancel rather than Terminate is what makes this reachable at all: Terminate
 // skips workflow code entirely, so none of this would run. PLAN.md 3.6.
-func handleLeave(ctx workflow.Context, state *CustomerState, n *notifier) error {
+func handleLeave(ctx workflow.Context, state *CustomerState, n *notifier, notifyEnabled bool) error {
 	logger := workflow.GetLogger(ctx)
 	logger.Info("customer leaving rewards program",
 		"customerId", state.CustomerID,
@@ -305,9 +330,11 @@ func handleLeave(ctx workflow.Context, state *CustomerState, n *notifier) error 
 	// second one -- which is why there is no cleanup Activity in this design.
 	// Sent synchronously because it is the last thing that happens; there is no
 	// run left for a queue to be drained by. PLAN.md 3.7.
-	if err := n.send(dctx, departureNotice(state)); err != nil {
-		logger.Error("departure notification failed after retries",
-			"customerId", state.CustomerID, "error", err)
+	if notifyEnabled {
+		if err := n.send(dctx, departureNotice(state)); err != nil {
+			logger.Error("departure notification failed after retries",
+				"customerId", state.CustomerID, "error", err)
+		}
 	}
 
 	// Returning the cancellation error is what closes the execution as Canceled

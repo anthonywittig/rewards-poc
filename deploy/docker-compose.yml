@@ -85,6 +85,7 @@ services:
       # Note it has bash, curl and grep but no python3 or jq.
       - ./bootstrap.sh:/bootstrap.sh:ro
       - ./reap.sh:/reap.sh:ro
+      - ./reset.sh:/reset.sh:ro
       - ./inspect:/inspect:ro
     healthcheck:
       # The frontend binds the container's own IP, not 127.0.0.1, so localhost

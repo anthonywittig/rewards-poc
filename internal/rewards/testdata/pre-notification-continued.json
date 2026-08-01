@@ -1,0 +1,746 @@
+{
+  "events": [
+    {
+      "eventId": "1",
+      "eventTime": "2026-07-31T20:38:50.762636296Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_STARTED",
+      "taskId": "7340127",
+      "workflowExecutionStartedEventAttributes": {
+        "workflowType": {
+          "name": "CustomerRewardsWorkflow"
+        },
+        "taskQueue": {
+          "name": "rewards",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwiZW1haWwiOiJoaXN0QGV4YW1wbGUuY29tIiwicG9pbnRzIjozMDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wNy0zMVQyMDozODo1MC43MTI2ODQyNjFaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjozLCJnZW5lcmF0aW9uIjoxfQ=="
+            }
+          ]
+        },
+        "workflowExecutionTimeout": "0s",
+        "workflowRunTimeout": "0s",
+        "workflowTaskTimeout": "10s",
+        "continuedExecutionRunId": "019fb9e6-ae47-73ef-bc8e-15d12bc93905",
+        "initiator": "CONTINUE_AS_NEW_INITIATOR_WORKFLOW",
+        "originalExecutionRunId": "9be64395-486c-40ff-a17c-b3f7bfacfb3a",
+        "firstExecutionRunId": "019fb9e6-ae47-73ef-bc8e-15d12bc93905",
+        "attempt": 1,
+        "firstWorkflowTaskBackoff": "0.932595259s",
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MA=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MzAwMA=="
+            }
+          }
+        },
+        "prevAutoResetPoints": {
+          "points": [
+            {
+              "buildId": "09f8bd9bbb51f19dc18f973230405d57",
+              "runId": "019fb9e6-ae47-73ef-bc8e-15d12bc93905",
+              "firstWorkflowTaskCompletedId": "4",
+              "createTime": "2026-07-31T20:38:50.724803255Z",
+              "expireTime": "2026-07-31T21:38:50.762636296Z",
+              "resettable": true
+            }
+          ]
+        },
+        "header": {},
+        "workflowId": "customer-hist"
+      }
+    },
+    {
+      "eventId": "2",
+      "eventTime": "2026-07-31T20:38:50.779565754Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "7340138",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "rewards",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "3",
+      "eventTime": "2026-07-31T20:38:50.780380235Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "7340139",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "2",
+        "identity": "4962@vm@",
+        "requestId": "ac435ad3-fc99-4211-97dd-0ed460292cff",
+        "historySizeBytes": "1053",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        }
+      }
+    },
+    {
+      "eventId": "4",
+      "eventTime": "2026-07-31T20:38:50.785062628Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "7340140",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "2",
+        "startedEventId": "3",
+        "identity": "4962@vm@",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        },
+        "sdkMetadata": {
+          "langUsedFlags": [
+            3,
+            4
+          ],
+          "sdkName": "temporal-go",
+          "sdkVersion": "1.47.0"
+        },
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "5",
+      "eventTime": "2026-07-31T20:38:50.785131125Z",
+      "eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+      "taskId": "7340141",
+      "upsertWorkflowSearchAttributesEventAttributes": {
+        "workflowTaskCompletedEventId": "4",
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MQ=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MzAwMA=="
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "6",
+      "eventTime": "2026-07-31T20:38:50.785206524Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED",
+      "taskId": "7340142",
+      "workflowExecutionUpdateAcceptedEventAttributes": {
+        "protocolInstanceId": "2c0c02ab-d075-438a-b79f-e074e85cc4ab",
+        "acceptedRequestMessageId": "2c0c02ab-d075-438a-b79f-e074e85cc4ab/request",
+        "acceptedRequestSequencingEventId": "2",
+        "acceptedRequest": {
+          "meta": {
+            "updateId": "2c0c02ab-d075-438a-b79f-e074e85cc4ab",
+            "identity": "13634@vm@"
+          },
+          "input": {
+            "header": {},
+            "name": "addPoints",
+            "args": {
+              "payloads": [
+                {
+                  "metadata": {
+                    "encoding": "anNvbi9wbGFpbg=="
+                  },
+                  "data": "eyJhbW91bnQiOjEwMDAsInJlYXNvbiI6InB1cmNoYXNlIDQifQ=="
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "7",
+      "eventTime": "2026-07-31T20:38:50.785254312Z",
+      "eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+      "taskId": "7340143",
+      "upsertWorkflowSearchAttributesEventAttributes": {
+        "workflowTaskCompletedEventId": "4",
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MQ=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "NDAwMA=="
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "8",
+      "eventTime": "2026-07-31T20:38:50.785278291Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED",
+      "taskId": "7340144",
+      "workflowExecutionUpdateCompletedEventAttributes": {
+        "meta": {
+          "updateId": "2c0c02ab-d075-438a-b79f-e074e85cc4ab"
+        },
+        "acceptedEventId": "6",
+        "outcome": {
+          "success": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJiYWxhbmNlIjo0MDAwLCJsZXZlbCI6InBsYXRpbnVtIiwiZXZlbnRJZCI6Imhpc3Q6NCJ9"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "eventId": "9",
+      "eventTime": "2026-07-31T20:38:50.798589064Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "7340152",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "vm:9de59681-0e8c-4ac4-b929-55e60ab325f3",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "rewards"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "10",
+      "eventTime": "2026-07-31T20:38:50.799760651Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "7340153",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "9",
+        "identity": "4962@vm@",
+        "requestId": "97b70742-a946-4c79-8c3c-f10664bb979c",
+        "historySizeBytes": "2827",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        }
+      }
+    },
+    {
+      "eventId": "11",
+      "eventTime": "2026-07-31T20:38:50.804110672Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "7340154",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "9",
+        "startedEventId": "10",
+        "identity": "4962@vm@",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "12",
+      "eventTime": "2026-07-31T20:38:50.804151115Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED",
+      "taskId": "7340155",
+      "workflowExecutionUpdateAcceptedEventAttributes": {
+        "protocolInstanceId": "b4e93a67-5d65-41b1-825d-bf7ddd774ad3",
+        "acceptedRequestMessageId": "b4e93a67-5d65-41b1-825d-bf7ddd774ad3/request",
+        "acceptedRequestSequencingEventId": "9",
+        "acceptedRequest": {
+          "meta": {
+            "updateId": "b4e93a67-5d65-41b1-825d-bf7ddd774ad3",
+            "identity": "13634@vm@"
+          },
+          "input": {
+            "header": {},
+            "name": "addPoints",
+            "args": {
+              "payloads": [
+                {
+                  "metadata": {
+                    "encoding": "anNvbi9wbGFpbg=="
+                  },
+                  "data": "eyJhbW91bnQiOjEwMDAsInJlYXNvbiI6InB1cmNoYXNlIDUifQ=="
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "13",
+      "eventTime": "2026-07-31T20:38:50.804231514Z",
+      "eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+      "taskId": "7340156",
+      "upsertWorkflowSearchAttributesEventAttributes": {
+        "workflowTaskCompletedEventId": "11",
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MQ=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "NTAwMA=="
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "14",
+      "eventTime": "2026-07-31T20:38:50.804267532Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED",
+      "taskId": "7340157",
+      "workflowExecutionUpdateCompletedEventAttributes": {
+        "meta": {
+          "updateId": "b4e93a67-5d65-41b1-825d-bf7ddd774ad3"
+        },
+        "acceptedEventId": "12",
+        "outcome": {
+          "success": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJiYWxhbmNlIjo1MDAwLCJsZXZlbCI6InBsYXRpbnVtIiwiZXZlbnRJZCI6Imhpc3Q6NSJ9"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "eventId": "15",
+      "eventTime": "2026-07-31T20:38:50.815989918Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_SCHEDULED",
+      "taskId": "7340165",
+      "workflowTaskScheduledEventAttributes": {
+        "taskQueue": {
+          "name": "vm:9de59681-0e8c-4ac4-b929-55e60ab325f3",
+          "kind": "TASK_QUEUE_KIND_STICKY",
+          "normalName": "rewards"
+        },
+        "startToCloseTimeout": "10s",
+        "attempt": 1
+      }
+    },
+    {
+      "eventId": "16",
+      "eventTime": "2026-07-31T20:38:50.816571803Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_STARTED",
+      "taskId": "7340166",
+      "workflowTaskStartedEventAttributes": {
+        "scheduledEventId": "15",
+        "identity": "4962@vm@",
+        "requestId": "f210198e-826a-4f21-8c99-964a262e2e10",
+        "historySizeBytes": "4069",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        }
+      }
+    },
+    {
+      "eventId": "17",
+      "eventTime": "2026-07-31T20:38:50.820816075Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_TASK_COMPLETED",
+      "taskId": "7340167",
+      "workflowTaskCompletedEventAttributes": {
+        "scheduledEventId": "15",
+        "startedEventId": "16",
+        "identity": "4962@vm@",
+        "workerVersion": {
+          "buildId": "8063c2497f4291281130b580adfc4ae3"
+        },
+        "sdkMetadata": {},
+        "meteringMetadata": {}
+      }
+    },
+    {
+      "eventId": "18",
+      "eventTime": "2026-07-31T20:38:50.820871941Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED",
+      "taskId": "7340168",
+      "workflowExecutionUpdateAcceptedEventAttributes": {
+        "protocolInstanceId": "341f3698-505c-4ea2-af37-0a8edc8b029c",
+        "acceptedRequestMessageId": "341f3698-505c-4ea2-af37-0a8edc8b029c/request",
+        "acceptedRequestSequencingEventId": "15",
+        "acceptedRequest": {
+          "meta": {
+            "updateId": "341f3698-505c-4ea2-af37-0a8edc8b029c",
+            "identity": "13634@vm@"
+          },
+          "input": {
+            "header": {},
+            "name": "addPoints",
+            "args": {
+              "payloads": [
+                {
+                  "metadata": {
+                    "encoding": "anNvbi9wbGFpbg=="
+                  },
+                  "data": "eyJhbW91bnQiOjEwMDAsInJlYXNvbiI6InB1cmNoYXNlIDYifQ=="
+                }
+              ]
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "19",
+      "eventTime": "2026-07-31T20:38:50.820953693Z",
+      "eventType": "EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES",
+      "taskId": "7340169",
+      "upsertWorkflowSearchAttributesEventAttributes": {
+        "workflowTaskCompletedEventId": "17",
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MQ=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "NjAwMA=="
+            }
+          }
+        }
+      }
+    },
+    {
+      "eventId": "20",
+      "eventTime": "2026-07-31T20:38:50.821016472Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED",
+      "taskId": "7340170",
+      "workflowExecutionUpdateCompletedEventAttributes": {
+        "meta": {
+          "updateId": "341f3698-505c-4ea2-af37-0a8edc8b029c"
+        },
+        "acceptedEventId": "18",
+        "outcome": {
+          "success": {
+            "payloads": [
+              {
+                "metadata": {
+                  "encoding": "anNvbi9wbGFpbg=="
+                },
+                "data": "eyJiYWxhbmNlIjo2MDAwLCJsZXZlbCI6InBsYXRpbnVtIiwiZXZlbnRJZCI6Imhpc3Q6NiJ9"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "eventId": "21",
+      "eventTime": "2026-07-31T20:38:50.821077408Z",
+      "eventType": "EVENT_TYPE_WORKFLOW_EXECUTION_CONTINUED_AS_NEW",
+      "taskId": "7340171",
+      "workflowExecutionContinuedAsNewEventAttributes": {
+        "newExecutionRunId": "5431d4a2-6173-4fed-aad4-46ed9d318dc7",
+        "workflowType": {
+          "name": "CustomerRewardsWorkflow"
+        },
+        "taskQueue": {
+          "name": "rewards",
+          "kind": "TASK_QUEUE_KIND_NORMAL"
+        },
+        "input": {
+          "payloads": [
+            {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg=="
+              },
+              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwiZW1haWwiOiJoaXN0QGV4YW1wbGUuY29tIiwicG9pbnRzIjo2MDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wNy0zMVQyMDozODo1MC43MTI2ODQyNjFaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjo2LCJnZW5lcmF0aW9uIjoyfQ=="
+            }
+          ]
+        },
+        "workflowRunTimeout": "0s",
+        "workflowTaskTimeout": "10s",
+        "workflowTaskCompletedEventId": "17",
+        "header": {},
+        "searchAttributes": {
+          "indexedFields": {
+            "CustomerEmail": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
+            },
+            "CustomerId": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "Imhpc3Qi"
+            },
+            "CustomerName": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "VGV4dA=="
+              },
+              "data": "Ikhpc3RvcnkgUHJvYmUi"
+            },
+            "RewardsEnrolledAt": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "RGF0ZXRpbWU="
+              },
+              "data": "IjIwMjYtMDctMzFUMjA6Mzg6NTAuNzEyNjg0MjYxWiI="
+            },
+            "RewardsGeneration": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "MQ=="
+            },
+            "RewardsLevel": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "S2V5d29yZA=="
+              },
+              "data": "InBsYXRpbnVtIg=="
+            },
+            "RewardsPoints": {
+              "metadata": {
+                "encoding": "anNvbi9wbGFpbg==",
+                "type": "SW50"
+              },
+              "data": "NjAwMA=="
+            }
+          }
+        },
+        "inheritBuildId": true
+      }
+    }
+  ]
+}

@@ -6,10 +6,14 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 6.** The workflow runs, continues-as-new every 3 point-adds, notifies customers
-when they cross a tier, and is drivable from the `temporal` CLI, over HTTP, or through the
-React UI. The customer list comes straight out of the visibility store; the audit timeline is
-reconstructed by crawling Event History. Phase 9 (replay test, seed script) is what's left.
+**Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
+they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
+The customer list comes straight out of the visibility store; the audit timeline is
+reconstructed by crawling Event History.
+
+Every phase of this project found something the plan got wrong, and those corrections are the
+most useful thing in it — they're collected in [§12 of the plan](docs/PLAN.md#12-sharp-edges).
+The one worth reading first is §12.11.
 
 ## Quick start
 
@@ -391,6 +395,62 @@ This is also why there's a single `Points` field and no separate lifetime total 
 monotonic balance those are the same number. See §3.1 of the plan for why carrying both was
 worse than carrying one.
 
+## The replay test is the one that matters
+
+```sh
+go test ./internal/rewards/ -run TestReplay
+```
+
+A customer's workflow runs forever, so it **will** outlive a deploy. When a worker picks up a
+task for a run that started weeks ago, it replays that run's recorded history through today's
+code and requires the commands to match event for event. If they don't, the workflow task fails
+and retries forever: the customer is wedged, silently, and restarting nothing helps.
+
+`internal/rewards/testdata/pre-notification-*.json` are real histories recorded by the *Phase 5*
+worker, before the notification Activity existed. Replaying them is a rehearsal of the deploy
+that added it — and the first time it ran, it failed:
+
+```
+nondeterministic workflow: extra replay command for ScheduleActivityTask:
+  (ActivityType:(Name:NotifyCustomer) ...)
+```
+
+Adding the Activity would have wedged **every customer with an open run**. Nothing else caught
+it: the unit tests passed, the API worked, the UI rendered. The damage only existed for
+executions that started before the deploy, and the only thing that looks at those is a replay
+test.
+
+The fix is `workflow.GetVersion`. Runs whose history predates the marker keep the old behaviour
+for the rest of their lives and pick notifications up at their next continue-as-new — at most
+three adds away. It also makes the migration observable, because `GetVersion` upserts a built-in
+search attribute:
+
+```sh
+# how many customers have picked up the change?
+temporal workflow count --query "TemporalChangeVersion = 'tier-notifications-1'"
+```
+
+One trap, since it cost real time: `worker.ReplayWorkflowHistory` runs the workflow under a fake
+ID (`"ReplayId"`) unless you pass `OriginalExecution`. Any workflow that reads its own ID — ours
+validates against it — then fails with a nondeterminism error naming a completely innocent line.
+It reads exactly like a versioning bug. `internal/rewards/replay_test.go` pins that so nobody
+simplifies the workaround away.
+
+## Seeding a demo
+
+```sh
+make seed            # needs make up + make worker + make api
+make seed FRESH=1    # replace existing customers
+```
+
+Nine customers matching `cmd/mockapi`'s fixtures name for name, so the UI shows the same people
+whichever backend it points at. It drives the HTTP API rather than the Temporal client, so
+seeding exercises the path a user takes — rollover retries and error mapping included.
+
+`capped` is the interesting one: 100 adds to land just under the points cap, which makes handler
+rejections reachable and produces ~33 generations. Follow it with `make reap WF=customer-capped`
+and `make audit ID=capped` for a truncated audit log.
+
 ## Running more than one stack
 
 Ports and container names all come from the env file, and `COMPOSE_PROJECT_NAME` isolates
@@ -479,6 +539,7 @@ on-demand deletion works. Worth re-running after any server upgrade.
 cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
 cmd/mockapi/                  the same contract from fixtures, no stack needed
+cmd/seed/                     demo data, via the API rather than around it
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
   workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus
@@ -487,6 +548,8 @@ internal/rewards/
   notifier.go                 the drain goroutine and the continue-as-new guard
   activity.go                 NotifyCustomer -- the only side effect in the system
   workflow_test.go            unit tests (no Docker required)
+  replay_test.go              deploy rehearsal against recorded histories
+  testdata/                   real histories, including pre-Phase-6 ones
 internal/httpapi/
   server.go                   enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
