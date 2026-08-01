@@ -121,7 +121,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 			"customer is already enrolled and active"}
 	}
 
-	if _, err = s.sendReactivate(r.Context(), wfID, rewards.ReactivateRequest{
+	if _, err = s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
 		Name:  req.Name,
 		Email: req.Email,
 	}); err != nil {
@@ -205,9 +205,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	for _, e := range resp.GetExecutions() {
 		v := decodeSearchAttributes(e.GetSearchAttributes())
 
-		// Soft-inactive: membership is RewardsActive, not ExecutionStatus.
-		// Fall back to Running/not for workflows that have not upserted the
-		// attribute yet (pre-deploy generations).
+		// Soft-inactive: membership is RewardsActive. Deactivate fails the
+		// Update if the upsert cannot land, so Active=false is present for
+		// every soft leave. Nil Active + Running is only the pre-deploy case.
 		status := "deactivated"
 		switch {
 		case v.Active != nil && *v.Active:
@@ -322,8 +322,9 @@ func mapListError(err error, userQuery string) error {
 	return &apiError{http.StatusBadRequest, CodeInvalidRequest, msg}
 }
 
-// getCustomer reads current state via Query. Soft-inactive status comes from
-// workflow state (Active), not from whether the execution is still Running.
+// getCustomer reads current state via Query. Status is active only when the
+// execution is still Running *and* soft-inactive says Active; ops Cancel leaves
+// Active=true in replayed state but must still show as deactivated.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -341,7 +342,7 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 
 	out := CustomerResponse{
 		CustomerID: id,
-		Status:     "active", // refined from Query below
+		Status:     "deactivated",
 		RunID:      info.GetExecution().GetRunId(),
 	}
 
@@ -360,21 +361,22 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		out.EnrolledAt = st.EnrolledAt
 		out.LifetimeEarnEvents = st.LifetimeEarnEvents
 		out.Generation = st.Generation
-		if st.Active {
+		if running && st.Active {
 			out.Status = "active"
-		} else {
-			out.Status = "deactivated"
 		}
 
-	case !running:
-		// Closed execution (ops cancel / failed enroll): degrade to search
-		// attributes when no worker is available to replay.
-		s.log.Info("query failed for a closed customer, falling back to search attributes",
-			"workflowId", wfID, "error", qerr)
-		fillFromSearchAttributes(&out, info.GetSearchAttributes())
-		out.Status = "deactivated"
-
 	default:
+		// Soft-deactivated customers stay Running, so the old "closed only"
+		// degrade path missed them when the worker is down. Fall back whenever
+		// visibility already says inactive, or the execution is closed.
+		v := decodeSearchAttributes(info.GetSearchAttributes())
+		if !running || (v.Active != nil && !*v.Active) {
+			s.log.Info("query failed; falling back to search attributes",
+				"workflowId", wfID, "running", running, "error", qerr)
+			fillFromSearchAttributes(&out, info.GetSearchAttributes())
+			out.Status = "deactivated"
+			break
+		}
 		return qerr
 	}
 
@@ -594,39 +596,107 @@ func (s *Server) sendReactivate(
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
-		return rewards.CustomerStatus{}, mapUpdateError(err)
+		return rewards.CustomerStatus{}, err
 	}
 	var st rewards.CustomerStatus
 	if err := handle.Get(ctx, &st); err != nil {
-		return rewards.CustomerStatus{}, mapUpdateError(err)
+		return rewards.CustomerStatus{}, err
 	}
 	return st, nil
+}
+
+func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.DeactivateResult, error) {
+	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
+	defer cancel()
+
+	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
+		WorkflowID:   wfID,
+		UpdateName:   rewards.UpdateDeactivate,
+		WaitForStage: client.WorkflowUpdateStageCompleted,
+	})
+	if err != nil {
+		return rewards.DeactivateResult{}, err
+	}
+	var res rewards.DeactivateResult
+	if err := handle.Get(ctx, &res); err != nil {
+		return rewards.DeactivateResult{}, err
+	}
+	return res, nil
+}
+
+// reactivateWithRolloverRetry mirrors updateWithRolloverRetry: a re-enroll that
+// races continue-as-new must retry against the successor rather than 404.
+func (s *Server) reactivateWithRolloverRetry(
+	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+) (rewards.CustomerStatus, error) {
+	const attempts = 2
+	for attempt := 1; attempt <= attempts; attempt++ {
+		st, err := s.sendReactivate(ctx, wfID, req)
+		if err == nil {
+			return st, nil
+		}
+		if !isClosedRun(err) {
+			return rewards.CustomerStatus{}, mapUpdateError(err)
+		}
+		running, describeErr := s.hasRunningExecution(ctx, wfID)
+		if describeErr != nil {
+			return rewards.CustomerStatus{}, mapQueryError(describeErr)
+		}
+		if !running {
+			return rewards.CustomerStatus{}, &apiError{
+				http.StatusConflict, CodeDeactivated,
+				"customer workflow is closed; enroll them again to start fresh",
+			}
+		}
+		s.log.Info("reactivate lost its run to continue-as-new, retrying against the successor",
+			"workflowId", wfID, "attempt", attempt)
+	}
+	return rewards.CustomerStatus{}, &apiError{
+		http.StatusConflict, CodeRolloverRace,
+		"the customer's workflow rolled over while reactivating; please retry",
+	}
+}
+
+func (s *Server) deactivateWithRolloverRetry(ctx context.Context, wfID string) error {
+	const attempts = 2
+	for attempt := 1; attempt <= attempts; attempt++ {
+		_, err := s.sendDeactivate(ctx, wfID)
+		if err == nil {
+			return nil
+		}
+		if !isClosedRun(err) {
+			return mapUpdateError(err)
+		}
+		running, describeErr := s.hasRunningExecution(ctx, wfID)
+		if describeErr != nil {
+			return mapQueryError(describeErr)
+		}
+		if !running {
+			// Already gone via ops Cancel — DELETE is idempotent.
+			return nil
+		}
+		s.log.Info("deactivate lost its run to continue-as-new, retrying against the successor",
+			"workflowId", wfID, "attempt", attempt)
+	}
+	return &apiError{
+		http.StatusConflict, CodeRolloverRace,
+		"the customer's workflow rolled over while deactivating; please retry",
+	}
 }
 
 // deactivate soft-leaves the customer via Update. The workflow stays Running
 // with Deactivated set so re-enrollment can restore the prior balance.
 //
-// Idempotent: repeating DELETE against an already-deactivated customer is a
-// successful no-op (the Update handler returns nil).
+// Idempotent: repeating DELETE against an already-deactivated customer completes
+// with Changed=false (no extra audit row).
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
 		return badRequest("customer id is required")
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), updateTimeout)
-	defer cancel()
-
-	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID:   rewards.WorkflowID(id),
-		UpdateName:   rewards.UpdateDeactivate,
-		WaitForStage: client.WorkflowUpdateStageCompleted,
-	})
-	if err != nil {
-		return mapUpdateError(err)
-	}
-	if err := handle.Get(ctx, nil); err != nil {
-		return mapUpdateError(err)
+	if err := s.deactivateWithRolloverRetry(r.Context(), rewards.WorkflowID(id)); err != nil {
+		return err
 	}
 
 	w.WriteHeader(http.StatusNoContent)

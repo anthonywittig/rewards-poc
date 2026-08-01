@@ -265,6 +265,12 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
+				// Idempotent repeat DELETE still completes an Update; only a
+				// Changed leave belongs on the timeline.
+				var res rewards.DeactivateResult
+				if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) && !res.Changed {
+					continue
+				}
 				out.entries = append(out.entries, AuditEntry{
 					Kind:       AuditDeactivated,
 					At:         p.at,

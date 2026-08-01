@@ -40,6 +40,12 @@ type AddPointsResult struct {
 	EventID string `json:"eventId"`
 }
 
+// DeactivateResult is what deactivate returns so the audit crawl can tell a
+// real leave from an idempotent no-op (repeat DELETE).
+type DeactivateResult struct {
+	Changed bool `json:"changed"`
+}
+
 // ReactivateRequest is the reactivate Update argument (re-enrollment).
 type ReactivateRequest struct {
 	Name  string `json:"name"`
@@ -166,21 +172,22 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return fmt.Errorf("register %s update: %w", UpdateAddPoints, err)
 	}
 
-	if err := workflow.SetUpdateHandler(ctx, UpdateDeactivate, func(ctx workflow.Context) error {
+	if err := workflow.SetUpdateHandler(ctx, UpdateDeactivate, func(ctx workflow.Context) (DeactivateResult, error) {
 		if state.Deactivated {
-			return nil // idempotent
+			return DeactivateResult{Changed: false}, nil
 		}
 		state.Deactivated = true
 		needsDeparture = true
+		// Fail the Update if visibility cannot record Active=false -- otherwise
+		// the list falls back to ExecutionStatus=Running and shows them active.
 		if err := upsertSearchAttributes(ctx, &state); err != nil {
-			logger.Error("search attribute upsert failed after deactivate",
-				"customerId", state.CustomerID, "error", err)
+			return DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 		}
 		logger.Info("customer deactivated",
 			"customerId", state.CustomerID,
 			"points", state.Points,
 			"level", Level(state.Points))
-		return nil
+		return DeactivateResult{Changed: true}, nil
 	}); err != nil {
 		return fmt.Errorf("register %s update: %w", UpdateDeactivate, err)
 	}
@@ -200,8 +207,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			state.Email = strings.TrimSpace(req.Email)
 			state.Deactivated = false
 			if err := upsertSearchAttributes(ctx, &state); err != nil {
-				logger.Error("search attribute upsert failed after reactivate",
-					"customerId", state.CustomerID, "error", err)
+				return CustomerStatus{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			logger.Info("customer reactivated",
 				"customerId", state.CustomerID,

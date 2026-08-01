@@ -125,12 +125,8 @@ make worker
 make api        # :8081
 ```
 
-Building a UI and don't want the stack? `make mockapi` serves the same contract from fixtures on
-`:8082` — no Temporal, no Docker, no `.env`. Every endpoint is now live for real as well, but the
-mock still buys the cases that are awkward to produce on demand: a deactivated customer, a
-truncated audit log, a customer sitting under the points cap, and the ~400 ms visibility lag on
-newly created customers. It shares the API's DTOs, so it cannot drift from the real thing without
-failing to compile.
+Building the UI? With the stack up, run `make api` and `make web` — Vite proxies
+`/api` to `:8081` by default.
 
 **The customer list is capped at five rows and has no pagination.** That's a consequence of
 `ORDER BY` not working: with no stable ordering, "page 2" doesn't mean anything in particular, so
@@ -302,17 +298,11 @@ The rule of thumb, and where each rejection lives in the code:
 ## The UI
 
 ```sh
-make mockapi     # :8082, fixtures only
-make web         # :5173
-```
-
-Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the mock.
-Against the real stack:
-
-```sh
 make up && make worker && make api
-VITE_API_PROXY_TARGET=http://localhost:8081 make web
+make web         # :5173 — /api proxied to :8081
 ```
+
+Vite proxies `/api` to whatever `VITE_API_PROXY_TARGET` points at, defaulting to the real API.
 
 It has to be a proxy rather than a cross-origin base URL: the Go API deliberately sends no
 CORS headers, and same-origin proxying is both the normal Vite setup and the one that survives
@@ -478,7 +468,6 @@ on-demand deletion works. Worth re-running after any server upgrade.
 ```
 cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
-cmd/mockapi/                  the same contract from fixtures, no stack needed
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
   workflow.go                 CustomerRewardsWorkflow, addPoints, getStatus

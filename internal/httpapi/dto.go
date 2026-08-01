@@ -82,11 +82,9 @@ type EnrollResponse struct {
 
 // --- Frozen contract for Phases 4 and 5 -------------------------------------
 //
-// The types below describe endpoints that do not exist yet: the customer list
-// (Phase 4) and the audit timeline (Phase 5). They are defined now so the UI
-// (Phase 8) can be built against `cmd/mockapi` in parallel rather than waiting
-// for either. Changing them later defeats the point, so they are shaped from
-// PLAN.md 4, 6.2 and 6.3 rather than from what is convenient to implement.
+// The types below started life so the UI could be shaped against a frozen
+// contract before list/audit existed. They are still the wire types for those
+// endpoints.
 
 // CustomerListItem is one row of GET /api/customers.
 //
