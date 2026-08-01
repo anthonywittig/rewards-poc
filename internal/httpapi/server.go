@@ -344,6 +344,15 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		out.Points = st.Points
 		out.Level = st.Level
 		out.NextTierAt = st.NextTierAt
+		out.Tiers = st.Tiers
+		// A worker built before CustomerStatus carried the ladder answers
+		// without one, which is an ordinary state during a rolling deploy. Our
+		// own copy is the right fallback and not merely a non-nil one: that
+		// worker is necessarily running the thresholds this build was compiled
+		// with, since they are still a constant.
+		if len(out.Tiers) == 0 {
+			out.Tiers = rewards.Ladder()
+		}
 		out.EnrolledAt = st.EnrolledAt
 		out.LifetimeEarnEvents = st.LifetimeEarnEvents
 		out.Generation = st.Generation
@@ -780,7 +789,13 @@ func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttribut
 
 	// Derived rather than stored, so it stays consistent with the balance we
 	// just recovered. FINDINGS.md#tiers-are-derived-never-stored.
+	//
+	// The ladder comes from this binary because there is no worker to ask -- the
+	// premise of this whole path. Correct while thresholds are a compile-time
+	// constant; if they ever become per-customer, this is the one caller that
+	// cannot know which ladder the customer was actually on.
 	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
+	out.Tiers = rewards.Ladder()
 
 	// Status is deliberately not set here. Deciding active from deactivated
 	// needs the execution status as well as RewardsActive, and the caller has

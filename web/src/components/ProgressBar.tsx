@@ -1,14 +1,28 @@
 import { tierLabel } from '../format'
+import type { Tier } from '../types'
 
-/** nextTierAt === 0 means no next tier (platinum / capped). Do not divide by it. */
+/**
+ * Progress toward the next tier.
+ *
+ * Both ends come from the server: `nextTierAt` is the target, and `tiers` is
+ * the ladder it was derived from, which is what supplies the *floor* — the rung
+ * the customer is standing on. That floor used to be a hardcoded reverse-lookup
+ * of the thresholds (`nextTierAt === 500 ? 0 : ...`), which is the kind of copy
+ * that goes stale in silence: change a threshold and the bar keeps rendering,
+ * just at the wrong width.
+ *
+ * `nextTierAt === 0` means no next tier (top of the ladder). Do not divide by it.
+ */
 export function ProgressBar({
   points,
   nextTierAt,
   level,
+  tiers,
 }: {
   points: number
   nextTierAt: number
   level: string
+  tiers: Tier[]
 }) {
   if (nextTierAt <= 0) {
     return (
@@ -24,8 +38,14 @@ export function ProgressBar({
     )
   }
 
-  const prev =
-    nextTierAt === 500 ? 0 : nextTierAt === 1000 ? 500 : 0
+  // The highest rung already reached, or 0 for basic — which is also what an
+  // empty ladder degrades to, making the bar span the whole climb rather than
+  // the current segment. Wrong, but bounded and monotonic, which is the most
+  // useful thing to be when the ladder is missing.
+  const prev = (tiers ?? []).reduce(
+    (floor, t) => (t.minPoints <= points && t.minPoints > floor ? t.minPoints : floor),
+    0,
+  )
   const span = Math.max(nextTierAt - prev, 1)
   const pct = Math.min(100, Math.max(0, ((points - prev) / span) * 100))
 

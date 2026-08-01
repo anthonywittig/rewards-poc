@@ -67,6 +67,14 @@ type CustomerStatus struct {
 	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
 	EnrolledAt time.Time `json:"enrolledAt"`
 
+	// The ladder Level and NextTierAt were read from. Answered by the workflow
+	// rather than assembled by the API so all three agree: the api and the
+	// worker are separate binaries and separate deploys, so an API that
+	// attached its own ladder could pair a NextTierAt from one build with rungs
+	// from another during a rollout, and draw a target that is not on the
+	// ladder beside it.
+	Tiers []Tier `json:"tiers"`
+
 	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
 	Generation         int  `json:"generation"`
 	Active             bool `json:"active"`
@@ -83,6 +91,7 @@ func StatusOf(state *CustomerState) CustomerStatus {
 		Points:             state.Points,
 		Level:              Level(state.Points),
 		NextTierAt:         nextAt,
+		Tiers:              Ladder(),
 		EnrolledAt:         state.EnrolledAt,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
 		Generation:         state.Generation,
