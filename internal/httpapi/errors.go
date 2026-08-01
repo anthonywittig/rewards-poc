@@ -40,8 +40,7 @@ func badRequest(msg string) *apiError {
 }
 
 // writeError renders an apiError, mapping anything unrecognised to a 500 while
-// logging the original. An unmapped error reaching a client as a raw gRPC string
-// is the failure mode this whole file exists to prevent.
+// logging the original, so no raw gRPC string can reach a client.
 func writeError(w http.ResponseWriter, log *slog.Logger, err error) {
 	var apiErr *apiError
 	if !errors.As(err, &apiErr) {
@@ -82,15 +81,12 @@ func mapQueryError(err error) error {
 
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status.
 //
-// The interesting case is 422. Both halves of the validator/handler split
-// (FINDINGS.md#the-validatorhandler-split) surface here as a failed Update, and
-// the caller is meant to be unable to tell them apart -- which is exactly right
-// for the API too. What matters is separating a *business* rejection from an
-// *infrastructure* failure, because only the first is the caller's fault.
+// Both halves of the validator/handler split
+// (FINDINGS.md#the-validatorhandler-split) surface here as a 422; what matters
+// is separating a business rejection from an infrastructure failure.
 //
-// Deactivated is the exception: it is a business answer, but it is a 409 with
-// its own code so clients can offer re-enrollment rather than treating it like
-// a bad amount.
+// Deactivated is the exception: a business answer, but a 409 with its own code
+// so clients can offer re-enrollment rather than treating it like a bad amount.
 func mapUpdateError(err error) error {
 	if appErr, ok := isBusinessRejection(err); ok {
 		if appErr.Type() == rewards.ErrTypeDeactivated {
@@ -107,23 +103,12 @@ func mapUpdateError(err error) error {
 // involves a worker at any point.
 //
 // subject names the operation that ran out of time, e.g. "the customer list".
+// Without it both inherit the Query path's wording, which blames a worker
+// neither endpoint touches.
 //
-// Without this, both inherit the Query path's wording -- "the rewards workflow
-// did not respond in time; the worker may be down or overloaded" -- which names
-// two things neither endpoint touches. Sending someone to restart a worker
-// because the visibility store was slow is exactly the mistake the
-// FailedPrecondition wording made before PR #6 split status from message; this
-// is the same fix applied to two call sites that were missed at the time.
-//
-// The status stays 503. Slow is transient and retrying is right, so nothing the
-// caller *does* changes -- only what they are told to go and look at.
-//
-// The code stays CodeWorkerUnavailable, which reads oddly here. It is deliberate:
-// the error contract is frozen so Phase 8 can build against it
-// (FINDINGS.md#no-pagination-and-a-frozen-contract), and this is the only 503 in
-// it. Clients treat it as "backend not ready, retry", which is correct for a slow
-// visibility store as much as for a missing worker. A truer code would be worth
-// having and is not worth breaking the freeze for.
+// The code stays CodeWorkerUnavailable, which reads oddly here, because the
+// error contract is frozen (FINDINGS.md#no-pagination-and-a-frozen-contract) and
+// this is the only 503 in it. Clients treat it as "backend not ready, retry".
 func mapStoreReadError(err error, subject string) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
@@ -156,13 +141,9 @@ func classifyCommon(err error) error {
 	return err // becomes a logged 500
 }
 
-// workerUnavailableMessage picks how confidently to word a 503.
-//
-// The status is the same either way -- all of these are transient server-side
-// conditions worth retrying -- but the *message* should only name the worker
-// when the server actually said so. FailedPrecondition covers more than a
-// missing poller, and telling someone to check `make worker` while their worker
-// is fine sends them down the wrong path.
+// workerUnavailableMessage picks how confidently to word a 503. The status is
+// the same either way; the message names the worker only when the server did.
+// FailedPrecondition covers more than a missing poller.
 func workerUnavailableMessage(err error) string {
 	if mentionsNoPoller(err.Error()) {
 		return "no worker is polling the rewards task queue; is `make worker` running?"

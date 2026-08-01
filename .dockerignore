@@ -1,0 +1,9 @@
+# The build context for deploy/worker.Dockerfile is the repo root, so this is an
+# allowlist rather than a deny list: everything is excluded, then the four paths
+# the worker binary actually needs are added back. A local .env, node_modules,
+# or .git is therefore never uploaded to the daemon.
+*
+!go.mod
+!go.sum
+!cmd
+!internal

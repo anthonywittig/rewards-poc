@@ -3,8 +3,7 @@
 // rules -- tiers, enrollment validity, which promotion is owed -- expressed as
 // plain functions over that state. See docs/FINDINGS.md#workflow-design.
 //
-// It deliberately contains no workflow or Activity code. Those live in the two
-// sub-packages, and the split is structural rather than cosmetic:
+// It deliberately contains no workflow or Activity code:
 //
 //	internal/rewards            this package: types and pure logic
 //	internal/rewards/workflows  CustomerRewardsWorkflow and its handlers
@@ -12,11 +11,10 @@
 //	                            allowed to touch the outside world
 //
 // Both sub-packages import this one; neither imports the other. That last part
-// is the point. The Go SDK has no workflow sandbox, so nothing at runtime stops
-// workflow code from calling a database handle directly and silently breaking
-// determinism -- a package boundary is the only structural guard available, and
-// it only works while workflows cannot reach activities. Workflow code names the
-// Activity by the ActivityNotifyCustomer string constant below instead.
+// is load-bearing: the Go SDK has no workflow sandbox, so nothing at runtime
+// stops workflow code from calling a database handle directly and silently
+// breaking determinism. Workflow code names the Activity by the
+// ActivityNotifyCustomer string constant instead.
 package rewards
 
 import "time"
@@ -31,23 +29,21 @@ const TaskQueue = "rewards"
 const WorkflowTypeName = "CustomerRewardsWorkflow"
 
 // WorkflowIDPrefix makes the workflow ID derivable from the customer ID alone,
-// which is what lets every later operation skip a lookup table. See
-// FINDINGS.md#workflow-design.
+// which is what lets every later operation skip a lookup table.
 const WorkflowIDPrefix = "customer-"
 
 // WorkflowID returns the deterministic workflow ID for a customer.
 func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID }
 
-// Tier thresholds. Tiers are derived from these, never stored -- see
-// FINDINGS.md#tiers-are-derived-never-stored for the trade-off that choice
-// carries.
+// Tier thresholds. Tiers are derived from these, never stored.
+// FINDINGS.md#tiers-are-derived-never-stored.
 const (
 	GoldThreshold     = 500
 	PlatinumThreshold = 1000
 )
 
 // Tier names. Strings rather than a custom type because they cross the wire as
-// search attribute values and JSON, and a String() round-trip buys nothing here.
+// search attribute values and JSON.
 const (
 	LevelBasic    = "basic"
 	LevelGold     = "gold"
@@ -61,16 +57,8 @@ type tier struct {
 }
 
 // tiers is the ladder, and the only place a threshold is attached to a tier.
-// Read it as the rule list it is:
-//
-//	when points >= GoldThreshold:     gold
-//	when points >= PlatinumThreshold: platinum
-//
-// Level, NextTierAt and promotionFor all walk this rather than each carrying
-// their own switch. Three switches over the same two constants is three places
-// to edit when a tier is added and two places to forget -- and the failure is
-// quiet: a missing case in NextTierAt is a wrong progress bar, and a missing
-// case in promotionFor is a promotion nobody is told about.
+// Level, NextTierAt and PromotionFor all walk it rather than each carrying their
+// own switch.
 //
 // LevelBasic is deliberately not a rung. It is the floor -- what you are when no
 // rule matches -- and giving it a zero-point rule would make "promoted to basic"
@@ -93,42 +81,34 @@ const (
 )
 
 // EarnsPerRun is how many successful adds a run handles before continuing as
-// new. Artificially low so the rollover is easy to watch -- see the note at the
-// continue-as-new itself for what production should do instead.
+// new. Artificially low so the rollover is easy to watch.
 //
-// It is also a floor rather than an exact count. The main loop delivers any
-// pending promotion before it rolls, and the handler keeps accepting adds for the
-// duration of that Activity -- measured at 4 adds in the rolling run when a tier
-// crossing lands in it, against exactly 3 when none does. The number survived the
-// rewrite from a drain goroutine to main-loop delivery unchanged, which is what
-// you would expect: the cause is the Activity's round trip rather than the
-// structure around it. FINDINGS.md#earnsperrun-is-a-floor-not-an-exact-count.
+// A floor rather than an exact count: the main loop delivers any pending
+// promotion before it rolls, and the handler keeps accepting adds for the
+// duration of that Activity -- measured at 4 adds when a tier crossing lands in
+// the rolling run, 3 when none does.
+// FINDINGS.md#earnsperrun-is-a-floor-not-an-exact-count.
 //
-// CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history already records a
-// roll after 3 adds will, on replay under a different value, not produce that
-// command at that point, and a command that does not match the recorded event is
-// exactly what the replayer refuses. Entity workflows outlive deploys, so this is
-// not theoretical; FINDINGS.md#versioning-is-the-real-risk. In dev, terminate
-// existing workflows after changing it.
+// CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history records a roll
+// after 3 adds will not produce that command at that point on replay under a
+// different value, and the replayer refuses a command that does not match the
+// recorded event. In dev, terminate existing workflows after changing it.
+// FINDINGS.md#versioning-is-the-real-risk.
 const EarnsPerRun = 3
 
 // CustomerState is the workflow argument. Everything here has to survive
-// continue-as-new (Phase 2), which is why the counters live in state rather than
-// being recomputed from history: history is reaped, state is not. See
-// FINDINGS.md#the-workflow-is-the-integrity-boundary and 6.3.
+// continue-as-new, which is why the counters live in state rather than being
+// recomputed from history: history is reaped, state is not.
+// FINDINGS.md#the-workflow-is-the-integrity-boundary.
 type CustomerState struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
 	Email      string `json:"email"`
 
-	// Points only ever increase. There is no spending, redemption, expiry or
-	// adjustment in this POC and none is planned -- see
-	// FINDINGS.md#the-workflow-is-the-integrity-boundary.
-	//
-	// That is why there is no separate lifetime total: with a monotonic balance,
-	// "points now" and "points ever earned" are the same number, and carrying
-	// both would only create an invariant to violate. Adding spending later
-	// means reintroducing that field, not repurposing this one.
+	// Points only ever increase -- no spending, redemption, expiry or
+	// adjustment. That is why there is no separate lifetime total: with a
+	// monotonic balance the two are the same number. Adding spending later means
+	// reintroducing that field, not repurposing this one.
 	Points int `json:"points"`
 
 	// Set on the very first run and carried forward untouched thereafter.
@@ -143,10 +123,10 @@ type CustomerState struct {
 	// not re-notify after a replay.
 	NotifiedLevels []string `json:"notifiedLevels,omitempty"`
 
-	// Set when the customer leaves; cleared on re-enrollment. Zero value
-	// (false) means active, which is also what continue-as-new payloads from
-	// before this field existed correctly mean -- an inverted Active bool
-	// would have marked every rolled-over customer inactive on deploy.
+	// Set when the customer leaves; cleared on re-enrollment. Deliberately not
+	// an Active bool: the zero value has to mean active, or continue-as-new
+	// payloads written before this field existed would decode every rolled-over
+	// customer as inactive on deploy.
 	Deactivated bool `json:"deactivated,omitempty"`
 }
 
@@ -163,11 +143,10 @@ func Level(points int) string {
 }
 
 // NextTierAt returns the balance at which the next promotion happens, and false
-// if the customer is already at the top tier. The UI needs "82 points to gold"
-// and deriving it here keeps that rule in one place.
+// if the customer is already at the top tier.
 func NextTierAt(points int) (int, bool) {
-	// The first rung not yet reached, which is the next one up because the ladder
-	// is ordered. Falling out of the loop means every rung is behind them.
+	// The first rung not yet reached, which is the next one up because the
+	// ladder is ordered. Falling out means every rung is behind them.
 	for _, t := range tiers {
 		if points < t.MinPoints {
 			return t.MinPoints, true

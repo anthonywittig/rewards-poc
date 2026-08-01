@@ -1,6 +1,6 @@
 # Rewards web UI
 
-Phase 8 React app. See [NOTES.md](./NOTES.md) for findings and the README blurb for Phase 9.
+React app over the rewards API. See [docs/FINDINGS.md](../docs/FINDINGS.md).
 
 ```sh
 # from repo root — stack + worker + api already up

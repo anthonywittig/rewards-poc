@@ -104,8 +104,8 @@ export function matchesVisibilityQuery(c: CustomerListItem, query: string): bool
 
 /**
  * Merge server items with pending optimistic rows that still match the filter.
- * Pending extras may briefly push the table past `limit` so a real server row
- * is not silently dropped to make room.
+ * Extras may briefly push the table past `limit`, rather than dropping a real
+ * server row to make room.
  */
 export function mergeWithPending(
   items: CustomerListItem[],

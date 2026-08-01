@@ -12,13 +12,8 @@ import (
 // (FINDINGS.md#the-workflow-is-the-integrity-boundary), so this is where a bad
 // enrollment is refused.
 //
-// It takes the workflow ID as a string rather than a workflow.Context so it
-// stays a plain function: the workflow package supplies
-// workflow.GetInfo(ctx).WorkflowExecution.ID, and the rules themselves are
-// testable without a test environment.
-//
-// Every error is non-retryable. A payload that does not match its own workflow
-// ID will not match it on the next attempt either, and retrying would turn a
+// Every error is non-retryable: a payload that does not match its own workflow
+// ID will not match on the next attempt either, and retrying would turn a
 // rejected enrollment into a run that fails forever.
 func ValidateEnrollment(workflowID string, state *CustomerState) error {
 	if !strings.HasPrefix(workflowID, WorkflowIDPrefix) {

@@ -2,16 +2,12 @@ package rewards
 
 import "time"
 
-// The Update/Query contract, and the derived view the Query answers with.
-//
-// This lives in the domain package rather than beside the workflow because it is
-// what every caller speaks: the HTTP layer marshals these, the `temporal` CLI
-// addresses the handlers by the names below, and the workflow package implements
-// them. Putting it here means internal/httpapi never has to import workflow code
-// to know the shape of a request.
+// The Update/Query contract, and the derived view the Query answers with. It
+// lives in the domain package so internal/httpapi never has to import workflow
+// code to know the shape of a request.
 
-// Handler names. Exported because the API layer (Phase 3) and the `temporal`
-// CLI both address handlers by string, and a typo there is a runtime error.
+// Handler names. Exported because the API layer and the `temporal` CLI both
+// address handlers by string, and a typo there is a runtime error.
 const (
 	UpdateAddPoints  = "addPoints"
 	UpdateDeactivate = "deactivate"
@@ -55,8 +51,7 @@ type ReactivateRequest struct {
 
 // ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
 // re-enrollment from a no-op against a customer who was already active. The API
-// needs that to tell a restore (200) from a duplicate enrollment (409), and the
-// audit crawl needs it so a no-op does not draw a rejoin row.
+// tells a restore (200) from a duplicate enrollment (409) by it.
 type ReactivateResult struct {
 	Changed bool           `json:"changed"`
 	Status  CustomerStatus `json:"status"`

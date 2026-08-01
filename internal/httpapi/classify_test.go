@@ -15,12 +15,9 @@ import (
 	"go.temporal.io/sdk/temporal"
 )
 
-// The errors constructed below are the shapes a real server actually produced,
-// captured by triggering each condition against the running stack rather than
-// guessed from documentation. Several guesses were wrong on the first pass --
-// worker-unavailable is FailedPrecondition rather than Unavailable, and a
-// validator rejection arrives as an ApplicationError with an empty Type rather
-// than as an untyped error -- which is why these are pinned here.
+// The errors constructed below are the shapes a real server produced, captured
+// by triggering each condition against the running stack. Documentation and
+// guesswork got several of them wrong, which is why they are pinned here.
 
 func status(t *testing.T, err error) (int, string) {
 	t.Helper()
@@ -119,8 +116,7 @@ func TestMapQueryError(t *testing.T) {
 
 // Both halves of the validator/handler split
 // (FINDINGS.md#the-validatorhandler-split) must reach the caller as the same 422
-// carrying the workflow's own words. The caller is not supposed to be able to tell
-// them apart -- that is the design.
+// carrying the workflow's own words.
 func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -165,11 +161,9 @@ func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	}
 }
 
-// Deactivated is the one rejection that does not become a 422, and the reason
-// is that the caller can act on it: 422 says "your request was wrong", while
-// this says "the customer left, offer them re-enrollment". The UI branches on
-// the code, so collapsing it back into CodeRejected would silently remove the
-// re-enroll prompt rather than break anything loudly.
+// Deactivated is the one rejection that does not become a 422, because the
+// caller can act on it. The UI branches on the code, so collapsing it back into
+// CodeRejected would silently remove the re-enroll prompt.
 func TestMapUpdateError_DeactivatedIs409(t *testing.T) {
 	err := temporal.NewNonRetryableApplicationError(
 		"customer is deactivated; re-enroll them before adding points",
@@ -210,10 +204,8 @@ func TestMapUpdateError_TimeoutIsWorkerUnavailable(t *testing.T) {
 	}
 }
 
-// The closed-run error is ambiguous by nature: a rollover and a deactivation
-// produce the identical NotFound, because in both cases the addressed run really
-// has completed. isClosedRun only detects that much; deciding which situation it
-// is requires asking the server what is running now.
+// A rollover and a deactivation produce the identical NotFound. isClosedRun only
+// detects that much; deciding which requires asking the server what is running.
 func TestIsClosedRun(t *testing.T) {
 	if isClosedRun(nil) {
 		t.Error("nil is not a closed run")
@@ -235,8 +227,7 @@ func TestIsClosedRun(t *testing.T) {
 }
 
 // A 503 should only blame the worker when the server actually named it.
-// FailedPrecondition covers more than a missing poller, and sending someone to
-// check `make worker` while their worker is healthy wastes their time.
+// FailedPrecondition covers more than a missing poller.
 func TestWorkerUnavailableMessage(t *testing.T) {
 	noPoller := serviceerror.NewFailedPrecondition("no poller seen for task queue recently, worker may be down")
 	if got := workerUnavailableMessage(noPoller); !strings.Contains(got, "make worker") {
@@ -268,16 +259,13 @@ func TestUnrelatedFailedPreconditionIsStill503(t *testing.T) {
 	}
 }
 
-// The four answers GetWorkflowHistory gives, transcribed from a real server.
-// FINDINGS.md#truncation-detection predicted a single NotFound for the reaped case
-// and got the type wrong; the audit crawl detects truncation by this
-// classification, so a wrong answer here turns a truncated timeline into a 500.
+// The four answers GetWorkflowHistory gives, transcribed from a real server. The
+// audit crawl detects truncation by this classification, so a wrong answer turns
+// a truncated timeline into a 500.
 //
-// The uncomfortable part is that the first two rows are byte-identical, so
-// "history was deleted" and "you invented a run ID" cannot be told apart. That
-// is tolerable only because the crawl exclusively passes run IDs the server
-// itself produced in a ContinuedExecutionRunId, which makes the second row
-// unreachable from our call site.
+// "history was deleted" and "you invented a run ID" are byte-identical. That is
+// tolerable only because the crawl exclusively passes run IDs the server itself
+// produced in a ContinuedExecutionRunId.
 func TestIsHistoryGone(t *testing.T) {
 	const reaped = "Requested workflow history not found, may have passed retention period."
 
@@ -286,9 +274,7 @@ func TestIsHistoryGone(t *testing.T) {
 		err  error
 		want bool
 	}{
-		// Same message whether the run aged out or `make reap` deleted it -- the
-		// server guesses at retention either way, and for a deliberate delete
-		// that guess is simply wrong.
+		// Same message whether the run aged out or `make reap` deleted it.
 		{"run reaped", serviceerror.NewInvalidArgument(reaped), true},
 		{"workflow never existed", serviceerror.NewNotFound("workflow not found for ID: customer-x"), true},
 
@@ -307,14 +293,9 @@ func TestIsHistoryGone(t *testing.T) {
 	}
 }
 
-// Raised on PR #13: a crawl that ran out of time reported "the rewards workflow
-// did not respond in time; the worker may be down or overloaded" -- naming a
-// workflow that was never queried and a worker that was never involved.
-//
-// The status is right and stays put; only the attribution was wrong. Anyone
-// following that message restarts a healthy worker and learns nothing, which is
-// the same wrong turn the FailedPrecondition wording sent people down before the
-// message was split from the status.
+// A crawl that runs out of time must not report "the worker may be down or
+// overloaded", naming a workflow that was never queried and a worker that was
+// never involved. The status is right; only the attribution would be wrong.
 func TestMapStoreReadError_TimeoutDoesNotBlameTheWorker(t *testing.T) {
 	for _, err := range []error{
 		context.DeadlineExceeded,

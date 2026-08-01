@@ -3,69 +3,39 @@ package rewards
 import "slices"
 
 // What to notify a customer about, decided from state alone. The delivery half
-// -- scheduling the Activity, handling its failure -- lives in
-// internal/rewards/workflows, because that half needs a workflow.Context and
-// this half does not.
-//
-// Splitting them that way is what lets these rules be tested as plain functions
-// rather than through a test environment, and it keeps the tier ladder (which is
-// unexported, and only in this package) as the single place a threshold is
-// attached to a tier.
+// -- scheduling the Activity, handling its failure -- needs a workflow.Context
+// and lives in internal/rewards/workflows.
 
 // PromotionFor returns the notification to send if the customer has reached a
 // tier nobody has told them about.
 //
-// Deliberately *not* "did this add cross a boundary". A crossing is an event
-// that happens once and is then gone, so a delivery that failed its retries
-// could never be attempted again -- raised on PR #15, and reproduced by
-// Test_Notify_FailedDeliveryIsRetriedByALaterAdd. Asking instead whether the
-// customer's current tier appears in NotifiedLevels makes the condition a
-// property of the customer, so a later add retries it. The state is already
-// carried across continue-as-new, so this costs nothing new.
+// Deliberately *not* "did this add cross a boundary". A crossing happens once
+// and is then gone, so a delivery that failed its retries could never be
+// attempted again. Asking whether the customer's current tier appears in
+// NotifiedLevels makes the condition a property of the customer, so a later add
+// retries it. Pinned by Test_Notify_FailedDeliveryIsRetriedByALaterAdd.
 //
 // Two things it deliberately does not do, both pinned by tests:
 //
 //   - **It offers only the tier they are at, never the ones they passed.** One
 //     add of MaxPointsPerTxn from zero lands straight in platinum, and gold is
-//     never announced. Announcing both would tell the customer something that
-//     was true for no measurable time, and the original crossing rule behaved
-//     the same way.
+//     never announced.
 //   - **The retry does not survive a tier advance.** A failed gold notice is
-//     re-offered by later adds only while the customer is still gold; reach
-//     platinum first and gold is dropped for good. That is the right outcome --
-//     they are told where they are -- but it makes "retried on the next add"
-//     narrower than it sounds.
-//
-// It also makes NotifiedLevels genuinely load-bearing in both directions: dedup on
-// the way in, and the at-least-once guard FINDINGS.md#tier-promotion-notifications
-// asks for on the way out. Previously the monotonic balance did the deduplication
-// and this was belt-and-braces.
-//
-// Tiers are derived rather than stored
-// (FINDINGS.md#tiers-are-derived-never-stored), so this needs no extra state to
-// work out.
+//     re-offered only while the customer is still gold; reach platinum first and
+//     gold is dropped for good.
 func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
-	// Walk the ladder from the top down and stop at the first rule the balance
-	// satisfies. Top-down is the "only the tier they are at" decision above
-	// written as control flow rather than left implicit in a Level() call: the
-	// highest rule that matches wins, and the ones below it are never reached.
+	// Top down, stopping at the first rule the balance satisfies: the highest
+	// match wins and the ones below are never reached, which is "only the tier
+	// they are at" written as control flow.
 	//
-	// Deciding the other way takes two changes rather than one, which is worth
-	// stating because the first is the obvious one and is actively harmful on its
-	// own. Reversing the walk alone announces the *lowest* unannounced tier: one
-	// add of MaxPointsPerTxn lands a customer in platinum and congratulates them
-	// for gold, which is worse than either policy. deliverPromotion sends a single
-	// notification per drain, so announcing every tier passed needs the reversed
-	// walk *and* a deliverPromotion that loops until this returns false.
+	// Announcing every tier passed instead takes two changes, not one. Reversing
+	// this walk alone announces the *lowest* unannounced tier -- one add of
+	// MaxPointsPerTxn lands a customer in platinum and congratulates them for
+	// gold -- because deliverPromotion sends a single notification per drain. It
+	// would also need a deliverPromotion that loops until this returns false.
 	//
-	// Measured rather than reasoned: the flip alone yields [gold], the flip plus
-	// the loop yields [gold platinum], and both fail exactly
-	// Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne and
-	// Test_Notify_RetryDoesNotSurviveAdvancingATier, which are the two tests that
-	// would have to be rewritten to decide the other way.
-	//
-	// Nobody is congratulated for basic, which needs no clause here: basic is not
-	// a rung, so falling out of the loop is exactly the basic case.
+	// Nobody is congratulated for basic: it is not a rung, so falling out of the
+	// loop is exactly the basic case.
 	for i := len(tiers) - 1; i >= 0; i-- {
 		t := tiers[i]
 		if state.Points < t.MinPoints {
@@ -79,9 +49,8 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 			Email:      state.Email,
 			Event:      NotifyEventPromoted,
 			Level:      t.Level,
-			// A customer reaches each tier once, so this is a natural key -- and
-			// it is what makes the outer retry above safe to send more than once.
-			// The stub ignores it; a real provider would not.
+			// A customer reaches each tier once, so this is a natural key --
+			// which is what makes the retry above safe to send more than once.
 			IdempotencyKey: state.CustomerID + ":" + t.Level,
 		}, true
 	}

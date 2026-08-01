@@ -1,5 +1,6 @@
-# Postgres (persistence) + Elasticsearch (visibility) + Temporal. The worker and
-# api run on the host via `make worker` / `make api`, not here.
+# Postgres (persistence) + Elasticsearch (visibility) + Temporal + the workflow
+# worker. The api and web dev server run on the host via `make api` / `make web`,
+# not here.
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
@@ -103,6 +104,30 @@ services:
       - TEMPORAL_DEFAULT_NAMESPACE=${TEMPORAL_NAMESPACE}
     ports:
       - "${TEMPORAL_UI_PORT}:8080"
+
+  # Started by `make up` after bootstrap, so it never polls a namespace that
+  # doesn't exist yet. `make worker` rebuilds and restarts it after a code
+  # change; `make worker-logs` tails it.
+  worker:
+    build:
+      # The repo root: the binary needs cmd/ and internal/, which are above this
+      # file. deploy/worker.Dockerfile has the details.
+      context: ..
+      dockerfile: deploy/worker.Dockerfile
+      args:
+        GO_VERSION: ${GO_VERSION}
+        ALPINE_VERSION: ${ALPINE_VERSION}
+    depends_on:
+      temporal:
+        condition: service_healthy
+    environment:
+      # In-network, so the service name and the container port -- not the
+      # host-published TEMPORAL_GRPC_PORT the host-side targets use.
+      - TEMPORAL_HOSTPORT=temporal:7233
+      - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}
+    # Survives a Temporal restart and a laptop reboot; `make worker-stop` still
+    # holds it down, because `compose stop` is an explicit stop.
+    restart: unless-stopped
 
 volumes:
   postgres-data:

@@ -15,19 +15,15 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Replay tests: the highest-value tests in this repo, and the ones
-// FINDINGS.md#versioning-is-the-real-risk calls the single biggest operational
-// risk in the design.
+// Replay tests. FINDINGS.md#versioning-is-the-real-risk.
 //
-// A customer's workflow runs forever. It *will* outlive a deploy. When a worker
-// picks up a task for a run that started weeks ago, it replays that run's
-// recorded history through today's code and requires the commands to match
-// event for event. If they do not, the workflow task fails and retries forever:
-// the customer is wedged, silently, and no amount of restarting helps.
+// A customer's workflow *will* outlive a deploy. A worker picking up a task for
+// a run started weeks ago replays that run's recorded history through today's
+// code and requires the commands to match event for event; if they do not, the
+// workflow task fails and retries forever and the customer is silently wedged.
 //
-// So these histories are checked in deliberately. testdata/pre-notification-*
-// were recorded by the *Phase 5* worker, before the notification Activity
-// existed, and replaying them is a rehearsal of the deploy that adds it.
+// testdata/pre-notification-* were recorded before the notification Activity
+// existed, so replaying them rehearses the deploy that adds it.
 
 // replayCase is one recorded run.
 type replayCase struct {
@@ -77,17 +73,11 @@ func replay(t *testing.T, h *historypb.History) error {
 }
 
 // The deploy rehearsal. Every one of these histories was recorded before the
-// notification Activity existed; all of them must still replay.
-//
-// This is the test that caught the real thing. Phase 6 emitted a
-// ScheduleActivityTask command that these histories have no event for:
+// notification Activity existed; all of them must still replay. Remove the
+// GetVersion gate in CustomerRewardsWorkflow and these four fail with:
 //
 //	nondeterministic workflow: extra replay command for ScheduleActivityTask:
 //	  (ActivityType:(Name:NotifyCustomer) ...)
-//
-// Deploying that as written would have wedged every customer with an open run.
-// The fix is the GetVersion gate in CustomerRewardsWorkflow; remove it and these
-// four fail again.
 func TestReplay_HistoriesRecordedBeforeTheNotificationActivity(t *testing.T) {
 	for _, tc := range preNotificationRuns {
 		t.Run(tc.file, func(t *testing.T) {
@@ -129,24 +119,17 @@ func TestReplay_HistoryRecordedByTheCurrentWorkflow(t *testing.T) {
 	}
 }
 
-// The trap, pinned.
+// The trap, pinned. worker.ReplayWorkflowHistory documents OriginalExecution as
+// "optional", but for any workflow that reads its own ID it is not: the replayer
+// substitutes "ReplayId", the enrollment check rejects the payload, and the run
+// emits no commands at all.
 //
-// worker.ReplayWorkflowHistory documents OriginalExecution as "optional", and for
-// most workflows it is. For any workflow that reads its own ID it is not: the
-// replayer substitutes "ReplayId", so CustomerRewardsWorkflow's enrollment check
-// (which exists because the workflow is the only integrity boundary --
-// FINDINGS.md#the-workflow-is-the-integrity-boundary) rejects the payload and the
-// run emits no commands at all.
+// The failure is doubly misleading -- it reports nondeterminism, so it looks
+// like a versioning problem, and it names whichever event came first, so it
+// points at innocent code.
 //
-// The failure is doubly misleading. It reports nondeterminism, so it looks like
-// a versioning problem; and it names whichever event happened to come first
-// (here, UpsertWorkflowSearchAttributes), so it points at code that is entirely
-// innocent. A whole afternoon is available to anyone who trusts it.
-//
-// Asserted rather than merely commented, so that nobody "simplifies" replay()
-// back to the plain call and gets a suite that passes while testing nothing --
-// and so that if a future SDK starts honouring the recorded ID, this fails and
-// tells us the workaround can go.
+// Asserted rather than merely commented, so nobody "simplifies" replay() back to
+// the plain call and gets a suite that passes while testing nothing.
 func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 	r := worker.NewWorkflowReplayer()
 	r.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
@@ -163,23 +146,18 @@ func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 // A limitation, asserted so it cannot be forgotten: the gate arrived one commit
 // too late to save the runs the ungated code created.
 //
-// testdata/ungated-notification.json is real, recorded by the Phase 6 code
-// exactly as it merged -- an execution whose history contains a NotifyCustomer
-// Activity and *no* Version marker. Replaying it through the gated workflow
-// fails, because GetVersion cannot tell "this run predates the change" from
-// "this run executed the change before it was gated". Both lack the marker, and
-// the marker is the only signal there is:
+// testdata/ungated-notification.json is real -- an execution whose history
+// contains a NotifyCustomer Activity and *no* Version marker. Replaying it
+// through the gated workflow fails, because GetVersion cannot tell "predates the
+// change" from "ran the change before it was gated":
 //
 //	lookup failed for scheduledEventID to activityID: scheduleEventID: 24
 //
-// There is no code fix. Whichever way DefaultVersion is interpreted, one of the
-// two populations breaks -- gating it (as we do) protects every run recorded
-// before Phase 6, at the cost of every run recorded by Phase 6 itself. That is
-// the right trade, because the first population is "all customers from before
-// the deploy" and the second is only those started inside the window between
-// two commits.
+// There is no code fix -- whichever way DefaultVersion is interpreted, one of
+// the two populations breaks. Gating protects every run recorded before the
+// change, at the cost of those recorded in the window between two commits.
 //
-// The remedy is operational, and the affected executions are findable, because
+// The remedy is operational, and the affected executions are findable because
 // GetVersion upserts TemporalChangeVersion
 // (FINDINGS.md#getversion-writes-two-events):
 //
@@ -188,13 +166,8 @@ func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 //	  AND TemporalChangeVersion IS NULL
 //	  AND StartTime > '<when the ungated build was deployed>'
 //
-// ...then `make reset`, or a targeted terminate. The StartTime clause is what
-// separates them from pre-Phase-6 runs, which also have no marker and replay
-// perfectly well.
-//
-// The real lesson is upstream of all of this: gate a command-changing edit in
-// the *same* commit that introduces it. Phase 6 did not, and no amount of
-// cleverness in Phase 9 can reach back and fix the histories it wrote.
+// ...then `make reset`, or a targeted terminate. The StartTime clause separates
+// them from older runs, which also have no marker but replay perfectly well.
 func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
 	h := loadHistory(t, "ungated-notification.json")
 
@@ -220,27 +193,19 @@ func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
 	}
 }
 
-// The departure half of the gate, which nothing covered until soft
-// deactivation made it reachable.
+// The departure half of the gate.
 //
-// A customer enrolled before Phase 6 can still be deactivated today: their run
-// is live, it has no Version marker, and the deactivate Update arrives as new
+// A customer enrolled before the marker can still be deactivated today: their
+// run is live, it has no marker, and the deactivate Update arrives as new
 // history on top of it. The gate has to keep that Update from arming the
-// departure notice, because the Activity would go into history that a later
-// replay -- still resolving to DefaultVersion, still finding no marker -- would
-// decline to produce. That is a wedge, appended to a customer at the very moment
-// they leave.
+// departure notice, or the Activity goes into history that a later replay --
+// still resolving to DefaultVersion -- would decline to produce, wedging the
+// customer at the very moment they leave.
 //
-// testdata/pre-marker-deactivated.json is that run: no marker, no Activities,
-// an addPoints that crosses gold, and a deactivate. Recorded by running the
-// current workflow with the GetVersion call replaced by a bare `false`, which
-// produces exactly the events a pre-Phase-6 customer would have -- the replayer
+// testdata/pre-marker-deactivated.json is that run: no marker, no Activities, an
+// addPoints that crosses gold, and a deactivate. Recorded by running the current
+// workflow with the GetVersion call replaced by a bare `false`; the replayer
 // sees recorded events, not how they were made.
-//
-// Until Phase 6's cancellation path was removed this was covered incidentally,
-// because pre-notification-deactivated.json ends in a cancel and the departure
-// notice hung off it. Soft deactivation moved the departure onto an Update and
-// took the coverage with it -- caught by mutation, not by noticing.
 func TestReplay_PreMarkerRunCanStillBeDeactivated(t *testing.T) {
 	h := loadHistory(t, "pre-marker-deactivated.json")
 

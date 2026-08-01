@@ -19,7 +19,7 @@ WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
 STACK     = $(shell grep -E '^COMPOSE_PROJECT_NAME=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop test workflowcheck enroll status add deactivate reactivate \
+        worker worker-logs worker-stop api api-stop test workflowcheck enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -37,6 +37,9 @@ $(ENV):
 up: $(ENV) ## Start the stack and bootstrap it
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
 	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
+# Started after bootstrap, so the worker never polls a namespace that doesn't
+# exist yet; --build so a fresh checkout gets a worker built from its own code.
+	$(COMPOSE) up -d --build worker
 	@echo
 	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
 	@echo "Namespace:    $(NAMESPACE) (retention $(RETENTION))"
@@ -165,35 +168,27 @@ workflowcheck: ## Static determinism check on workflow code
 	  go install go.temporal.io/sdk/contrib/tools/workflowcheck@$(WORKFLOWCHECK_VERSION)
 	$(WORKFLOWCHECK) ./...
 
+# The worker is a Compose service (deploy/worker.Dockerfile), started by
+# `make up` and isolated per stack by COMPOSE_PROJECT_NAME like everything else.
+# A code change is therefore a rebuild rather than a Ctrl-C, and this target is
+# both halves of it: --build recompiles, `up -d` recreates the container. The
+# running worker is never older than the source tree it was last run from.
+worker: $(ENV) ## Rebuild and restart the worker with the current code
+	$(COMPOSE) up -d --build worker
+
+worker-logs: $(ENV) ## Tail the worker's logs (Ctrl-C to stop tailing)
+	$(COMPOSE) logs -f worker
+
+# `compose stop` is an explicit stop, so restart: unless-stopped leaves it down
+# until `make worker` brings it back. Handy for watching the API's 503
+# worker_unavailable path -- see FINDINGS.md#read-and-write-timeouts.
+worker-stop: $(ENV) ## Stop the worker (leaves the rest of the stack up)
+	$(COMPOSE) stop worker
+
 # The trailing stack=… argument is ignored by the program (it reads env vars
-# only); it exists so this stack's processes are identifiable in ps output, and
-# so worker-stop/workers can match on it rather than killing both stacks' at
-# once. pkill/pgrep match on the command line, and env vars are not on it.
-worker: $(ENV) ## Run the workflow worker in the foreground (Ctrl-C to stop)
-	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
-	  go run ./cmd/worker stack=$(STACK)
-
-# `go run` execs the compiled binary out of /root/.cache/go-build/<hash>/worker,
-# not a path containing "cmd/worker", so a stale worker survives the obvious
-# pkill and keeps serving old code against the same task queue. That failure is
-# silent and looks like a workflow bug -- see FINDINGS.md#stale-workers.
-#
-# The unmarked pattern ('/worker$') is kept alongside the stack=… one so
-# orphans started before the marker existed still get killed.
-worker-stop: $(ENV) ## Stop this stack's workers, including orphaned ones
-	@pkill -f 'go-build.*/worker stack=$(STACK)$$' 2>/dev/null; \
-	 pkill -f 'go run \./cmd/worker stack=$(STACK)$$' 2>/dev/null; \
-	 pkill -f 'go-build.*/worker$$' 2>/dev/null; \
-	 pkill -f 'go run \./cmd/worker$$' 2>/dev/null; \
-	 sleep 1; \
-	 left=$$(pgrep -fc 'go-build.*/worker( stack=$(STACK))?$$' 2>/dev/null); \
-	 echo "workers still running for $(STACK): $${left:-0}"
-
-workers: $(ENV) ## List this stack's running workers (there should be at most one)
-	@ps -eo pid,etimes,args | grep -E 'go-build.*/worker( stack=$(STACK))?$$' | grep -v grep \
-	  || echo "no workers running for $(STACK)"
-
-# Same stack=… marker as the worker, for the same reason.
+# only); it exists so this stack's API process is identifiable in ps output, and
+# so api-stop can match on it rather than killing both stacks' at once.
+# pkill/pgrep match on the command line, and env vars are not on it.
 api: $(ENV) ## Run the HTTP API in the foreground (Ctrl-C to stop)
 	TEMPORAL_HOSTPORT=localhost:$(GRPC_PORT) TEMPORAL_NAMESPACE=$(NAMESPACE) \
 	  API_PORT=$(API_PORT) go run ./cmd/api stack=$(STACK)

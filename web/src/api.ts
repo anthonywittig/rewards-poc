@@ -10,8 +10,8 @@ import type {
 } from './types'
 import { ApiError } from './types'
 
-// Default: same-origin (Vite proxies /api → the Go API). Set VITE_API_BASE
-// only if you need to hit an absolute URL without the proxy.
+// Same-origin by default, with Vite proxying /api to the Go API. Set
+// VITE_API_BASE only to hit an absolute URL without the proxy.
 const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '')
   ?? ''
 
@@ -62,8 +62,8 @@ export function apiBase(): string {
   return proxy?.replace(/\/$/, '') || 'http://localhost:8081 (via Vite proxy)'
 }
 
-// Host-side Temporal Web UI. make web sets VITE_TEMPORAL_UI_URL from
-// TEMPORAL_UI_PORT so a second stack's links do not point at alpha's :8080.
+// `make web` sets VITE_TEMPORAL_UI_URL from TEMPORAL_UI_PORT, so a second
+// stack's links do not point at the first stack's UI.
 export function temporalUiUrl(): string {
   const fromEnv = import.meta.env.VITE_TEMPORAL_UI_URL as string | undefined
   return fromEnv?.replace(/\/$/, '') || 'http://localhost:8080'
