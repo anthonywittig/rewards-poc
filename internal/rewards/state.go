@@ -77,10 +77,13 @@ const (
 // new. Artificially low so the rollover is easy to watch -- see the note at the
 // continue-as-new itself for what production should do instead.
 //
-// It is also a floor rather than an exact count. The pre-roll drain holds the run
-// open while a promotion notification finishes, and the handler keeps accepting
-// adds throughout -- measured at 4 adds in the rolling run when a tier crossing
-// lands in it, against exactly 3 when none does. PLAN.md 12.32.
+// It is also a floor rather than an exact count. The main loop delivers any
+// pending promotion before it rolls, and the handler keeps accepting adds for
+// the duration of that Activity -- measured at 4 adds in the rolling run when a
+// tier crossing lands in it, against exactly 3 when none does. The number
+// survived the rewrite from a drain goroutine to main-loop delivery unchanged,
+// which is what you would expect: the cause is the Activity's round trip rather
+// than the structure around it. PLAN.md 12.32.
 //
 // CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history already records a
 // roll after 3 adds will, on replay under a different value, not produce that

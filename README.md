@@ -6,10 +6,14 @@ There is no application database for rewards state. A customer's points, tier, e
 date, and history of point-earning events live entirely in a Temporal Workflow Execution and
 its Event History. See [docs/PLAN.md](docs/PLAN.md) for the full design.
 
-**Status: Phase 6.** The workflow runs, continues-as-new every 3 point-adds, notifies customers
-when they cross a tier, and is drivable from the `temporal` CLI, over HTTP, or through the
-React UI. The customer list comes straight out of the visibility store; the audit timeline is
-reconstructed by crawling Event History. Phase 9 (replay test, seed script) is what's left.
+**Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
+they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
+The customer list comes straight out of the visibility store; the audit timeline is
+reconstructed by crawling Event History.
+
+Every phase of this project found something the plan got wrong, and those corrections are the
+most useful thing in it — they're collected in [§12 of the plan](docs/PLAN.md#12-sharp-edges).
+The one worth reading first is §12.11.
 
 ## Quick start
 
@@ -330,24 +334,28 @@ side effects at all, which is rather the argument. Having exactly one Activity m
 boundary visible.
 
 It fires when a point-add leaves the customer at a tier they have not been told about, and
-again when a customer leaves. The handler does **not** await it: it applies the points, queues
-a notification and returns, so a notification provider being down can neither fail a point-add
-that is already recorded nor put a network call on the UI's critical path.
+again when a customer leaves. The handler does **not** await it: it applies the points, arms a
+flag and returns, so a notification provider being down can neither fail a point-add that is
+already recorded nor put a network call on the UI's critical path.
 
 That condition is deliberately about the customer's *state* rather than about the add that
 just happened. "Did this add cross a boundary" is an event — it occurs once and is then gone,
 so a delivery that exhausted its retries could never be attempted again. "Is this customer at
 an unannounced tier" is a property, so the next add picks it up.
 
-That queue is drained by a `workflow.Go` goroutine, and it is where the most instructive bug in
-the design lives:
+Delivery happens in the workflow's main loop, which runs **cancel → notify → continue-as-new**
+in that order and re-enters after each step. Departure always wins over a roll; a pending
+promotion is always sent before one.
+
+It did not start that way, and the detour is the most instructive thing in the design. The first
+version drained a queue from a `workflow.Go` goroutine, which walks straight into:
 
 > **`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
 > and Signal handlers only.
 
-So the pre-continue-as-new drain that Phase 2 added is not enough. A promotion landing on the
-third add — the ordinary case at three adds per run — is queued, the handler returns,
-`AllHandlersFinished` goes true, and the run rolls away from a notification nobody ever sent.
+So the pre-continue-as-new drain that Phase 2 added was not enough. A promotion landing on the
+third add — the ordinary case at three adds per run — was queued, the handler returned,
+`AllHandlersFinished` went true, and the run rolled away from a notification nobody ever sent.
 No error, no retry, no trace in history.
 
 The test for it was written before the fix, and failed:
@@ -357,8 +365,10 @@ The test for it was written before the fix, and failed:
     expected the promotion to survive the roll, got []
 ```
 
-The fix is one clause — `AllHandlersFinished(ctx) && n.idle()` — and the same clause is needed
-again on the departure path.
+That was first patched with an extra `&& n.idle()` clause on the roll condition. Moving delivery
+into the main loop removed the need for it entirely: with no side goroutine, there is nothing
+for `AllHandlersFinished` to miss and no invariant to remember. The platform fact is still worth
+knowing; it is just no longer load-bearing here.
 
 ```sh
 make enroll ID=c-003
@@ -392,6 +402,82 @@ Two consequences worth knowing before you go looking for them:
 This is also why there's a single `Points` field and no separate lifetime total — with a
 monotonic balance those are the same number. See §3.1 of the plan for why carrying both was
 worse than carrying one.
+
+## The replay test is the one that matters
+
+```sh
+go test ./internal/rewards/ -run TestReplay
+```
+
+A customer's workflow runs forever, so it **will** outlive a deploy. When a worker picks up a
+task for a run that started weeks ago, it replays that run's recorded history through today's
+code and requires the commands to match event for event. If they don't, the workflow task fails
+and retries forever: the customer is wedged, silently, and restarting nothing helps.
+
+`internal/rewards/testdata/pre-notification-*.json` are real histories recorded by the *Phase 5*
+worker, before the notification Activity existed. Replaying them is a rehearsal of the deploy
+that added it — and the first time it ran, it failed:
+
+```
+nondeterministic workflow: extra replay command for ScheduleActivityTask:
+  (ActivityType:(Name:NotifyCustomer) ...)
+```
+
+Adding the Activity would have wedged **every customer with an open run**. Nothing else caught
+it: the unit tests passed, the API worked, the UI rendered. The damage only existed for
+executions that started before the deploy, and the only thing that looks at those is a replay
+test.
+
+The fix is `workflow.GetVersion`. Runs whose history predates the marker keep the old behaviour
+for the rest of their lives and pick notifications up at their next continue-as-new — at most
+three adds away.
+
+**It arrives one commit too late for one group, and that's the sharper lesson.** Executions
+created by the ungated build have the Activity in their history and no marker, so they resolve
+the same way a pre-Phase-6 run does — and replay then omits an Activity the history demands.
+`GetVersion` can't tell "predates the change" from "ran the change before it was gated", because
+the marker is the only signal and neither has one. Gating is still the right trade, but nothing
+written later can repair those histories. **Gate a command-changing edit in the same commit that
+introduces it.**
+
+It also makes the migration observable, because `GetVersion` upserts a built-in search
+attribute:
+
+```sh
+# how many customers have picked up the change?
+temporal workflow count --query "TemporalChangeVersion = 'tier-notifications-1'"
+```
+
+One trap, since it cost real time: `worker.ReplayWorkflowHistory` runs the workflow under a fake
+ID (`"ReplayId"`) unless you pass `OriginalExecution`. Any workflow that reads its own ID — ours
+validates against it — then fails with a nondeterminism error naming a completely innocent line.
+It reads exactly like a versioning bug. `internal/rewards/replay_test.go` pins that so nobody
+simplifies the workaround away.
+
+## Seeding a demo
+
+```sh
+make seed            # needs make up + make worker + make api
+make reset && make seed   # for a clean slate
+```
+
+Nine customers covering the cases a demo needs: every tier, an empty timeline, a deactivated
+customer, and one just under the points cap. It drives the HTTP API rather than the Temporal
+client, so seeding exercises the path a user takes — rollover retries and error mapping included.
+
+**Read-then-create, and idempotent.** It looks each customer up first, enrolls only the missing
+ones, and reports any existing customer whose balance disagrees with the dataset rather than
+trying to repair it — points only go up, so a balance that is too high cannot be corrected.
+
+There is deliberately no "replace" flag. Deactivation is soft, so enrolling an existing customer
+*reactivates* them with their points intact; a flag that deactivated and re-enrolled to get a
+clean slate would stack a second set of adds on the balance it kept. That is not hypothetical —
+it is what `FRESH=1` started doing when soft deactivation landed, leaving `ada` at 1280 points
+instead of 640. The only real clean slate is deleting the executions: `make reset`.
+
+`capped` is the interesting one: 100 adds to land just under the points cap, which makes handler
+rejections reachable and produces ~33 generations. Follow it with `make reap WF=customer-capped`
+and `make audit ID=capped` for a truncated audit log.
 
 ## Running more than one stack
 
@@ -480,14 +566,17 @@ on-demand deletion works. Worth re-running after any server upgrade.
 ```
 cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
+cmd/seed/                     demo data, via the API rather than around it
 internal/rewards/
   state.go                    CustomerState, tier thresholds, derived Level()
   workflow.go                 CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
-  notifier.go                 the drain goroutine and the continue-as-new guard
+  notifier.go                 promotion detection and delivery, run from the main loop
   activity.go                 NotifyCustomer -- the only side effect in the system
   workflow_test.go            unit tests (no Docker required)
+  replay_test.go              deploy rehearsal against recorded histories
+  testdata/                   real histories, including pre-Phase-6 ones
 internal/httpapi/
   server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection

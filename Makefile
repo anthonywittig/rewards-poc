@@ -18,7 +18,7 @@ API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-stop workers api api-stop test enroll status add deactivate reactivate \
-        inspect inspect-pg inspect-es write-trace audit web web-build
+        inspect inspect-pg inspect-es write-trace audit web web-build seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -79,6 +79,12 @@ verify-config: $(ENV) ## Check the platform behaviour the plan depends on
 
 reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
 	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) WF="$(WF)" bash /reap.sh
+
+# Distinct from reap, which spares running executions on purpose. This one takes
+# everything, for when workflow code has changed under live executions and the
+# dev answer is to start over. See PLAN.md 12.11.
+reset: $(ENV) ## Delete EVERY customer workflow, running included (dev only)
+	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) bash /reset.sh
 
 # --- Datastore inspection (Phase 7 / PLAN.md §8) -----------------------------
 # Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
@@ -218,3 +224,13 @@ reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAM
 audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
 	  || { echo "no API on :$(API_PORT) -- is 'make api' running?" >&2; exit 1; }
+
+# Fills a running stack with a demo dataset, driving the HTTP API rather than
+# the Temporal client so seeding exercises the path a user takes -- rollover
+# retries and error mapping included.
+#
+# Read-then-create: it only enrolls customers who are missing, and reports any
+# existing one whose balance disagrees with the dataset. Deactivation is soft,
+# so nothing here can reset a customer -- `make reset` is the clean slate.
+seed: $(ENV) ## Seed demo customers (idempotent; `make reset` first for a clean slate)
+	API_BASE=http://localhost:$(API_PORT) go run ./cmd/seed

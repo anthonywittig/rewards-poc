@@ -103,6 +103,40 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
 
+	// Phase 6 added the notification Activity, and adding it is a *breaking*
+	// change to every run already in flight: the new code emits a
+	// ScheduleActivityTask command where the recorded history has no matching
+	// event, so replay fails and the workflow task retries forever. Every
+	// existing customer would wedge on deploy.
+	//
+	// Not a hypothetical -- replay_test.go reproduces it against histories
+	// recorded by the Phase 5 worker:
+	//
+	//	nondeterministic workflow: extra replay command for ScheduleActivityTask:
+	//	  (ActivityType:(Name:NotifyCustomer) ...)
+	//
+	// GetVersion is the fix. Runs whose history predates this marker resolve to
+	// DefaultVersion and keep behaving exactly as they did; new runs record
+	// version 1 and notify. PLAN.md 12.11.
+	//
+	// One population it cannot save, and the gate should be honest about it:
+	// executions created by the *ungated* Phase 6 build. Their history contains
+	// the Activity and no marker, so they resolve to DefaultVersion too, and
+	// replay then omits an Activity the history demands. GetVersion cannot tell
+	// "predates the change" from "ran the change before it was gated" -- the
+	// marker is the only signal, and neither has one. Find them with
+	// TemporalChangeVersion IS NULL plus a StartTime lower bound, and reset them.
+	// Pinned by TestReplay_UngatedPhase6HistoriesCannotBeRescued.
+	//
+	// The lesson is upstream: gate a command-changing edit in the same commit
+	// that introduces it.
+	//
+	// Called unconditionally and in a fixed position, because the marker's place
+	// in history is part of the replayable sequence -- moving this call relative
+	// to the other commands is as breaking as removing it.
+	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
+		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
+
 	if err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (CustomerStatus, error) {
 		return statusOf(&state), nil
 	}); err != nil {
@@ -131,7 +165,10 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
 
-			if _, ok := promotionFor(&state); ok {
+			// Gated: a run whose history predates the version marker must not arm
+			// this, or the loop emits a ScheduleActivityTask the history has no
+			// event for. See notifyEnabled above.
+			if _, ok := promotionFor(&state); ok && notifyEnabled {
 				needsNotify = true
 				logger.Info("tier promotion pending",
 					"customerId", state.CustomerID, "level", Level(state.Points))
@@ -199,7 +236,10 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			return DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 		}
 		state = next
-		needsDeparture = true
+		// Gated for the same reason as the promotion above: the departure notice
+		// schedules the same Activity, and a pre-marker run being deactivated
+		// after the deploy must not emit a command its history cannot account for.
+		needsDeparture = notifyEnabled
 
 		logger.Info("customer deactivated",
 			"customerId", state.CustomerID,

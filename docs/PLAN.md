@@ -344,11 +344,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
         return handleLeave(ctx, &state)
     }
 
-    // Let any concurrently-accepted update AND any in-flight notification
-    // finish before we roll the run. See §3.7 for why the second clause
-    // is not covered by AllHandlersFinished.
+    // Let any concurrently-accepted update finish before we roll the run.
+    // Notifications are delivered by this same loop before it reaches here
+    // (§3.7), so there is no background work for this to miss.
     if err := workflow.Await(ctx, func() bool {
-        return workflow.AllHandlersFinished(ctx) && notifier.Idle()
+        return workflow.AllHandlersFinished(ctx)
     }); err != nil {
         return handleLeave(ctx, &state)
     }
@@ -458,47 +458,54 @@ does not return until the customer has been notified. Don't:
   unreachable notifier would retry indefinitely, so the Update hangs until the client times
   out — with the points still awarded. The worst possible UX for the clearest possible reason.
 
-So the handler stays synchronous and cheap: it applies the points, detects the crossing,
-appends to a pending-notification slice, and returns the new balance immediately. A
-`workflow.Go` goroutine drains that slice and runs the Activity:
+So the handler stays synchronous and cheap: it applies the points, notices that the customer
+sits at an unannounced tier, arms a flag, and returns the new balance immediately. **The main
+loop** observes that flag and runs the Activity:
 
 ```go
-workflow.Go(ctx, func(gctx workflow.Context) {
-    for {
-        if err := workflow.Await(gctx, func() bool { return len(pending) > 0 }); err != nil {
-            return // cancelled
-        }
-        n := pending[0]
-        pending = pending[1:]
-        inFlight = true
-        _ = workflow.ExecuteActivity(actCtx, NotifyCustomer, n).Get(gctx, nil)
-        state.NotifiedLevels = append(state.NotifiedLevels, n.Level)
-        inFlight = false
+for {
+    workflow.Await(ctx, func() bool {
+        return ctx.Err() != nil || needsNotify || earnsThisRun >= EarnsPerRun
+    })
+    if ctx.Err() != nil { return handleLeave(...) }   // departure always wins
+
+    if needsNotify {                                  // ...then promotions
+        needsNotify = false
+        dctx, cancel := workflow.NewDisconnectedContext(ctx)
+        deliverPromotion(dctx, &state)
+        cancel()
+        continue
     }
-})
+    ...                                               // ...then the roll
+}
 ```
 
-#### The trap this creates
+Cancel → notify → continue-as-new, in that order, with the loop re-entered after each step so
+the ordering holds however many things arrive at once.
+
+#### The trap this avoids
 
 **`workflow.AllHandlersFinished` does not cover `workflow.Go` goroutines.** It tracks Update
-and Signal handlers only. So the pre-continue-as-new await in §3.5 would happily roll the run
-while a notification is still in flight, silently dropping it — and at `EarnsPerRun = 3`, a
-promotion landing on the third add is exactly when that happens. Hence the extra
-`notifier.Idle()` clause (`len(pending) == 0 && !inFlight`).
+and Signal handlers only. The first version of this delivered from a `workflow.Go` goroutine
+draining a queue, and the pre-continue-as-new await in §3.5 would happily roll the run while a
+notification was still in flight, dropping it silently — at `EarnsPerRun = 3`, a promotion
+landing on the third add is exactly when that happens.
 
-This is the most instructive bug in the whole design, and it is worth writing the test that
-catches it before writing the fix.
+That version was written first, along with the test [§10](#10-testing) asks for, and the test
+failed: `Test_Notify_PromotionOnTheRollingAddIsNotDropped` reported no notifications at all.
+The fix at the time was an extra `notifier.Idle()` clause on the roll condition.
 
-**It was, and it failed.** `Test_Notify_PromotionOnTheRollingAddIsNotDropped` reported no
-notifications at all against the unguarded workflow — see [§12.6](#12-sharp-edges) for the
-output. Adding `&& n.idle()` to the pre-roll await turned it green.
+**The loop above is the better answer, and it is what the code does now.** With delivery in the
+main coroutine there is no side goroutine for `AllHandlersFinished` to miss, so the guard is
+not needed — the trap is removed rather than defended against. The platform fact is still worth
+knowing, and is recorded at [§12.6](#12-sharp-edges); it is simply no longer load-bearing here.
 
-Two things the sketch above leaves out, both learned building it:
+One detail the sketch keeps for a reason:
 
-- **The goroutine runs on a disconnected context.** On the workflow's own context, deactivating
-  a customer mid-delivery cancels a promotion they had already earned — and then `handleLeave`
-  waits for a drain that can never complete, because the goroutine died with the context. A
-  promotion is not unmade by the customer leaving a moment later.
+- **Delivery runs on a disconnected context.** On the workflow's own context, deactivating a
+  customer mid-delivery cancels a promotion they had already earned. A promotion is not unmade
+  by the customer leaving a moment later, so `handleLeave` delivers any armed promotion before
+  sending the departure notice.
 - **The Activity's retries must be bounded.** The default policy retries forever, and the
   continue-as-new guard waits for the notifier to go idle, so an unreachable notification
   provider would stop the customer's workflow rolling for as long as it stayed down. A cosmetic
@@ -1264,10 +1271,15 @@ browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
 - **The §3.7 race specifically**: a promotion landing on the third point-add must still be
   notified, not dropped by the continue-as-new. Mock `NotifyCustomer` with a delay so the
   Activity is genuinely in flight when the run tries to roll, and assert it was called.
-  Without the `notifier.Idle()` guard this test fails — write it first.
-- **Replay test** against a checked-in history JSON. Especially valuable here: entity
-  workflows are long-lived, so they *will* outlive a deploy, and this is the single highest
-  operational risk in the design.
+  Without a guard this test fails — write it first. (It did: see
+  [§12.6](#12-sharp-edges). The guard was later made unnecessary by moving delivery into the
+  main loop, but the test remains the thing that catches a regression.)
+- **Replay test** against a checked-in history JSON. **Done, and it earned its place
+  immediately**: it caught Phase 6 as a change that would have wedged every existing customer
+  ([§12.11](#12-sharp-edges)). `internal/rewards/testdata/pre-notification-*` are histories
+  recorded by the Phase 5 worker, so replaying them is a rehearsal of that deploy. Note the
+  replayer needs `OriginalExecution` or it invents a workflow ID and fails misleadingly
+  ([§12.35](#12-sharp-edges)).
 - **Integration**: `temporal server start-dev` with `--search-attribute` flags, exercising
   the API end to end. Runs in CI without Docker or Elasticsearch — note that `start-dev` uses
   SQLite visibility, so it will not reproduce the ES lag of §7.5. That behaviour needs the
@@ -1285,10 +1297,10 @@ browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
-| 6 | `NotifyCustomer` Activity: tier-crossing detection, async drain goroutine, CAN-drain guard, `NotifiedLevels` dedup, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
+| 6 | `NotifyCustomer` Activity: unannounced-tier detection, main-loop delivery, `NotifiedLevels` dedup and retry, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
 | 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
 | 8 | React UI, all three screens | **Done.** See `web/` and `web/NOTES.md` |
-| 9 | Replay test, seed script, README | |
+| 9 | Replay test, seed script, README | **Done.** The replay test caught Phase 6 as a breaking change for every running customer, fixed with `GetVersion` — [§12.11](#12-sharp-edges) |
 
 Phases 1–2 are the substance and Phase 7 is the other headline deliverable; the rest is
 scaffolding around them. Phase 6 slots in after the history crawl so the notification events
@@ -1354,8 +1366,15 @@ Things not in the original brief that will come up.
    ```
 
    No error, no retry, no trace in history: the run rolled while the notification sat in a
-   queue that `AllHandlersFinished` knows nothing about. Adding `&& n.idle()` to the pre-roll
-   await fixed it. The same clause is needed in the departure path for the same reason.
+   queue that `AllHandlersFinished` knows nothing about. The fix at the time was an
+   `&& notifier.idle()` clause on the roll condition, and the same clause in the departure path.
+
+   **The code no longer relies on any of that, and the reason is the real lesson.** Delivery
+   moved into the workflow's main loop (§3.7), so there is no side goroutine for
+   `AllHandlersFinished` to miss and no guard to forget — the trap was removed rather than
+   defended against. A `workflow.Go` goroutine buys concurrency the workflow did not need, and
+   charges for it in an invariant nothing enforces. Reach for the loop first; this item still
+   stands for the cases where you genuinely cannot.
 7. **A duplicate start is silent by default.** `WorkflowIDConflictPolicy: FAIL` is not enough
    to make `ExecuteWorkflow` return an error — it also needs
    `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
@@ -1403,9 +1422,59 @@ Things not in the original brief that will come up.
 **Operational**
 
 11. **Versioning is the real risk.** Entity workflows run forever and will outlive deploys;
-   changing workflow code under a running execution causes non-determinism errors. In dev,
-   terminate stale workflows between changes. Document Worker Versioning / patching as the
-   production answer, and add a `make reset` that wipes all customer workflows.
+   changing workflow code under a running execution causes non-determinism errors.
+
+   **Confirmed in Phase 9, and it had already happened.** Phase 6 shipped a change that would
+   have wedged every customer with an open run. Adding the notification Activity emits a
+   `ScheduleActivityTask` command that histories recorded by the Phase 5 worker have no event
+   for, so replay fails, the workflow task retries forever, and the customer is stuck — with no
+   error surface anywhere a user or an operator would look:
+
+   ```
+   nondeterministic workflow: extra replay command for ScheduleActivityTask:
+     (ActivityType:(Name:NotifyCustomer) ...)
+   ```
+
+   Nothing in Phases 6–8 caught it. Unit tests pass, the API works, the UI renders; the damage
+   only exists for executions that started *before* the deploy, and the only thing that looks at
+   those is a replay test. That is the whole argument for [§10](#10-testing) insisting on one.
+
+   Fixed with `workflow.GetVersion` gating the Activity, so runs recorded before the marker keep
+   the old behaviour for the rest of their lives and pick notifications up at their next
+   continue-as-new — at most `EarnsPerRun` adds away.
+
+   **And the fix has a population it cannot save, which is the sharper half of the lesson.**
+   Executions created by the *ungated* Phase 6 build — the code as it actually merged — have the
+   Activity in their history and no marker. They resolve to `DefaultVersion` exactly like a
+   Phase 5 run, so replay omits an Activity the history demands:
+
+   ```
+   lookup failed for scheduledEventID to activityID: scheduleEventID: 24
+   ```
+
+   `GetVersion` cannot distinguish "predates the change" from "ran the change before it was
+   gated": the marker is the only signal and neither has one. Whichever way `DefaultVersion` is
+   interpreted, one population breaks. Gating is still right — it protects everyone from before
+   the deploy, at the cost of those started between two commits — but nothing in Phase 9 can
+   reach back and repair the histories Phase 6 wrote. Raised on PR #16, reproduced against a
+   real ungated history, and pinned by `TestReplay_UngatedPhase6HistoriesCannotBeRescued`.
+
+   The affected executions are at least findable, because `GetVersion` upserts
+   `TemporalChangeVersion` ([§12.36](#12-sharp-edges)):
+
+   ```
+   WorkflowType = 'CustomerRewardsWorkflow'
+     AND ExecutionStatus = 'Running'
+     AND TemporalChangeVersion IS NULL
+     AND StartTime > '<when the ungated build went out>'
+   ```
+
+   The `StartTime` clause is what separates them from pre-Phase-6 runs, which also lack the
+   marker and replay perfectly well. Then reset them — `make reset` in dev, a targeted terminate
+   in anything real.
+
+   **The lesson is upstream of all of it: gate a command-changing edit in the same commit that
+   introduces it.** Phase 6 did not, and there is no later commit that can fix that.
 12. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.
@@ -1514,10 +1583,10 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     (§5.1). Worth naming as the cost of freezing — the freeze bought a UI built in parallel,
     and charged for it here.
 
-32. **`EarnsPerRun` is a floor, not an exact count — and Phase 6 widened the gap.** The pre-roll
-    guard holds the run open until the notifier is idle, and the Update handler keeps accepting
-    adds the whole time, so a run that has already decided to roll can take on more. Measured
-    on the real stack with six rapid adds:
+32. **`EarnsPerRun` is a floor, not an exact count — and Phase 6 widened the gap.** The run
+    delivers any pending promotion before rolling, and the Update handler keeps accepting adds
+    for the duration of that Activity, so a run that has already decided to roll can take on
+    more. Measured on the real stack with six rapid adds:
 
     ```
     no tier crossing (6x50, stays basic)     adds per generation {0: 3, 1: 3}
@@ -1525,7 +1594,9 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     ```
 
     Reproducible, and isolated to the notification: the difference is exactly the time the
-    promotion Activity holds the run open. Harmless — the extra add is applied, recorded and
+    promotion Activity holds the run open. It survived the rewrite from a drain goroutine to a
+    main-loop delivery unchanged, which is what you would expect — the cause is the Activity's
+    round trip, not the structure around it. Harmless — the extra add is applied, recorded and
     carried forward, and the roll still happens once — but "three adds per run" is an
     approximation under load rather than a rule.
 
@@ -1571,12 +1642,63 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     natural and silently loses that notification — `handleLeave` then waits for a drain that
     can never happen, because the thing doing the draining died with the context.
 
+**From the Phase 9 replay test.**
+
+35. **`ReplayWorkflowHistory` substitutes a fake workflow ID, and the failure blames innocent
+    code.** The replayer runs the workflow as `"ReplayId"` unless
+    `ReplayWorkflowHistoryWithOptions` is given an `OriginalExecution`. Any workflow that reads
+    its own ID therefore behaves differently under replay — ours rejects the enrollment payload
+    (`validateEnrollment`, §3.1), returns before emitting a single command, and reports:
+
+    ```
+    nondeterministic workflow: missing replay command for UpsertWorkflowSearchAttributes
+    ```
+
+    Which names a line that is entirely innocent, and says "nondeterministic", so it reads as a
+    versioning problem rather than a harness one. The option's doc comment calls it "Optional".
+    It is optional only for workflows that never look at their own identity.
+
+36. **`GetVersion` writes two events, not one**: the `Version` marker *and* an automatic upsert
+    of the built-in `TemporalChangeVersion` search attribute. The second one is a gift —
+    executions become queryable by which version of the code they are running, which is exactly
+    what you want during a migration:
+
+    ```
+    WorkflowType = 'CustomerRewardsWorkflow' AND TemporalChangeVersion = 'tier-notifications-1'
+    ```
+
+    That answers "how many customers have picked up the change yet?" from the Temporal UI, with
+    no instrumentation of our own.
+
+37. **Deactivation is a *request*, and Phase 6 widened the gap between asking and done.**
+    `DELETE /api/customers/{id}` returns as soon as the server accepts the cancellation, but the
+    execution stays `Running` while `handleLeave` drains the notifier and sends the departure
+    notification. Measured: DELETE returned in 13 ms, the execution closed 75 ms later.
+
+    Anything that deactivates and then re-enrolls has to wait, because enrollment fails on
+    conflict ([§3.6](#36-deactivation-via-cancel)) and 60 ms is plenty of window. `make seed
+    FRESH=1` did not, and skipped 8 of 9 customers with *"already enrolled and active"* — the
+    one thing `FRESH=1` existed to prevent. Raised on PR #16.
+
+    **Both the race and the flag are now moot**, which is worth recording rather than deleting.
+    Soft deactivation ([§3.6](#36-deactivation-via-cancel)) means the workflow never closes, so
+    there is no window to race — and no way to reset a customer through the API at all, since
+    re-enrolling restores their points. `FRESH=1` was removed; `make reset` is the clean slate.
+    The finding survives because the property it describes does: an operation that returns once
+    a *request* is accepted has not finished, and code that reads state straight afterwards is
+    racing something.
+
+    Worth noticing *why* it became reliable rather than rare: putting an Activity in the
+    departure path turned a window measured in microseconds into one measured in tens of
+    milliseconds. Adding a network call to a shutdown path is a good way to promote a latent
+    race into a certain one.
+
 **Design**
 
-35. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
+38. Because Updates are serialized by the workflow, concurrent point-adds cannot lose an
     update — no optimistic locking, no transactions, no retry loop. This is a genuine
     advantage over the obvious Postgres implementation and deserves a callout in the README.
-36. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
+39. Points spending / expiry, tier downgrade over time, and tier-anniversary review are all
     out of scope — and spending is now explicitly *decided against*, not merely deferred
     ([§3.1](#31-state-carried-across-continue-as-new)). The entity workflow with a durable
     timer is exactly where they'd go. Worth one paragraph as "what this shape buys you next."

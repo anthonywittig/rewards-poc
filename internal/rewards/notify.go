@@ -36,3 +36,18 @@ type NotifyRequest struct {
 	Level          string `json:"level"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }
+
+// Versioning markers for workflow.GetVersion. PLAN.md 12.11.
+//
+// Entity workflows outlive deploys by design, so a change that alters the
+// commands a run emits has to be gated or it breaks every execution already in
+// flight. These names are recorded in Event History and can never be reused or
+// renamed -- a marker is as permanent as the history it sits in.
+const (
+	// changeTierNotifications gates the Phase 6 notification Activity. Runs
+	// started before it keep the Phase 5 behaviour for the rest of their lives,
+	// and pick notifications up at their next continue-as-new -- at most
+	// EarnsPerRun adds away.
+	changeTierNotifications  = "tier-notifications"
+	versionTierNotifications = 1
+)
