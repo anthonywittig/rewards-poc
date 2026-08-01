@@ -265,17 +265,7 @@ textarea {
   color: var(--paper);
 }
 
-.raw-query {
-  display: grid;
-  gap: 0.4rem;
-}
-
-.raw-query label {
-  font-size: 0.78rem;
-  color: var(--mist);
-}
-
-.raw-query input,
+.search-input,
 .field input,
 .field select,
 .field textarea {
@@ -287,12 +277,20 @@ textarea {
   padding: 0.65rem 0.8rem;
 }
 
-.raw-query input:focus,
+.search-input:focus,
 .field input:focus,
 .field select:focus,
 .field textarea:focus {
   outline: 2px solid rgba(61, 214, 198, 0.35);
   outline-offset: 1px;
+}
+
+/* Sits in a .chip-row next to its label, so it grows instead of spanning. */
+.search-input {
+  flex: 1 1 16rem;
+  width: auto;
+  max-width: 28rem;
+  padding: 0.45rem 0.7rem;
 }
 
 .hint {

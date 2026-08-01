@@ -37,15 +37,12 @@ export function errorCode(err: unknown): string | undefined {
   return undefined
 }
 
-/** Build a Temporal visibility query from UI chips + optional raw override. */
+/** Build a Temporal visibility query from the UI chips + the name search box. */
 export function buildListQuery(opts: {
   tier: string | null
   status: 'active' | 'deactivated' | 'any'
-  raw: string
+  name: string
 }): string {
-  const raw = opts.raw.trim()
-  if (raw) return raw
-
   const parts: string[] = []
   if (opts.tier) {
     parts.push(`RewardsLevel = '${opts.tier}'`)
@@ -55,7 +52,18 @@ export function buildListQuery(opts: {
   } else if (opts.status === 'deactivated') {
     parts.push(`RewardsActive = false`)
   }
+  const name = opts.name.trim()
+  if (name) {
+    // CustomerName is registered as Text, so this is a tokenized match: whole
+    // words, not prefixes. "lovelace" finds Ada Lovelace, "lovel" does not.
+    parts.push(`CustomerName = '${escapeQueryLiteral(name)}'`)
+  }
   return parts.join(' AND ')
+}
+
+/** Escape a user-typed value for a single-quoted visibility-query literal. */
+export function escapeQueryLiteral(value: string): string {
+  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
 
 export function slugifyId(name: string): string {
