@@ -1406,8 +1406,40 @@ Things not in the original brief that will come up.
 
    Fixed with `workflow.GetVersion` gating the Activity, so runs recorded before the marker keep
    the old behaviour for the rest of their lives and pick notifications up at their next
-   continue-as-new — at most `EarnsPerRun` adds away. `make reset` is still worth having for
-   dev, but it is a convenience, not the answer.
+   continue-as-new — at most `EarnsPerRun` adds away.
+
+   **And the fix has a population it cannot save, which is the sharper half of the lesson.**
+   Executions created by the *ungated* Phase 6 build — the code as it actually merged — have the
+   Activity in their history and no marker. They resolve to `DefaultVersion` exactly like a
+   Phase 5 run, so replay omits an Activity the history demands:
+
+   ```
+   lookup failed for scheduledEventID to activityID: scheduleEventID: 24
+   ```
+
+   `GetVersion` cannot distinguish "predates the change" from "ran the change before it was
+   gated": the marker is the only signal and neither has one. Whichever way `DefaultVersion` is
+   interpreted, one population breaks. Gating is still right — it protects everyone from before
+   the deploy, at the cost of those started between two commits — but nothing in Phase 9 can
+   reach back and repair the histories Phase 6 wrote. Raised on PR #16, reproduced against a
+   real ungated history, and pinned by `TestReplay_UngatedPhase6HistoriesCannotBeRescued`.
+
+   The affected executions are at least findable, because `GetVersion` upserts
+   `TemporalChangeVersion` ([§12.36](#12-sharp-edges)):
+
+   ```
+   WorkflowType = 'CustomerRewardsWorkflow'
+     AND ExecutionStatus = 'Running'
+     AND TemporalChangeVersion IS NULL
+     AND StartTime > '<when the ungated build went out>'
+   ```
+
+   The `StartTime` clause is what separates them from pre-Phase-6 runs, which also lack the
+   marker and replay perfectly well. Then reset them — `make reset` in dev, a targeted terminate
+   in anything real.
+
+   **The lesson is upstream of all of it: gate a command-changing edit in the same commit that
+   introduces it.** Phase 6 did not, and there is no later commit that can fix that.
 12. Customer names and emails land in Event History and are readable in plaintext in the
    Temporal UI. Fine for a POC; the production answer is a Codec Server. Say so explicitly,
    and use obviously fake seed data.

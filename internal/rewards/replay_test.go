@@ -156,3 +156,62 @@ func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 		t.Errorf("unexpected failure shape, worth re-reading: %v", err)
 	}
 }
+
+// A limitation, asserted so it cannot be forgotten: the gate arrived one commit
+// too late to save the runs the ungated code created.
+//
+// testdata/ungated-notification.json is real, recorded by the Phase 6 code
+// exactly as it merged -- an execution whose history contains a NotifyCustomer
+// Activity and *no* Version marker. Replaying it through the gated workflow
+// fails, because GetVersion cannot tell "this run predates the change" from
+// "this run executed the change before it was gated". Both lack the marker, and
+// the marker is the only signal there is:
+//
+//	lookup failed for scheduledEventID to activityID: scheduleEventID: 24
+//
+// There is no code fix. Whichever way DefaultVersion is interpreted, one of the
+// two populations breaks -- gating it (as we do) protects every run recorded
+// before Phase 6, at the cost of every run recorded by Phase 6 itself. That is
+// the right trade, because the first population is "all customers from before
+// the deploy" and the second is only those started inside the window between
+// two commits.
+//
+// The remedy is operational, and the affected executions are findable, because
+// GetVersion upserts TemporalChangeVersion (PLAN.md 12.36):
+//
+//	WorkflowType = 'CustomerRewardsWorkflow'
+//	  AND ExecutionStatus = 'Running'
+//	  AND TemporalChangeVersion IS NULL
+//	  AND StartTime > '<when the ungated build was deployed>'
+//
+// ...then `make reset`, or a targeted terminate. The StartTime clause is what
+// separates them from pre-Phase-6 runs, which also have no marker and replay
+// perfectly well.
+//
+// The real lesson is upstream of all of this: gate a command-changing edit in
+// the *same* commit that introduces it. Phase 6 did not, and no amount of
+// cleverness in Phase 9 can reach back and fix the histories it wrote.
+func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
+	h := loadHistory(t, "ungated-notification.json")
+
+	// Confirm the fixture is the thing this test claims: an Activity, no marker.
+	var sawMarker, sawActivity bool
+	for _, e := range h.GetEvents() {
+		if m := e.GetMarkerRecordedEventAttributes(); m != nil && m.GetMarkerName() == "Version" {
+			sawMarker = true
+		}
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil &&
+			a.GetActivityType().GetName() == rewards.ActivityNotifyCustomer {
+			sawActivity = true
+		}
+	}
+	if sawMarker || !sawActivity {
+		t.Fatalf("fixture is not an ungated Phase 6 history (marker=%v activity=%v)",
+			sawMarker, sawActivity)
+	}
+
+	if err := replay(t, h); err == nil {
+		t.Fatal("these histories now replay -- a way to rescue them has been found; " +
+			"update this test and PLAN.md 12.11")
+	}
+}

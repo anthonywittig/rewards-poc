@@ -422,8 +422,18 @@ test.
 
 The fix is `workflow.GetVersion`. Runs whose history predates the marker keep the old behaviour
 for the rest of their lives and pick notifications up at their next continue-as-new — at most
-three adds away. It also makes the migration observable, because `GetVersion` upserts a built-in
-search attribute:
+three adds away.
+
+**It arrives one commit too late for one group, and that's the sharper lesson.** Executions
+created by the ungated build have the Activity in their history and no marker, so they resolve
+the same way a pre-Phase-6 run does — and replay then omits an Activity the history demands.
+`GetVersion` can't tell "predates the change" from "ran the change before it was gated", because
+the marker is the only signal and neither has one. Gating is still the right trade, but nothing
+written later can repair those histories. **Gate a command-changing edit in the same commit that
+introduces it.**
+
+It also makes the migration observable, because `GetVersion` upserts a built-in search
+attribute:
 
 ```sh
 # how many customers have picked up the change?

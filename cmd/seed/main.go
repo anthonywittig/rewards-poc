@@ -96,6 +96,7 @@ func main() {
 	})
 
 	start := time.Now()
+	seeded := 0
 	for _, c := range set {
 		if fresh {
 			_ = do(http.MethodDelete, base+"/api/customers/"+c.id, nil, nil)
@@ -104,10 +105,23 @@ func main() {
 			log.Printf("  %-10s SKIPPED: %v", c.id, err)
 			continue
 		}
+		seeded++
 		fmt.Printf("  %-10s %-4d adds  %s\n", c.id, len(c.adds), c.why)
 	}
 
-	fmt.Printf("\nseeded %d customers in %s\n", len(set), time.Since(start).Round(time.Millisecond))
+	// Counted rather than assumed. Printing len(set) unconditionally made a run
+	// where every customer already existed -- the common case on a second
+	// invocation -- look like a complete success, which is the one thing a seed
+	// script must never do.
+	fmt.Printf("\nseeded %d of %d customers in %s\n",
+		seeded, len(set), time.Since(start).Round(time.Millisecond))
+
+	if seeded < len(set) {
+		fmt.Printf("\n%d skipped. Already enrolled? `make seed FRESH=1` replaces them.\n",
+			len(set)-seeded)
+		os.Exit(1)
+	}
+
 	fmt.Printf("\n  %s/api/customers\n", base)
 	fmt.Printf("  make audit ID=ada\n")
 	fmt.Printf("  make reap WF=customer-capped     # then `make audit ID=capped` for a truncated log\n")

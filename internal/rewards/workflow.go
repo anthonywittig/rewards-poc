@@ -100,6 +100,22 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// DefaultVersion and keep behaving exactly as they did; new runs record
 	// version 1 and notify. PLAN.md 12.11.
 	//
+	// One population it cannot save, and the gate has to be honest about it:
+	// executions created by the *ungated* Phase 6 build. Their history contains
+	// the Activity and no marker, so they resolve to DefaultVersion too, and the
+	// replay then omits an Activity the history demands. GetVersion cannot tell
+	// "predates the change" from "ran the change before it was gated" -- the
+	// marker is the only signal, and neither has one.
+	//
+	// Gating anyway is the right trade: it protects every run recorded before
+	// Phase 6, which is everyone, at the cost of those started inside the window
+	// between two commits. Find them with TemporalChangeVersion IS NULL plus a
+	// StartTime lower bound, and reset them. Raised on PR #16 and pinned by
+	// TestReplay_UngatedPhase6HistoriesCannotBeRescued.
+	//
+	// The lesson is upstream: gate a command-changing edit in the same commit
+	// that introduces it.
+	//
 	// Called unconditionally and before anything reads it, because the marker's
 	// position in history is itself part of the replayable sequence.
 	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
