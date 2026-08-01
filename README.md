@@ -86,6 +86,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 | `make api` / `api-stop` | run the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
+| `make workflowcheck` | static determinism check on workflow code, no Docker needed |
 | `make seed` / `reset` | demo customers (idempotent) / delete every customer workflow |
 | `make reap [WF=customer-x]` | delete closed runs now, to force audit-log truncation |
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
@@ -214,6 +215,19 @@ every customer with an open run. Nothing else caught it. The fix is `workflow.Ge
 the sharper lesson is that it arrived one commit too late to help executions created by the
 ungated build: **gate a command-changing edit in the same commit that introduces it.**
 [§12.11](docs/PLAN.md#12-sharp-edges).
+
+**The determinism check runs before the replay test can save you.**
+
+```sh
+make workflowcheck
+```
+
+The Go SDK has no workflow sandbox. `time.Now()` in workflow code compiles, passes `go vet`, and
+passes the unit tests — then wedges a customer on replay, weeks later, in production.
+`workflowcheck` walks the call graph from every function taking a `workflow.Context` and flags
+anything reaching a non-deterministic call, transitively: put a `time.Now()` in `deliverPromotion`
+and it reports `deliverPromotion` *and* `CustomerRewardsWorkflow`, with the chain between them.
+Replay tests catch this too, but only for the paths a recorded history happens to cover.
 
 **One Activity, deliberately.** `NotifyCustomer` is the only thing here that touches the outside
 world; everything else is workflow state needing no side effects, which is rather the argument.
