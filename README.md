@@ -36,7 +36,7 @@ make worker
 # 3. The HTTP API on :8081, in its own terminal. Leave it running.
 make api
 
-# 4. Nine demo customers, covering every tier plus the interesting edge cases.
+# 4. Eighteen demo customers, six per tier, including the interesting edge cases.
 make seed
 
 # 5. The React UI on :5173, in its own terminal.
@@ -82,7 +82,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 |---|---|
 | `make up` / `down` / `destroy` | start + bootstrap / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
-| `make worker` / `workers` / `worker-stop` | run the worker / list them / kill them all |
+| `make worker` / `workers` / `worker-stop` | run / list / kill this stack's workers |
 | `make api` / `api-stop` | run the HTTP API on `:8081` |
 | `make web` | install, typecheck/build, and serve the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
@@ -92,8 +92,10 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 | `make verify-config` | re-check the platform assumptions the design depends on |
 
 Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
-`.env.example` to `.env.beta`, set a different `STACK_NAME` and bump every `*_PORT`, then
-`make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` isolates containers, networks, and volumes.
+`.env.example` to `.env.beta`, set a different `COMPOSE_PROJECT_NAME` and bump every `*_PORT`,
+then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
+and volumes, and `make web ENV=.env.beta` serves on beta's `WEB_PORT`, proxying to beta's API
+and linking to beta's Temporal UI.
 Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
 on one stack is much cheaper if you only need isolated workflows.
 
@@ -137,7 +139,7 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 | 409 | `deactivated` | adding points to a customer who has left |
 | 409 | `rollover_race` | the workflow rolled over twice while applying one request |
 | 422 | `rejected` | the workflow refused it |
-| 503 | `worker_unavailable` | nothing is polling the task queue |
+| 503 | `worker_unavailable` | nothing is polling the task queue — or, less often, Temporal itself is slow or unreachable (this is the contract's only 503) |
 
 The 503 is the one you'll meet most, because the worker is down more often than anything else in
 development.
@@ -187,13 +189,15 @@ one leaves a trace:
 
 ```sh
 make add ID=c-001 AMOUNT=-50 REASON=oops       # validator: writes no history at all
-make add ID=c-002 AMOUNT=11  REASON="over cap" # handler: recorded, shows as points_rejected
+make add ID=capped AMOUNT=41 REASON="over cap" # handler: recorded, shows as points_rejected
 ```
 
-Count history events either side in the Temporal UI: a validator rejection adds none, so a
-client stuck retrying `amount: -1` cannot grow history by a single event, while a rejection that
-depends on the customer's accumulated state is permanently recorded. Facts about the *request*
-belong in the validator, facts about the *customer* in the handler —
+`capped` comes from `make seed`, parked at 99,960 points precisely so that any add over 40
+breaches the 100,000 cap. Count history events either side in the Temporal UI: a validator
+rejection adds none, so a client stuck retrying `amount: -1` cannot grow history by a single
+event, while a rejection that depends on the customer's accumulated state is permanently
+recorded. Facts about the *request* belong in the validator, facts about the *customer* in
+the handler —
 [§3.4](docs/PLAN.md#34-validation--and-a-deliberate-split).
 
 **The replay test is the one that matters.**
@@ -250,16 +254,19 @@ the obvious `pkill` misses it and it keeps serving *old* code against the same t
 silently, and looking exactly like a bug in the workflow.
 
 ```sh
-make workers       # should list exactly one
-make worker-stop   # kills them all, including orphans
+make workers       # should list exactly one for this stack
+make worker-stop   # kills this stack's workers, including orphans
 ```
 
 Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic.
 
-**A 503 `worker_unavailable` means nothing is polling the task queue** — start `make worker`.
+**A 503 `worker_unavailable` usually means nothing is polling the task queue** — start
+`make worker`. (The same code also covers a slow or unreachable Temporal, because it is the
+contract's only 503 — so if the worker is running, check `make ps` before restarting it.)
 Underneath, a Query with no worker fails three different ways depending on how long the worker
-has been gone, all taking ~9–10 s, while an Update doesn't fail at all: it blocks, observed still
-waiting after two minutes. The API bounds both so they become one predictable 503.
+has been gone — two taking ~9–10 s, one a bare transport error at ~2.5 s — while an Update
+doesn't fail at all: it blocks, observed still waiting after two minutes. The API bounds both
+so they become one predictable 503.
 
 **Changed the workflow code and existing runs now misbehave?** Constants like `EarnsPerRun` are
 baked into recorded history. In dev, `make reset` and start over.
@@ -283,7 +290,8 @@ internal/rewards/
 internal/httpapi/
   server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
-  classify.go                 error shapes, measured against a real server
+  classify.go                 Temporal error classification, measured against a real server
+  errors.go                   the stable error codes and their HTTP mapping
   dto.go                      the wire contract, frozen ahead of the endpoints
   testdata/                   real run histories, for the crawl's golden tests
 web/                          the React UI (see web/NOTES.md)
@@ -292,6 +300,7 @@ deploy/
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
+  reset.sh                    delete every customer workflow (make reset)
   inspect/verify-config.sh    platform assumption checks
 .env.example                  ports, versions, tuning
 Makefile
