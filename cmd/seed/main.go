@@ -16,6 +16,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -154,8 +155,10 @@ func main() {
 // the notification Activity takes, and a constant would be either slow or wrong.
 func replace(base, id string) error {
 	if err := do(http.MethodDelete, base+"/api/customers/"+id, nil, nil); err != nil {
-		// Nothing to replace is a fine outcome for a replace.
-		return nil
+		if isNotFound(err) {
+			return nil // nothing to replace is a fine outcome for a replace
+		}
+		return err
 	}
 
 	deadline := time.Now().Add(closeTimeout)
@@ -163,18 +166,33 @@ func replace(base, id string) error {
 		var c struct {
 			Status string `json:"status"`
 		}
-		if err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c); err != nil {
-			return nil // gone entirely, which is closed enough
+		err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c)
+		switch {
+		case err == nil && c.Status != "active":
+			return nil // closed, which is what we were waiting for
+		case isNotFound(err):
+			return nil // reaped entirely; closed enough
+		case err != nil:
+			// Anything else -- a 503 from a stopped worker, most likely -- means
+			// we cannot tell whether it closed. Treating that as "closed" would
+			// send us on to enroll, which fails with "already enrolled and
+			// active" and points at the wrong problem entirely.
+			return fmt.Errorf("cannot confirm deactivation: %w", err)
 		}
-		if c.Status != "active" {
-			return nil
-		}
+
 		if time.Now().After(deadline) {
 			return fmt.Errorf("still running %s after deactivating; is the worker keeping up?",
 				closeTimeout)
 		}
 		time.Sleep(closePoll)
 	}
+}
+
+// isNotFound reports whether the API said the customer does not exist, as
+// opposed to being unable to answer.
+func isNotFound(err error) bool {
+	var he *httpError
+	return errors.As(err, &he) && he.status == http.StatusNotFound
 }
 
 // How long to wait for a cancelled execution to close, and how often to look.
@@ -256,14 +274,30 @@ func do(method, url string, body, out any) error {
 		}
 		raw, _ := io.ReadAll(resp.Body)
 		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
-			return fmt.Errorf("%s (%s)", e.Error.Message, e.Error.Code)
+			return &httpError{resp.StatusCode, e.Error.Code, e.Error.Message}
 		}
-		return fmt.Errorf("%s: %s", resp.Status, bytes.TrimSpace(raw))
+		return &httpError{resp.StatusCode, "", string(bytes.TrimSpace(raw))}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
 	}
 	return nil
+}
+
+// httpError carries the status alongside the API's own words, so callers can
+// tell "this customer does not exist" from "the API could not answer" -- a
+// distinction replace() depends on and a bare error string cannot express.
+type httpError struct {
+	status  int
+	code    string
+	message string
+}
+
+func (e *httpError) Error() string {
+	if e.code != "" {
+		return fmt.Sprintf("%s (%s)", e.message, e.code)
+	}
+	return fmt.Sprintf("HTTP %d: %s", e.status, e.message)
 }
 
 func env(key, fallback string) string {
