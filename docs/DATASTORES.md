@@ -229,40 +229,39 @@ catching it is probabilistic at our flush settings, which is itself the lesson.
 
 ## Findings for PLAN.md
 
-> Integrator: splice these into §12 rather than renumbering here. Verified against
-> Temporal server **1.29.7** + Elasticsearch **7.17.27** with `ENABLE_ES=true`.
+Measured against Temporal server **1.29.7** + Elasticsearch **7.17.27** with
+`ENABLE_ES=true`. These are spliced into [`PLAN.md`](PLAN.md) §8 and §12 (items
+17–22); kept here as the inspection notebook that produced them.
 
 1. **No `temporal_visibility` Postgres database when ES is the visibility
-   store.** With `ENABLE_ES=true`, auto-setup creates only `temporal`. §8.1's
-   claim that `temporal_visibility` "gets its schema created by auto-setup but
-   stays empty" describes Postgres-visibility setups, not this one. Correct §8.1
-   to say visibility is ES-only and the second database is absent.
+   store.** With `ENABLE_ES=true`, auto-setup creates only `temporal`. An earlier
+   draft of §8.1 claimed `temporal_visibility` "gets its schema created by
+   auto-setup but stays empty" — that describes Postgres-visibility setups, not
+   this one. Corrected in §8.1 / §12.19.
 
 2. **One ES document per run, not per workflow ID.** After continue-as-new,
    `WorkflowId = customer-X` returns every retained generation
    (`ContinuedAsNew` + `Running`). List UIs must filter on `ExecutionStatus`
-   (and reap closed gens) or they double-count customers. Worth an explicit note
-   in §4 / §8.2 / the Phase 4 list endpoint.
+   (and reap closed gens) or they double-count customers. In §4 / §8.2 / §12.17.
 
 3. **`ORDER BY` fails in Temporal visibility queries but works in raw ES.**
    Confirmed: `ListWorkflow` / `temporal workflow list` reject `ORDER BY` for
    custom and built-in attributes; the same sort on
    `temporal_visibility_v1_dev` succeeds. The §4 limitation is the visibility
-   *query language*, not Elasticsearch's inability to sort. Client-side sort in
-   the API remains the right POC answer; the sharper explanation belongs in §12.
+   *query language*, not Elasticsearch's inability to sort. §12.18.
 
 4. **`visibility_tasks` is empty at rest and only briefly non-empty under
    write.** Catching a row needs a tight poll alongside an Update (see
    `make write-trace`). A single `SELECT count(*)` after the fact usually
-   reports 0 even though the queue was used — document that so §8.1.3 demos
-   don't look broken.
+   reports 0 even though the queue was used — §8.1.3 / §12.20.
 
 5. **`_cat/indices` `docs.count` lags behind deletes.** After `make reap`,
    search/`_count` go to zero for the deleted runs while `_cat/indices` can
    still show a higher `docs.count` until merges clear soft-deletes. Inspect
    demos should use `_search`/`_count` for "gone?", and optionally show
-   `docs.deleted`.
+   `docs.deleted`. §12.21.
 
 6. **`history_node.tree_id` equals `executions.run_id`** for these entity
    workflows (join used by the canned SQL). Encoding is `Proto3` for
    `history_node.data`, `executions.data`, and `executions.state` on 1.29.7.
+   §12.22.
