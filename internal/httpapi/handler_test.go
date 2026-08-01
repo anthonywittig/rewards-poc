@@ -13,9 +13,13 @@ import (
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 	"go.temporal.io/api/workflowservice/v1"
 	"go.temporal.io/sdk/client"
+	"go.temporal.io/sdk/converter"
+
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
 // commonExecution is the execution Describe hands back so the crawl has a run ID
@@ -41,6 +45,21 @@ type stubTemporal struct {
 	historyErr  error
 	listErr     error
 	countErr    error
+
+	// Soft-deactivation surface (membership_test.go). Everything here is
+	// opt-in: a zero stubTemporal behaves exactly as it did before these
+	// existed, so the tests above are unaffected by them.
+	describeInfo *workflowpb.WorkflowExecutionInfo
+	executions   []*workflowpb.WorkflowExecutionInfo
+	startErr     error
+	queryStatus  *rewards.CustomerStatus
+	queryErr     error
+	deactivate   *rewards.DeactivateResult
+	reactivate   *rewards.ReactivateResult
+
+	// Update names sent, in order. Nil means none -- which is the assertion
+	// for the paths that must never reach the workflow at all.
+	updates []string
 }
 
 func (s *stubTemporal) DescribeWorkflowExecution(
@@ -49,11 +68,66 @@ func (s *stubTemporal) DescribeWorkflowExecution(
 	if s.describeErr != nil {
 		return nil, s.describeErr
 	}
-	return &workflowservice.DescribeWorkflowExecutionResponse{
-		WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{
-			Execution: &commonExecution,
-		},
-	}, nil
+	info := s.describeInfo
+	if info == nil {
+		info = &workflowpb.WorkflowExecutionInfo{Execution: &commonExecution}
+	}
+	return &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: info}, nil
+}
+
+func (s *stubTemporal) ExecuteWorkflow(
+	context.Context, client.StartWorkflowOptions, any, ...any,
+) (client.WorkflowRun, error) {
+	if s.startErr != nil {
+		return nil, s.startErr
+	}
+	return &stubRun{id: commonExecution.WorkflowId, runID: commonExecution.RunId}, nil
+}
+
+func (s *stubTemporal) QueryWorkflow(
+	context.Context, string, string, string, ...any,
+) (converter.EncodedValue, error) {
+	if s.queryErr != nil {
+		return nil, s.queryErr
+	}
+	if s.queryStatus == nil {
+		return nil, serviceerror.NewNotFound("workflow not found")
+	}
+	return &stubEncoded{value: *s.queryStatus}, nil
+}
+
+// stubEncoded is a Query result that round-trips through the real converter, so
+// a status type that does not encode fails here rather than decoding to a
+// zero-valued -- and therefore inactive -- customer.
+type stubEncoded struct{ value any }
+
+func (e *stubEncoded) HasValue() bool { return e.value != nil }
+func (e *stubEncoded) Get(out any) error {
+	dc := converter.GetDefaultDataConverter()
+	p, err := dc.ToPayloads(e.value)
+	if err != nil {
+		return err
+	}
+	return dc.FromPayloads(p, out)
+}
+
+func (s *stubTemporal) UpdateWorkflow(
+	_ context.Context, opts client.UpdateWorkflowOptions,
+) (client.WorkflowUpdateHandle, error) {
+	s.updates = append(s.updates, opts.UpdateName)
+	switch opts.UpdateName {
+	case rewards.UpdateDeactivate:
+		if s.deactivate == nil {
+			return &stubHandle{result: rewards.DeactivateResult{Changed: true}}, nil
+		}
+		return &stubHandle{result: *s.deactivate}, nil
+	case rewards.UpdateReactivate:
+		if s.reactivate == nil {
+			return &stubHandle{result: rewards.ReactivateResult{Changed: true}}, nil
+		}
+		return &stubHandle{result: *s.reactivate}, nil
+	}
+	return nil, serviceerror.NewNotFound("no stub for update " + opts.UpdateName)
 }
 
 func (s *stubTemporal) GetWorkflowHistory(
@@ -65,13 +139,19 @@ func (s *stubTemporal) GetWorkflowHistory(
 func (s *stubTemporal) ListWorkflow(
 	context.Context, *workflowservice.ListWorkflowExecutionsRequest,
 ) (*workflowservice.ListWorkflowExecutionsResponse, error) {
-	return nil, s.listErr
+	if s.listErr != nil {
+		return nil, s.listErr
+	}
+	return &workflowservice.ListWorkflowExecutionsResponse{Executions: s.executions}, nil
 }
 
 func (s *stubTemporal) CountWorkflow(
 	context.Context, *workflowservice.CountWorkflowExecutionsRequest,
 ) (*workflowservice.CountWorkflowExecutionsResponse, error) {
-	return nil, s.countErr
+	if s.countErr != nil {
+		return nil, s.countErr
+	}
+	return &workflowservice.CountWorkflowExecutionsResponse{Count: int64(len(s.executions))}, nil
 }
 
 // stubIterator always has a next event and always fails to produce it, which is

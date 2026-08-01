@@ -14,6 +14,7 @@ var (
 	KeyRewardsPoints = temporal.NewSearchAttributeKeyInt64("RewardsPoints")
 	KeyEnrolledAt    = temporal.NewSearchAttributeKeyTime("RewardsEnrolledAt")
 	KeyGeneration    = temporal.NewSearchAttributeKeyInt64("RewardsGeneration")
+	KeyActive        = temporal.NewSearchAttributeKeyBool("RewardsActive")
 )
 
 // Note on CustomerName: registered as Text, and the typed constructor for Text

@@ -170,7 +170,7 @@ export function CustomerListPage() {
           <input
             id="raw-q"
             value={rawDraft}
-            placeholder="RewardsLevel = 'gold' AND ExecutionStatus = 'Running'"
+            placeholder="RewardsLevel = 'gold' AND RewardsActive = true"
             onChange={(e) => setRawDraft(e.target.value)}
             onKeyDown={(e) => {
               if (e.key === 'Enter') setRaw(rawDraft)

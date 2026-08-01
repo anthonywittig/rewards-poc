@@ -29,9 +29,8 @@ type AddPointsRequest struct {
 
 // CustomerResponse is the customer detail payload.
 //
-// Status comes from the execution rather than from workflow state: a cancelled
-// execution is a deactivated customer, and the workflow cannot report its own
-// closure. PLAN.md 3.6.
+// Status comes from workflow state (Active / Deactivated), not from whether
+// the Temporal execution is Running. Soft-inactive customers stay Running.
 //
 // Assembled from two reads -- Describe for liveness, Query for state -- and a
 // continue-as-new can land between them. When it does, Points and Generation
@@ -83,11 +82,9 @@ type EnrollResponse struct {
 
 // --- Frozen contract for Phases 4 and 5 -------------------------------------
 //
-// The types below describe endpoints that do not exist yet: the customer list
-// (Phase 4) and the audit timeline (Phase 5). They are defined now so the UI
-// (Phase 8) can be built against `cmd/mockapi` in parallel rather than waiting
-// for either. Changing them later defeats the point, so they are shaped from
-// PLAN.md 4, 6.2 and 6.3 rather than from what is convenient to implement.
+// The types below started life so the UI could be shaped against a frozen
+// contract before list/audit existed. They are still the wire types for those
+// endpoints.
 
 // CustomerListItem is one row of GET /api/customers.
 //
@@ -171,6 +168,7 @@ const (
 	AuditNotificationSent AuditEntryKind = "notification_sent"
 	AuditGenerationRolled AuditEntryKind = "generation_rolled"
 	AuditDeactivated      AuditEntryKind = "deactivated"
+	AuditReactivated      AuditEntryKind = "reactivated"
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling

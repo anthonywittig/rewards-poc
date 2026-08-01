@@ -51,9 +51,9 @@ export function buildListQuery(opts: {
     parts.push(`RewardsLevel = '${opts.tier}'`)
   }
   if (opts.status === 'active') {
-    parts.push(`ExecutionStatus = 'Running'`)
+    parts.push(`RewardsActive = true`)
   } else if (opts.status === 'deactivated') {
-    parts.push(`ExecutionStatus = 'Canceled'`)
+    parts.push(`RewardsActive = false`)
   }
   return parts.join(' AND ')
 }

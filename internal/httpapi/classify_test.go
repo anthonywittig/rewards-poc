@@ -164,6 +164,30 @@ func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	}
 }
 
+// Deactivated is the one rejection that does not become a 422, and the reason
+// is that the caller can act on it: 422 says "your request was wrong", while
+// this says "the customer left, offer them re-enrollment". The UI branches on
+// the code, so collapsing it back into CodeRejected would silently remove the
+// re-enroll prompt rather than break anything loudly.
+func TestMapUpdateError_DeactivatedIs409(t *testing.T) {
+	err := temporal.NewNonRetryableApplicationError(
+		"customer is deactivated; re-enroll them before adding points",
+		rewards.ErrTypeDeactivated, nil)
+
+	mapped := mapUpdateError(err)
+	gotCode, gotKind := status(t, mapped)
+	if gotCode != http.StatusConflict || gotKind != CodeDeactivated {
+		t.Fatalf("got %d/%s, want 409/%s", gotCode, gotKind, CodeDeactivated)
+	}
+
+	// Still the workflow's own words, like every other business rejection.
+	var apiErr *apiError
+	errors.As(mapped, &apiErr)
+	if apiErr.message != "customer is deactivated; re-enroll them before adding points" {
+		t.Errorf("message = %q, want the workflow's own words", apiErr.message)
+	}
+}
+
 // A rejection must never be reported as an outage: the workflow answered, and
 // telling the caller "service unavailable" would invite a retry of a request
 // that will be refused identically every time.

@@ -10,9 +10,14 @@ import (
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
+	updatepb "go.temporal.io/api/update/v1"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The golden files in testdata/ are verbatim `temporal workflow show -o json`
@@ -20,9 +25,11 @@ import (
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then cancelled
+//	run-deactivated.json   the last run: rolled into, 1 add, then (historically) cancelled;
+//	                       tests strip the cancel tail and splice events-deactivate.json
 //	run-rejection.json     a run containing a handler rejection at the cap
 //	events-notification.json  a real NotifyCustomer Activity pair (see below)
+//	events-deactivate.json    a soft-deactivate UpdateAccepted/Completed pair
 //
 // Recaptured with:
 //
@@ -52,6 +59,73 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 		t.Fatalf("%s decoded to zero events", name)
 	}
 	return h.GetEvents()
+}
+
+// softDeactivatedRun is the historical cancel-ended fixture with its cancel
+// tail removed and a soft-deactivate Update spliced on — product leave is an
+// Update now, not CancelWorkflow.
+func softDeactivatedRun(t *testing.T) []*historypb.HistoryEvent {
+	t.Helper()
+	events := loadEvents(t, "run-deactivated.json")
+	cut := len(events)
+	for i, e := range events {
+		if e.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED {
+			cut = i
+			break
+		}
+	}
+	return append(events[:cut], loadEvents(t, "events-deactivate.json")...)
+}
+
+// membershipUpdate builds the Accepted/Completed pair Temporal writes for a
+// deactivate or reactivate Update.
+//
+// Built rather than captured, unlike every fixture above, because the cases
+// that matter here are the *combinations* -- leave, rejoin, repeat leave,
+// no-op rejoin -- and capturing four more histories to vary one boolean would
+// bury the thing under test. TestMembershipUpdateMatchesTheCapturedPair below
+// keeps that honest by checking this builder against the one pair that was
+// recorded from a real server.
+func membershipUpdate(
+	t *testing.T, firstEventID int64, name, updateID string, result any,
+) []*historypb.HistoryEvent {
+	t.Helper()
+	payload, err := converter.GetDefaultDataConverter().ToPayloads(result)
+	if err != nil {
+		t.Fatalf("encode %s result: %v", name, err)
+	}
+	at := timestamppb.New(time.Date(2026, 7, 31, 20, 39, 43, 0, time.UTC))
+
+	return []*historypb.HistoryEvent{
+		{
+			EventId:   firstEventID,
+			EventTime: at,
+			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED,
+			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateAcceptedEventAttributes{
+				WorkflowExecutionUpdateAcceptedEventAttributes: &historypb.WorkflowExecutionUpdateAcceptedEventAttributes{
+					ProtocolInstanceId: updateID,
+					AcceptedRequest: &updatepb.Request{
+						Meta:  &updatepb.Meta{UpdateId: updateID},
+						Input: &updatepb.Input{Name: name},
+					},
+				},
+			},
+		},
+		{
+			EventId:   firstEventID + 1,
+			EventTime: at,
+			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED,
+			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateCompletedEventAttributes{
+				WorkflowExecutionUpdateCompletedEventAttributes: &historypb.WorkflowExecutionUpdateCompletedEventAttributes{
+					Meta:            &updatepb.Meta{UpdateId: updateID},
+					AcceptedEventId: firstEventID,
+					Outcome: &updatepb.Outcome{
+						Value: &updatepb.Outcome_Success{Success: payload},
+					},
+				},
+			},
+		},
+	}
 }
 
 func kinds(entries []AuditEntry) []AuditEntryKind {
@@ -156,10 +230,10 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 	}
 }
 
-// Deactivation is a cancellation, so it appears as a request event rather than
-// as anything the workflow chose to record. PLAN.md 3.6.
+// Soft-deactivate is an Update, so it appears as Accepted/Completed rather than
+// a CancelRequested event.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
-	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
+	run := auditRun("run-2", softDeactivatedRun(t))
 
 	requireKinds(t, run.entries,
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
@@ -168,6 +242,101 @@ func TestAuditRun_DeactivatedRun(t *testing.T) {
 	}
 	if run.entries[2].At.IsZero() {
 		t.Error("deactivation row needs a timestamp -- it is the last thing the page shows")
+	}
+}
+
+// The builder used by the tests below has to produce what the server actually
+// wrote, or those tests only prove the code agrees with the builder. Checked
+// against the one membership pair that was captured from a real run.
+func TestMembershipUpdateMatchesTheCapturedPair(t *testing.T) {
+	captured := loadEvents(t, "events-deactivate.json")
+	built := membershipUpdate(t, captured[0].GetEventId(),
+		rewards.UpdateDeactivate, "soft-deactivate-1", rewards.DeactivateResult{Changed: true})
+
+	gotK := kinds(auditRun("run-x", built).entries)
+	wantK := kinds(auditRun("run-x", captured).entries)
+	if len(gotK) != len(wantK) || (len(wantK) == 1 && gotK[0] != wantK[0]) {
+		t.Fatalf("built pair renders as %v, captured pair renders as %v", gotK, wantK)
+	}
+
+	g, w := auditRun("run-x", built).entries[0], auditRun("run-x", captured).entries[0]
+	if g.RequestID != w.RequestID || g.EventID != w.EventID {
+		t.Errorf("built {%s, %d}, captured {%s, %d}", g.RequestID, g.EventID, w.RequestID, w.EventID)
+	}
+}
+
+// Rejoining is the point of the whole feature, so it cannot be the one thing the
+// timeline stays silent about. Without a row, a customer who left and came back
+// reads as permanently departed with unexplained point-adds after the departure.
+func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
+	events := append(softDeactivatedRun(t),
+		membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
+			rewards.ReactivateResult{Changed: true})...)
+
+	run := auditRun("run-2", events)
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
+	if got := run.entries[3].RequestID; got != "rejoin-1" {
+		t.Errorf("requestId = %q, want the update ID that asked for it", got)
+	}
+	// Rejoining is not earning. Counting it would inflate "showing N of M".
+	if run.earnEvents != 1 {
+		t.Errorf("earnEvents = %d, want 1 -- a rejoin is not a point event", run.earnEvents)
+	}
+}
+
+// Both membership Updates are idempotent, so both write history for calls that
+// changed nothing: a repeat DELETE, a re-enroll of someone already active. Those
+// completions are real events, but rendering them would show a customer leaving
+// twice or rejoining a program they never left.
+func TestAuditRun_IdempotentMembershipCallsDrawNoRow(t *testing.T) {
+	events := softDeactivatedRun(t)
+	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
+		rewards.DeactivateResult{Changed: false})...)
+	events = append(events, membershipUpdate(t, 300, rewards.UpdateReactivate, "rejoin-1",
+		rewards.ReactivateResult{Changed: true})...)
+	events = append(events, membershipUpdate(t, 400, rewards.UpdateReactivate, "duplicate-enroll",
+		rewards.ReactivateResult{Changed: false})...)
+
+	run := auditRun("run-2", events)
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
+}
+
+// The failure path. Both handlers stage their change and commit only once the
+// search attribute upsert is issued, so a failed membership Update applied
+// nothing -- and unlike a failed addPoints, there is no half-state to disclose.
+func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
+	events := softDeactivatedRun(t)
+	pair := membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-failed",
+		rewards.ReactivateResult{Changed: true})
+	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
+		Value: &updatepb.Outcome_Failure{
+			Failure: &failurepb.Failure{Message: "upsert search attributes: boom"},
+		},
+	}
+
+	run := auditRun("run-2", append(events, pair...))
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+}
+
+// Neither membership Update may render as a point-add. They share the Update
+// event types with addPoints, and the amount/reason fields decode to zero from
+// their arguments, so a missed name check shows up as a silent "+0 ()" row
+// rather than as a failure.
+func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
+	events := softDeactivatedRun(t)
+	events = append(events, membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
+		rewards.ReactivateResult{Changed: true})...)
+
+	for _, e := range auditRun("run-2", events).entries {
+		if e.Kind == AuditPointsAdded && e.Amount == 0 {
+			t.Errorf("a membership Update rendered as a point-add: %+v", e)
+		}
 	}
 }
 
@@ -408,11 +577,14 @@ func TestAssemble_EmptyIsNotNull(t *testing.T) {
 // End to end over the golden chain, in the order the walk produces: the three
 // runs of one customer's life, rendered as one timeline.
 func TestCrawlShape_WholeCustomerLife(t *testing.T) {
-	deactivated := loadEvents(t, "run-deactivated.json")
+	deactivated := softDeactivatedRun(t)
 	continued := loadEvents(t, "run-continued.json")
 	enrollment := loadEvents(t, "run-enrollment.json")
 
-	gen1 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
+	// Predecessor run IDs still come from the historical cancel fixture's start
+	// event (the soft-deactivate splice does not replace it).
+	raw := loadEvents(t, "run-deactivated.json")
+	gen1 := raw[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 	gen0 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
@@ -463,7 +635,7 @@ func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
 		t.Fatalf("fixture activity = %q, want %q", got, rewards.ActivityNotifyCustomer)
 	}
 
-	run := auditRun("run-0", append(loadEvents(t, "run-deactivated.json"), departure...))
+	run := auditRun("run-0", append(softDeactivatedRun(t), departure...))
 	for _, e := range run.entries {
 		if e.Kind == AuditNotificationSent {
 			t.Errorf("a departure notice rendered as a promotion row (level %q)", e.NotifiedLevel)
