@@ -173,13 +173,15 @@ api-stop: ## Stop every running API process, including orphaned ones
 # (so a type error stops here rather than after the dev server is already up),
 # then serves. Ctrl-C to stop.
 #
-# The proxy target is passed from $(ENV) rather than left to vite.config.ts's
-# :8081 default, so `make web ENV=.env.beta` proxies to beta's API instead of
-# alpha's. A shell variable outranks web/.env* in Vite's loadEnv, so this wins
-# over a local override file.
+# The proxy target and Temporal UI URL are passed from $(ENV) rather than left
+# to vite.config.ts / hardcoded :8080 defaults, so `make web ENV=.env.beta`
+# points at beta's API and Temporal UI instead of alpha's. A shell variable
+# outranks web/.env* in Vite's loadEnv, so this wins over a local override file.
 web: $(ENV) ## Install, typecheck/build, and run the Vite UI (proxies /api to the API)
 	cd web && npm install && npm run build && \
-	  VITE_API_PROXY_TARGET=http://localhost:$(API_PORT) npm run dev
+	  VITE_API_PROXY_TARGET=http://localhost:$(API_PORT) \
+	  VITE_TEMPORAL_UI_URL=http://localhost:$(UI_PORT) \
+	  npm run dev
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.

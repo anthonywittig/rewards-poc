@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listCustomers } from '../api'
+import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
 import { buildListQuery, formatDate } from '../format'
@@ -161,7 +161,7 @@ export function CustomerListPage() {
             Raw visibility query{' '}
             <span className="hint">
               (overrides chips — try in{' '}
-              <a href="http://localhost:8080" target="_blank" rel="noreferrer">
+              <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
                 Temporal UI
               </a>
               )

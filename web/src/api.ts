@@ -62,6 +62,22 @@ export function apiBase(): string {
   return proxy?.replace(/\/$/, '') || 'http://localhost:8081 (via Vite proxy)'
 }
 
+// Host-side Temporal Web UI. make web sets VITE_TEMPORAL_UI_URL from
+// TEMPORAL_UI_PORT so a second stack's links do not point at alpha's :8080.
+export function temporalUiUrl(): string {
+  const fromEnv = import.meta.env.VITE_TEMPORAL_UI_URL as string | undefined
+  return fromEnv?.replace(/\/$/, '') || 'http://localhost:8080'
+}
+
+export function temporalUiPortLabel(): string {
+  try {
+    const port = new URL(temporalUiUrl()).port
+    return port ? `:${port}` : ':80'
+  } catch {
+    return ':8080'
+  }
+}
+
 export function listCustomers(query?: string): Promise<CustomerListResponse> {
   const q = query?.trim()
   const qs = q ? `?q=${encodeURIComponent(q)}` : ''
