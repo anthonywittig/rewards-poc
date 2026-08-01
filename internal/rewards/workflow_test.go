@@ -39,9 +39,9 @@ func (s *RewardsSuite) SetupTest() { s.env = s.newEnv() }
 // Two things every test needs. The workflow validates that its payload's
 // customerId matches the workflow ID it was started under, so the env's
 // "default-test-workflow-id" has to be replaced with a real one. And since
-// Phase 6 the workflow schedules an Activity on departure, so an env with none
-// registered fails every cancellation path with "no activity is registered for
-// taskqueue 'rewards'" -- which is the test environment being right: the
+// Phase 6 the workflow schedules an Activity on soft-deactivate departure, so
+// an env with none registered fails those paths with "no activity is registered
+// for taskqueue 'rewards'" -- which is the test environment being right: the
 // workflow does now have a side effect, and pretending otherwise would hide it.
 func (s *RewardsSuite) newEnv() *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
@@ -100,9 +100,10 @@ func (s *RewardsSuite) addPoints(at time.Duration, id string, req rewards.AddPoi
 	return res
 }
 
-// cancelAt schedules an ops Cancel so the long-running entity workflow can
-// finish under the test env. Product deactivation is soft (see deactivateAt).
-func (s *RewardsSuite) cancelAt(at time.Duration) {
+// stopAt schedules CancelWorkflow as test-env teardown only so the long-running
+// entity workflow can finish under the testsuite. Product leave is soft-deactivate
+// (see deactivateAt); CancelWorkflow is not a product path.
+func (s *RewardsSuite) stopAt(at time.Duration) {
 	s.env.RegisterDelayedCallback(func() { s.env.CancelWorkflow() }, at)
 }
 
@@ -133,7 +134,7 @@ func (s *RewardsSuite) queryStatusAt(at time.Duration) *rewards.CustomerStatus {
 	return out
 }
 
-func (s *RewardsSuite) runToCancellation(state rewards.CustomerState) error {
+func (s *RewardsSuite) runUntilStopped(state rewards.CustomerState) error {
 	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
 	s.Require().True(s.env.IsWorkflowCompleted())
 	return s.env.GetWorkflowError()
@@ -199,9 +200,9 @@ func TestNextTierAt(t *testing.T) {
 
 func (s *RewardsSuite) Test_AddPoints_AppliesAndDerivesTier() {
 	add := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "signup bonus"})
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.NoError(add.rejected)
 	s.NoError(add.completed)
@@ -215,9 +216,9 @@ func (s *RewardsSuite) Test_AddPoints_AppliesAndDerivesTier() {
 func (s *RewardsSuite) Test_AddPoints_CrossesGoldBoundary() {
 	first := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 499, Reason: "purchase"})
 	second := s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 1, Reason: "purchase"})
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal(rewards.LevelBasic, first.value.Level, "499 points is still basic")
 	s.Equal(rewards.LevelGold, second.value.Level, "500 points promotes to gold")
@@ -228,9 +229,9 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "a"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 250, Reason: "b"})
 	status := s.queryStatusAt(3 * time.Minute)
-	s.cancelAt(4 * time.Minute)
+	s.stopAt(4 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal(350, status.Points)
 	s.Equal(2, status.LifetimeEarnEvents)
@@ -259,9 +260,9 @@ func (s *RewardsSuite) Test_AddPoints_ValidatorRejects() {
 		results[i] = s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i), tc.req)
 	}
 	status := s.queryStatusAt(time.Duration(len(cases)+1) * time.Minute)
-	s.cancelAt(time.Duration(len(cases)+2) * time.Minute)
+	s.stopAt(time.Duration(len(cases)+2) * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	for i, tc := range cases {
 		s.Require().Error(results[i].rejected, "%s should have been rejected by the validator", tc.name)
@@ -278,9 +279,9 @@ func (s *RewardsSuite) Test_AddPoints_ValidatorRejects() {
 // The per-transaction maximum is exactly inclusive: 1000 is allowed, 1001 is not.
 func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 	ok := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: rewards.MaxPointsPerTxn, Reason: "big"})
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.NoError(ok.rejected)
 	s.NoError(ok.completed)
@@ -301,9 +302,9 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	over := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 11, Reason: "purchase"})
 	under := s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
 	status := s.queryStatusAt(3 * time.Minute)
-	s.cancelAt(4 * time.Minute)
+	s.stopAt(4 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runUntilStopped(state)
 
 	// Accepted by the validator, then failed by the handler.
 	s.NoError(over.rejected, "the points cap must not be enforced in the validator")
@@ -326,9 +327,9 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	status := s.queryStatusAt(2 * time.Minute)
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal("c-001", status.CustomerID)
 	s.Equal("Ada Lovelace", status.Name)
@@ -344,9 +345,9 @@ func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 func (s *RewardsSuite) Test_GetStatus_NoNextTierAtPlatinum() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: rewards.PlatinumThreshold, Reason: "purchase"})
 	status := s.queryStatusAt(2 * time.Minute)
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal(rewards.LevelPlatinum, status.Level)
 	s.Equal(0, status.NextTierAt)
@@ -361,9 +362,9 @@ func (s *RewardsSuite) Test_GetStatus_PreservesCarriedEnrolledAt() {
 	state.Generation = 4
 
 	status := s.queryStatusAt(time.Minute)
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runUntilStopped(state)
 
 	s.True(status.EnrolledAt.Equal(enrolled), "got %s, want %s", status.EnrolledAt, enrolled)
 	s.Equal(4, status.Generation)
@@ -449,9 +450,9 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	state.LifetimeEarnEvents = 6
 
 	status := s.queryStatusAt(time.Minute)
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runUntilStopped(state)
 
 	s.Equal(900, status.Points)
 	s.Equal(6, status.LifetimeEarnEvents)
@@ -474,9 +475,9 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 		results[i] = s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: amount, Reason: "purchase"})
 	}
-	s.cancelAt(time.Duration(len(adds)+1) * time.Minute)
+	s.stopAt(time.Duration(len(adds)+1) * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	prev, want := 0, 0
 	for i, amount := range adds {
@@ -505,17 +506,18 @@ func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
 }
 
 // One short of the threshold, the run is still going -- so the exit really is
-// driven by the counter rather than by anything incidental.
+// driven by the counter rather than by anything incidental. stopAt is test-env
+// teardown only so the entity workflow can finish under the testsuite.
 func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 	for i := 0; i < rewards.EarnsPerRun-1; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
-	s.cancelAt(time.Duration(rewards.EarnsPerRun+1) * time.Minute)
+	s.stopAt(time.Duration(rewards.EarnsPerRun+1) * time.Minute)
 
-	err := s.runToCancellation(newState())
+	err := s.runUntilStopped(newState())
 
-	// Cancelled, not continued-as-new.
+	// Stopped via teardown, not continued-as-new.
 	var canErr *workflow.ContinueAsNewError
 	s.False(errors.As(err, &canErr), "should not have rolled on %d adds", rewards.EarnsPerRun-1)
 	var canceled *temporal.CanceledError
@@ -573,6 +575,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 				}, rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
 		}, time.Duration(i+1)*time.Minute)
 	}
+	// CancelWorkflow is test-env teardown only; not a product leave path.
 	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.EarnsPerRun+1)*time.Minute)
 	env2.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, next)
 
@@ -582,71 +585,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		"the successor run must start its own count, not inherit a primed one")
 }
 
-// awaitSemanticsWorkflow pins the SDK behaviour the ctx.Err() guards in
-// CustomerRewardsWorkflow exist for. It reports (awaitReturnedNil, ctxWasDone)
-// for an Await whose condition is already true on an already-cancelled context.
-func awaitSemanticsWorkflow(ctx workflow.Context) ([]bool, error) {
-	cctx, cancel := workflow.WithCancel(ctx)
-	cancel()
-
-	err := workflow.Await(cctx, func() bool { return true })
-	return []bool{err == nil, cctx.Err() != nil}, nil
-}
-
-// workflow.Await returning nil does NOT mean "not cancelled". It evaluates its
-// condition before it checks the context, so a satisfied condition short-
-// circuits the cancellation check entirely.
-//
-// That is the whole reason CustomerRewardsWorkflow re-checks ctx.Err() after
-// each Await: on a real server a single workflow task can carry both the Nth
-// addPoints and a cancellation request, and without the guard the run would
-// roll instead of deactivating -- stranding the departure permanently, since
-// continue-as-new starts a fresh run and the cancellation targeted the run that
-// just ended.
-//
-// This asserts the primitive rather than that scenario. The test environment
-// dispatches env.UpdateWorkflow synchronously, running the main coroutine to
-// quiescence before the next env call, so it cannot stage two things landing in
-// one transition -- verified by attempting it. The guards are therefore correct
-// by construction but not exercised end to end here; see PLAN.md 12.9.
-func (s *RewardsSuite) Test_AwaitReturnsNilOnCancelledContextWhenConditionHolds() {
-	s.env.ExecuteWorkflow(awaitSemanticsWorkflow)
-
-	s.Require().True(s.env.IsWorkflowCompleted())
-	s.Require().NoError(s.env.GetWorkflowError())
-
-	var got []bool
-	s.Require().NoError(s.env.GetWorkflowResult(&got))
-
-	s.True(got[0], "Await returned nil despite the context being cancelled")
-	s.True(got[1], "...and the context really was cancelled -- hence the explicit ctx.Err() guards")
-}
-
-// Deactivation beats the roll: a cancel arriving before the threshold takes the
-// departure path rather than continuing as new.
-func (s *RewardsSuite) Test_ContinueAsNew_CancelWinsBeforeThreshold() {
-	s.addPoints(time.Minute, "u0", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.cancelAt(2 * time.Minute)
-
-	err := s.runToCancellation(newState())
-
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled))
-}
-
-// --- Cancellation (PLAN.md 3.6) ---------------------------------------------
-
-// Ops Cancel still closes as Canceled (test teardown / emergency path).
-// Product leave is soft -- see Test_SoftDeactivate_KeepsPointsForReenroll.
-func (s *RewardsSuite) Test_Cancel_ClosesAsCanceled() {
-	s.cancelAt(time.Minute)
-
-	err := s.runToCancellation(newState())
-
-	s.Require().Error(err)
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled), "want a CanceledError, got %T: %v", err, err)
-}
+// --- Soft deactivation (PLAN.md 3.6) ----------------------------------------
 
 // Soft-deactivate keeps the workflow running with the balance intact;
 // reactivate clears the flag and restores the same points.
@@ -660,9 +599,9 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 		Name: "Ada Lovelace", Email: "ada@example.com",
 	})
 	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
-	s.cancelAt(6 * time.Minute)
+	s.stopAt(6 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Require().NoError(deact.rejected)
 	s.Require().NoError(deact.completed)
@@ -679,9 +618,9 @@ func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	blocked := s.addPoints(3*time.Minute, "u2", rewards.AddPointsRequest{Amount: 50, Reason: "purchase"})
-	s.cancelAt(4 * time.Minute)
+	s.stopAt(4 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Require().Error(blocked.completed)
 	var app *temporal.ApplicationError
@@ -695,35 +634,12 @@ func (s *RewardsSuite) Test_SoftDeactivate_SendsDepartureNotice() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted))
-}
-
-// An Update delivered in the same instant as the cancellation still applies,
-// and the workflow still closes as Canceled.
-//
-// Note on what this does *not* cover: handleLeave's drain. The addPoints
-// handler never blocks -- it does arithmetic and returns -- so it has always
-// finished by the time cancellation is processed, and this test still passes
-// with the drain removed. Phase 6 made that guard testable at last, via the one
-// thing that genuinely can still be outstanding at departure: see
-// Test_Notify_DepartureDrainsAQueuedPromotion.
-func (s *RewardsSuite) Test_Cancel_AppliesConcurrentUpdate() {
-	add := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 250, Reason: "purchase"})
-	s.cancelAt(time.Minute) // same instant as the update
-
-	err := s.runToCancellation(newState())
-
-	s.NoError(add.rejected)
-	s.NoError(add.completed, "the concurrent update must still complete")
-	s.Equal(250, add.value.Balance)
-
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled))
 }
 
 // --- Tier promotion notifications (PLAN.md 3.7) -----------------------------
@@ -809,9 +725,9 @@ func (s *RewardsSuite) Test_Notify_PromotionMidRunIsSent() {
 	calls := s.mockNotify(0)
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
 }
@@ -824,9 +740,9 @@ func (s *RewardsSuite) Test_Notify_BothTiersInOneRun() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold, rewards.LevelPlatinum},
 		calls.levels(rewards.NotifyEventPromoted))
@@ -839,9 +755,9 @@ func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Empty(calls.levels(rewards.NotifyEventPromoted))
 }
@@ -864,23 +780,24 @@ func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 	state.NotifiedLevels = []string{rewards.LevelGold}
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(state)
+	_ = s.runUntilStopped(state)
 
 	s.Empty(calls.levels(rewards.NotifyEventPromoted),
 		"gold was already notified; crossing it again must not re-send")
 }
 
 // Departure reuses the same Activity, which is why there is no separate cleanup
-// Activity in the design. PLAN.md 3.7.
+// Activity in the design. PLAN.md 3.7. Product leave is soft-deactivate.
 func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	calls := s.mockNotify(0)
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
-	s.cancelAt(2 * time.Minute)
+	s.deactivateAt(2*time.Minute, "leave")
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	sent := calls.all()
 	s.Require().Len(sent, 2, "expected a promotion and a departure, got %v", sent)
@@ -892,9 +809,9 @@ func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	s.Equal("ada@example.com", departed.Email)
 }
 
-// A promotion armed in the same instant as cancel must still be sent before the
-// departure notice. handleLeave drains needsNotify on a disconnected context;
-// without that, cancel wins the main loop and the promotion is dropped.
+// A promotion armed in the same instant as soft-deactivate must still be sent
+// before the departure notice. The main loop drains needsNotify before
+// needsDeparture; without that, departure can win and the promotion is dropped.
 func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
 	// Asymmetric delays: a slow promotion with an instant departure is the
 	// shape that actually needs the drain. If both are slow, the departure
@@ -906,17 +823,16 @@ func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
 		return 0
 	})
 
-	// The promotion and the cancellation land in the same instant.
+	// The promotion and soft-deactivate land in the same instant; stopAt later
+	// is test-env teardown only.
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.cancelAt(time.Minute)
+	s.deactivateAt(time.Minute, "leave")
+	s.stopAt(2 * time.Minute)
 
-	err := s.runToCancellation(newState())
-
-	var canceled *temporal.CanceledError
-	s.True(errors.As(err, &canceled), "still closes as Canceled")
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"a promotion earned in the same instant as the departure must still be sent")
+		"a promotion earned in the same instant as soft-deactivate must still be sent")
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted),
 		"and the departure notice still goes out after it")
 }
@@ -995,9 +911,9 @@ func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	// Stays gold: no boundary is crossed by this one, which is the whole point.
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"a dropped promotion must be picked up by the next add, not lost for good")
@@ -1013,9 +929,9 @@ func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.addPoints(3*time.Minute, "u3", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.cancelAt(4 * time.Minute)
+	s.stopAt(4 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
 		"gold is announced once, however many adds land inside it")
@@ -1039,9 +955,9 @@ func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne()
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{
 		Amount: rewards.PlatinumThreshold, Reason: "one big purchase"})
-	s.cancelAt(2 * time.Minute)
+	s.stopAt(2 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
 		"a customer who never sat at gold should not be congratulated for it")
@@ -1064,9 +980,9 @@ func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "a"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "b"})
-	s.cancelAt(3 * time.Minute)
+	s.stopAt(3 * time.Minute)
 
-	_ = s.runToCancellation(newState())
+	_ = s.runUntilStopped(newState())
 
 	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
 		"the failed gold notice is dropped; platinum, where they actually are, is sent")

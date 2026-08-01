@@ -278,10 +278,9 @@ func hasOrderBy(q string) bool {
 //	WorkflowId = 'customer-dup-check' AND status != CAN        Total: 1
 //
 // Excluding ContinuedAsNew leaves exactly the current generation, whatever its
-// final state: Running for an active customer, Canceled for a departed one, and
-// Failed for an enrollment that never validated. `IN ('Running','Canceled')`
-// would look equivalent and silently drop that last group — measured at 45
-// against 47 on the same data.
+// final state — usually Running (active or soft-deactivated), occasionally
+// Failed for an enrollment that never validated. Soft-inactive customers are
+// still Running; membership is RewardsActive, not ExecutionStatus.
 //
 // Found by the Phase 7 datastore inspection, which is exactly the sort of thing
 // looking directly at Elasticsearch surfaces and an API test does not: every
@@ -323,8 +322,7 @@ func mapListError(err error, userQuery string) error {
 }
 
 // getCustomer reads current state via Query. Status is active only when the
-// execution is still Running *and* soft-inactive says Active; ops Cancel leaves
-// Active=true in replayed state but must still show as deactivated.
+// execution is still Running and soft-inactive says Active.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -465,11 +463,9 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // losing its run is the *expected* outcome of racing a rollover, and without a
 // transparent retry the demo looks broken roughly every third click. PLAN.md 12.2.
 //
-// The subtlety used to be that "the run you addressed has closed" covered both
-// continue-as-new and Cancel-based deactivation. Soft-inactive customers stay
-// Running, so a closed-run NotFound now means rollover (retry) or an ops
-// Cancel/Terminate (refuse). Product deactivation rejects inside the Update
-// handler as ErrTypeDeactivated instead.
+// Soft-inactive customers stay Running, so a closed-run NotFound now means
+// rollover (retry) or a force-closed execution (refuse). Product deactivation
+// rejects inside the Update handler as ErrTypeDeactivated instead.
 //
 // Retrying is safe because the update did not run: the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
@@ -672,7 +668,7 @@ func (s *Server) deactivateWithRolloverRetry(ctx context.Context, wfID string) e
 			return mapQueryError(describeErr)
 		}
 		if !running {
-			// Already gone via ops Cancel — DELETE is idempotent.
+			// Already force-closed — DELETE is idempotent.
 			return nil
 		}
 		s.log.Info("deactivate lost its run to continue-as-new, retrying against the successor",

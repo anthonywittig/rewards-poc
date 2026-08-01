@@ -372,17 +372,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				EventID:       e.GetEventId(),
 				NotifiedLevel: req.Level,
 			})
-
-		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED:
-			// Ops Cancel (not product soft-deactivate). Kept so a cancelled
-			// execution still shows a leave row on the timeline.
-			out.entries = append(out.entries, AuditEntry{
-				Kind:       AuditDeactivated,
-				At:         e.GetEventTime().AsTime(),
-				Generation: out.startState.Generation,
-				RunID:      runID,
-				EventID:    e.GetEventId(),
-			})
 		}
 	}
 	return out

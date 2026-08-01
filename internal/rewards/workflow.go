@@ -69,9 +69,8 @@ type CustomerStatus struct {
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
-// The main loop is: wait for something to do, then cancel → notify → continue
-// as new, in that order. Product deactivation is soft (Deactivated flag) and
-// keeps the workflow running; Temporal Cancel remains an ops teardown path.
+// The main loop is: wait for work, then notify → continue-as-new.
+// Product leave is soft (Deactivated flag); the workflow keeps running.
 func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	logger := workflow.GetLogger(ctx)
 
@@ -237,41 +236,30 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// earn count -- see the longer note that used to live here, and PLAN.md 3.5.
 	for {
 		if err := workflow.Await(ctx, func() bool {
-			return ctx.Err() != nil || needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun
+			return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun
 		}); err != nil {
-			return handleLeave(ctx, &state, &needsNotify, &needsDeparture)
-		}
-
-		// Await can return nil even when ctx is already cancelled -- check
-		// explicitly. Ops cancel still closes the execution; product deactivate
-		// does not use this path.
-		if ctx.Err() != nil {
-			return handleLeave(ctx, &state, &needsNotify, &needsDeparture)
+			return err
 		}
 
 		if needsNotify {
 			needsNotify = false
-			dctx, cancel := workflow.NewDisconnectedContext(ctx)
-			deliverPromotion(dctx, &state)
-			cancel()
+			deliverPromotion(ctx, &state)
 			continue
 		}
 
 		if needsDeparture {
 			needsDeparture = false
-			dctx, cancel := workflow.NewDisconnectedContext(ctx)
-			if err := sendNotify(dctx, departureNotice(&state)); err != nil {
+			if err := sendNotify(ctx, departureNotice(&state)); err != nil {
 				logger.Error("departure notification failed after retries",
 					"customerId", state.CustomerID, "error", err)
 			}
-			cancel()
 			continue
 		}
 
 		if err := workflow.Await(ctx, func() bool {
 			return workflow.AllHandlersFinished(ctx)
-		}); err != nil || ctx.Err() != nil {
-			return handleLeave(ctx, &state, &needsNotify, &needsDeparture)
+		}); err != nil {
+			return err
 		}
 		if needsNotify || needsDeparture {
 			continue
@@ -287,46 +275,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 
 		return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 	}
-}
-
-// handleLeave is the ops/test Cancel path: drain in-flight work, send a
-// departure notice if one is still pending, and close as Canceled.
-//
-// Product deactivation does not come here -- it flips Deactivated and keeps
-// the workflow running so re-enrollment can restore the balance.
-func handleLeave(ctx workflow.Context, state *CustomerState, needsNotify, needsDeparture *bool) error {
-	logger := workflow.GetLogger(ctx)
-	logger.Info("customer workflow cancelled",
-		"customerId", state.CustomerID,
-		"finalPoints", state.Points,
-		"finalLevel", Level(state.Points),
-		"lifetimeEarnEvents", state.LifetimeEarnEvents)
-
-	dctx, cancel := workflow.NewDisconnectedContext(ctx)
-	defer cancel()
-
-	if err := workflow.Await(dctx, func() bool {
-		return workflow.AllHandlersFinished(dctx)
-	}); err != nil {
-		logger.Warn("failed waiting for in-flight work to drain on cancel", "error", err)
-	}
-
-	if *needsNotify {
-		*needsNotify = false
-		deliverPromotion(dctx, state)
-	}
-	if *needsDeparture || !state.Deactivated {
-		// Soft-deactivated customers already got (or will get) a departure
-		// notice via needsDeparture. A cancel of an still-active customer
-		// should still notify.
-		*needsDeparture = false
-		if err := sendNotify(dctx, departureNotice(state)); err != nil {
-			logger.Error("departure notification failed after retries",
-				"customerId", state.CustomerID, "error", err)
-		}
-	}
-
-	return ctx.Err()
 }
 
 func validateEnrollment(ctx workflow.Context, state *CustomerState) error {

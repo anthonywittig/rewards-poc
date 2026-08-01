@@ -10,6 +10,7 @@ import (
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
+	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
 	"google.golang.org/protobuf/encoding/protojson"
@@ -20,9 +21,11 @@ import (
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then cancelled
+//	run-deactivated.json   the last run: rolled into, 1 add, then (historically) cancelled;
+//	                       tests strip the cancel tail and splice events-deactivate.json
 //	run-rejection.json     a run containing a handler rejection at the cap
 //	events-notification.json  a real NotifyCustomer Activity pair (see below)
+//	events-deactivate.json    a soft-deactivate UpdateAccepted/Completed pair
 //
 // Recaptured with:
 //
@@ -52,6 +55,22 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 		t.Fatalf("%s decoded to zero events", name)
 	}
 	return h.GetEvents()
+}
+
+// softDeactivatedRun is the historical cancel-ended fixture with its cancel
+// tail removed and a soft-deactivate Update spliced on — product leave is an
+// Update now, not CancelWorkflow.
+func softDeactivatedRun(t *testing.T) []*historypb.HistoryEvent {
+	t.Helper()
+	events := loadEvents(t, "run-deactivated.json")
+	cut := len(events)
+	for i, e := range events {
+		if e.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED {
+			cut = i
+			break
+		}
+	}
+	return append(events[:cut], loadEvents(t, "events-deactivate.json")...)
 }
 
 func kinds(entries []AuditEntry) []AuditEntryKind {
@@ -156,10 +175,10 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 	}
 }
 
-// Deactivation is a cancellation, so it appears as a request event rather than
-// as anything the workflow chose to record. PLAN.md 3.6.
+// Soft-deactivate is an Update, so it appears as Accepted/Completed rather than
+// a CancelRequested event.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
-	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
+	run := auditRun("run-2", softDeactivatedRun(t))
 
 	requireKinds(t, run.entries,
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
@@ -408,11 +427,14 @@ func TestAssemble_EmptyIsNotNull(t *testing.T) {
 // End to end over the golden chain, in the order the walk produces: the three
 // runs of one customer's life, rendered as one timeline.
 func TestCrawlShape_WholeCustomerLife(t *testing.T) {
-	deactivated := loadEvents(t, "run-deactivated.json")
+	deactivated := softDeactivatedRun(t)
 	continued := loadEvents(t, "run-continued.json")
 	enrollment := loadEvents(t, "run-enrollment.json")
 
-	gen1 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
+	// Predecessor run IDs still come from the historical cancel fixture's start
+	// event (the soft-deactivate splice does not replace it).
+	raw := loadEvents(t, "run-deactivated.json")
+	gen1 := raw[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 	gen0 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
@@ -463,7 +485,7 @@ func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
 		t.Fatalf("fixture activity = %q, want %q", got, rewards.ActivityNotifyCustomer)
 	}
 
-	run := auditRun("run-0", append(loadEvents(t, "run-deactivated.json"), departure...))
+	run := auditRun("run-0", append(softDeactivatedRun(t), departure...))
 	for _, e := range run.entries {
 		if e.Kind == AuditNotificationSent {
 			t.Errorf("a departure notice rendered as a promotion row (level %q)", e.NotifiedLevel)
