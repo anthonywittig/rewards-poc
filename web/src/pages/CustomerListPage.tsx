@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
-import { buildListQuery, formatDate } from '../format'
+import { buildListQuery, formatDate, tierLabel } from '../format'
 import {
   clearPending,
   matchesVisibilityQuery,
@@ -173,7 +173,7 @@ export function CustomerListPage() {
               aria-pressed={tier === t}
               onClick={() => setTier(t)}
             >
-              {t}
+              {tierLabel(t)}
             </button>
           ))}
         </div>

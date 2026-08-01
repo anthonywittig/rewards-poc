@@ -1,3 +1,5 @@
+import { tierLabel } from '../format'
+
 /** nextTierAt === 0 means no next tier (platinum / capped). Do not divide by it. */
 export function ProgressBar({
   points,
@@ -15,7 +17,7 @@ export function ProgressBar({
           <div className="progress-fill" style={{ width: '100%' }} />
         </div>
         <div className="progress-meta">
-          <span>Top tier — {level}</span>
+          <span>Top tier — {tierLabel(level)}</span>
           <span>no next threshold</span>
         </div>
       </div>

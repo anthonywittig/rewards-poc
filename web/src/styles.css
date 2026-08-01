@@ -414,8 +414,7 @@ tbody tr:last-child td {
   gap: 0.35rem;
   font-weight: 600;
   font-size: 0.82rem;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
+  letter-spacing: 0.01em;
 }
 
 .tier::before {

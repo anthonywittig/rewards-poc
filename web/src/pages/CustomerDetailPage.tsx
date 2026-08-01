@@ -12,7 +12,7 @@ import { AuditTimeline } from '../components/AuditTimeline'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { ProgressBar } from '../components/ProgressBar'
 import { TierBadge } from '../components/TierBadge'
-import { formatDate } from '../format'
+import { formatDate, tierLabel } from '../format'
 import type { AddPointsResponse, AuditResponse, CustomerResponse } from '../types'
 import { ApiError } from '../types'
 
@@ -282,7 +282,8 @@ export function CustomerDetailPage() {
               <ErrorBanner error={pointsError} />
               {pointsOk ? (
                 <p className="success">
-                  Balance {pointsOk.balance.toLocaleString()} · {pointsOk.level}
+                  Balance {pointsOk.balance.toLocaleString()} ·{' '}
+                  {tierLabel(pointsOk.level)}
                 </p>
               ) : null}
               <p className="hint" style={{ marginTop: '0.75rem' }}>
