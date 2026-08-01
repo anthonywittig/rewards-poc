@@ -18,17 +18,15 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// Soft deactivation moved the answer to "is this customer still enrolled?" from
+// Soft deactivation moves the answer to "is this customer still enrolled?" from
 // the execution status to workflow state, which touches every read in the API
-// and the one write that has to tell a restore from a duplicate. These are the
-// handler-level tests for that move; the mappers they lean on are covered in
-// classify_test.go and the workflow side in internal/rewards.
+// and the one write that has to tell a restore from a duplicate. Handler-level
+// tests for that; the mappers are covered in classify_test.go.
 
 // --- The list ---------------------------------------------------------------
 
 // searchAttrs encodes what the workflow upserts. Values are payloads because
-// that is what visibility hands back, and decodeSearchAttributes is the thing
-// under test on the read side.
+// that is what visibility hands back.
 func searchAttrs(t *testing.T, active *bool) *commonpb.SearchAttributes {
 	t.Helper()
 	dc := converter.GetDefaultDataConverter()
@@ -54,9 +52,8 @@ func searchAttrs(t *testing.T, active *bool) *commonpb.SearchAttributes {
 
 func ptr[T any](v T) *T { return &v }
 
-// A soft-deactivated customer is still Running, so ExecutionStatus can no longer
-// answer this. If the list falls back to it, every departed customer reads as
-// active -- which is the regression this pins.
+// A soft-deactivated customer is still Running, so if the list falls back to
+// ExecutionStatus every departed customer reads as active.
 func TestListCustomers_StatusComesFromRewardsActive(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -161,8 +158,8 @@ func TestEnroll_ActiveDuplicateIs409AndSendsNoUpdate(t *testing.T) {
 	}
 }
 
-// The headline of the feature: re-enrolling a soft-deactivated ID reactivates in
-// place. 200 rather than 201, because nothing was created.
+// Re-enrolling a soft-deactivated ID reactivates in place. 200 rather than 201,
+// because nothing was created.
 func TestEnroll_DeactivatedIDReactivates(t *testing.T) {
 	stub := &stubTemporal{
 		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
@@ -201,9 +198,9 @@ func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
 	}
 }
 
-// With the worker down the Query cannot answer, but the commonest rejection in
-// the API -- an ID that already exists -- is answerable from the execution
-// record alone. Requiring a worker for it would turn a 409 into a 503.
+// With the worker down the Query cannot answer, but an ID that already exists is
+// answerable from the execution record alone. Requiring a worker for it would
+// turn a 409 into a 503.
 func TestEnroll_DuplicateIs409WithNoWorker(t *testing.T) {
 	stub := &stubTemporal{
 		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
@@ -244,9 +241,7 @@ func TestEnroll_UnknownActiveWithNoWorkerIs409(t *testing.T) {
 	}
 }
 
-// Nothing answered at all. That is an outage, not a conflict, and the Query
-// failure is the one to report -- it is what we actually wanted, and its mapper
-// knows to blame the worker.
+// Nothing answered at all: an outage, not a conflict.
 func TestEnroll_NothingAnswersIs503(t *testing.T) {
 	stub := &stubTemporal{
 		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
@@ -305,9 +300,9 @@ type stubRun struct {
 func (r *stubRun) GetID() string    { return r.id }
 func (r *stubRun) GetRunID() string { return r.runID }
 
-// stubHandle is an Update handle whose result is fixed up front. Get decodes
-// into whatever the caller passes, via the same converter the SDK uses, so a
-// result type that does not round-trip fails here rather than silently zeroing.
+// stubHandle is an Update handle whose result is fixed up front. Get decodes via
+// the same converter the SDK uses, so a result type that does not round-trip
+// fails here rather than silently zeroing.
 type stubHandle struct {
 	client.WorkflowUpdateHandle
 	result any

@@ -13,32 +13,18 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// The audit timeline, reconstructed by crawling Event History.
+// The audit timeline, reconstructed by crawling Event History rather than read
+// from a store: the customer's point-adds are not saved anywhere, they are
+// derived from the events Temporal recorded in order to run the workflow at all.
 // FINDINGS.md#the-history-crawl.
-//
-// This is the endpoint the whole POC is arranged around. Every other read is
-// served by something that looks like a database -- a Query against live
-// workflow state, or a visibility index. This one is served by *the log itself*:
-// the customer's history of point-adds is not stored anywhere, it is derived by
-// replaying the events Temporal recorded because it had to, in order to run the
-// workflow at all.
-//
-// It is also where the limits of "Temporal as the system of record" show. Closed
-// runs get reaped, so the log is not durable in the way a table would be, and the
-// crawl is O(runs x events) with no index to help it. Both are visible in the
-// response rather than papered over: FINDINGS.md#truncation-detection.
 
 // auditTimeout bounds the whole crawl, which is the one endpoint whose cost
 // grows with a customer's age -- one GetWorkflowHistory round trip per
 // generation, walked serially because each run only learns its predecessor from
-// the run it just read.
+// the run it just read. A 34-run customer (100 adds) crawls in ~125ms.
 //
-// Measured against the real stack: a 34-run customer (100 adds) crawls end to end
-// in ~125ms, so this leaves better than two orders of magnitude of headroom and
-// only ever fires on something pathological. Deliberately not a cap on runs walked -- a
-// partial crawl that stopped early would have to report itself as Truncated,
-// which in this contract means "history was deleted", and quietly redefining
-// that would make the one honest signal in the response dishonest.
+// Deliberately not a cap on runs walked: a partial crawl would have to report
+// itself as Truncated, which in this contract means "history was deleted".
 const auditTimeout = 30 * time.Second
 
 // auditSubject names this endpoint in a timeout message. It exists because the
@@ -75,12 +61,8 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 }
 
 // crawl walks back through ContinuedExecutionRunId until it reaches enrollment
-// or runs out of history, then renders what it found.
-//
-// No worker is involved anywhere in here, which is worth noticing: the audit
-// page keeps working with `make worker` stopped, unlike the detail page. That
-// falls out of taking LifetimeEarnEvents from the newest run's start payload
-// rather than from a Query -- see the note in assemble.
+// or runs out of history, then renders what it found. No worker is involved, so
+// the audit page keeps working with `make worker` stopped.
 func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (AuditResponse, error) {
 	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID), runID)
 	if err != nil {
@@ -91,8 +73,7 @@ func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (Aud
 
 // historyFetcher reads one run's events. A function rather than a method so the
 // walk can be driven from a synthetic run chain in tests -- including the reaped
-// one, which is otherwise reproducible only by running `make reap` and waiting
-// out a server-side batch job.
+// case, otherwise reproducible only by running `make reap` and waiting.
 type historyFetcher func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error)
 
 // walkRuns follows the chain newest-first, reporting whether it ended because
@@ -142,17 +123,11 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 
 	if len(runs) > 0 {
 		// The lifetime total, without a Query and without needing history we may
-		// no longer have. Every run starts with the carried CustomerState in its
-		// WorkflowExecutionStarted input, and LifetimeEarnEvents in that payload
-		// is the count as of the *start* of that run -- so the newest run's
-		// starting count plus the adds inside it is the current total, whatever
-		// happened to the runs before it.
-		//
-		// This is the continue-as-new payload doing the job
-		// FINDINGS.md#truncation-detection describes for it: it is what lets a truncated
-		// log say "3 of 21" instead of just showing three rows and hoping nobody asks.
-		// It also happens to be why this endpoint needs no worker, where the detail page
-		// does.
+		// no longer have. LifetimeEarnEvents in a run's start payload is the
+		// count as of the *start* of that run, so the newest run's starting
+		// count plus the adds inside it is the current total -- which is what
+		// lets a truncated log say "3 of 21".
+		// FINDINGS.md#truncation-detection.
 		newest := runs[0]
 		out.LifetimeEarnEvents = newest.startState.LifetimeEarnEvents + newest.earnEvents
 	}
@@ -163,8 +138,7 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 //
 // isLongPoll is false, which is load-bearing rather than a default: with it set,
 // the iterator on a *running* workflow blocks waiting for events that have not
-// happened yet, and the audit page for an active customer would hang instead of
-// returning what exists now.
+// happened yet, so the audit page for an active customer would hang.
 func (s *Server) fetchRun(wfID string) historyFetcher {
 	return func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error) {
 		iter := s.temporal.GetWorkflowHistory(ctx, wfID, runID, false,
@@ -206,12 +180,8 @@ type pendingUpdate struct {
 	eventID  int64
 }
 
-// auditRun maps one run's events to audit entries.
-//
-// Pure: it takes events and returns rows, with no client and no I/O, so every
-// case below is testable against a hand-built history -- including the ones that
-// are awkward to produce on demand against a real server, like a rejection or a
-// notification. The crawl around it is the only part that needs a live stack.
+// auditRun maps one run's events to audit entries. Pure -- no client, no I/O --
+// so every case below is testable against a recorded history.
 func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 	out := runAudit{runID: runID}
 	pending := map[int64]pendingUpdate{}
@@ -226,11 +196,10 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			out.previousRunID = a.GetContinuedExecutionRunId()
 			decodeArg(dc, a.GetInput(), &out.startState)
 
-			// The generation boundary is recorded here, on the *successor's*
-			// first event, rather than on the predecessor's
-			// WorkflowExecutionContinuedAsNew. Both mark the same instant, but
-			// only this side knows which generation is being entered -- and when
-			// history has been reaped, this side is the one that still exists.
+			// The generation boundary is recorded on the *successor's* first
+			// event rather than the predecessor's ContinuedAsNew: only this side
+			// knows which generation is being entered, and when history has been
+			// reaped this side is the one that still exists.
 			kind := AuditEnrolled
 			if out.previousRunID != "" {
 				kind = AuditGenerationRolled
@@ -263,26 +232,21 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p, paired := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
-			// Membership changes: leaving and rejoining. Both are Updates now,
-			// so both are read the same way -- and both report whether they
-			// changed anything, because both are idempotent by design (a repeat
-			// DELETE, a re-enroll of someone already active). Only a real
-			// transition belongs on the timeline; a no-op that wrote an Update
-			// pair to history did not change the customer's membership and
-			// would read as a second departure or a second rejoin.
+			// Membership changes. Both are idempotent, so both write history for
+			// calls that changed nothing -- only a real transition belongs on
+			// the timeline, or a repeat DELETE reads as a second departure.
 			//
-			// A *failed* one is dropped rather than rendered as a rejection
-			// row, unlike a failed addPoints. That is not leniency: both
-			// handlers stage their change and commit only once the search
-			// attribute upsert is issued, so an Update that returned an error
-			// genuinely applied nothing. There is no half-state to disclose.
+			// A *failed* one is dropped rather than rendered as a rejection row,
+			// unlike a failed addPoints: both handlers stage their change and
+			// commit only once the upsert is issued, so a failed Update applied
+			// nothing and there is no half-state to disclose.
 			if paired && (p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate) {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				// Undecodable payload defaults to "changed", keeping the older
-				// rule that a row history clearly contains is shown rather
-				// than dropped on a decoding technicality.
+				// Undecodable payload defaults to "changed": a row history
+				// clearly contains is shown rather than dropped on a decoding
+				// technicality.
 				kind, changed := AuditDeactivated, true
 				if p.name == rewards.UpdateDeactivate {
 					var res rewards.DeactivateResult
@@ -317,11 +281,9 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				continue
 			}
 
-			// Anchored to the *accepted* event, not this one. That is the event
-			// FINDINGS.md#events-the-crawl-reads pairs on, it is when the customer actually
-			// made the request, and it exists even for an update whose outcome never landed
-			// -- so the row's identity does not depend on the half of the pair that is
-			// allowed to be missing.
+			// Anchored to the *accepted* event, not this one: it is when the
+			// customer made the request, and it exists even for an update whose
+			// outcome never landed. FINDINGS.md#events-the-crawl-reads.
 			entry := AuditEntry{
 				At:         p.at,
 				Generation: out.startState.Generation,
@@ -338,10 +300,10 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
-				// Handler rejections only. A validator rejection writes nothing to history at
-				// all, so it can never appear here -- which is the asymmetry
-				// FINDINGS.md#the-validatorhandler-split exists to demonstrate, and the reason
-				// this timeline is not a record of every attempt.
+				// Handler rejections only. A validator rejection writes nothing
+				// to history, so it can never appear here -- which is why this
+				// timeline is not a record of every attempt.
+				// FINDINGS.md#the-validatorhandler-split.
 				entry.Kind = AuditPointsRejected
 				entry.Failure = f.GetMessage()
 			} else {
@@ -364,11 +326,9 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			activities[e.GetEventId()] = req
 
 		case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
-			// Emitted on completion rather than on scheduling, so the row says
-			// "sent" only when it was. A notification that exhausted its retries
-			// leaves a Scheduled event and a Failed one, and claiming that as
-			// sent would make the audit log lie about the one thing it exists to
-			// be believed about.
+			// Emitted on completion rather than on scheduling, so "sent" means
+			// sent: a notification that exhausted its retries leaves a Scheduled
+			// event and a Failed one.
 			a := e.GetActivityTaskCompletedEventAttributes()
 			req, ok := activities[a.GetScheduledEventId()]
 			if !ok {
@@ -376,18 +336,11 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 			delete(activities, a.GetScheduledEventId())
 
-			// Promotions only. The same Activity delivers the departure notice
-			// (FINDINGS.md#tier-promotion-notifications), but AuditEntry's
-			// notification_sent kind carries a level and nothing else -- so a departure row
-			// is indistinguishable from a promotion, and the UI renders every one of them
-			// as "Promoted to Gold — notification sent". For a customer who just left,
-			// directly beneath their own deactivated row, that is the audit log inventing a
-			// promotion.
-			//
-			// Dropping the row loses nothing a reader needs: the deactivated row
-			// immediately above it already says they left, and the departure
-			// notice is a consequence of it rather than a separate fact. The
-			// alternative was an event field on AuditEntry, which is frozen.
+			// Promotions only. The same Activity delivers the departure notice,
+			// but notification_sent carries a level and nothing else, so a
+			// departure row renders as "Promoted to Gold — notification sent"
+			// directly beneath that customer's own deactivated row. Dropping it
+			// loses nothing: the deactivated row already says they left.
 			// FINDINGS.md#the-cost-of-a-frozen-contract.
 			if req.Event != rewards.NotifyEventPromoted {
 				continue
@@ -406,12 +359,9 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 }
 
 // decodeArg decodes the first payload into dst, reporting whether it worked.
-//
-// Best-effort throughout the crawl, like decodeSearchAttributes: a row with a
-// missing amount still tells the reader that an add happened, whereas a failed
-// request tells them nothing at all. The DataConverter is the client's default,
-// which is why the API and worker share a module --
-// FINDINGS.md#events-the-crawl-reads.
+// Best-effort: a row with a missing amount still tells the reader that an add
+// happened. The DataConverter is the client's default, which is why the API and
+// worker share a module. FINDINGS.md#events-the-crawl-reads.
 func decodeArg(dc converter.DataConverter, ps *commonpb.Payloads, dst any) bool {
 	if len(ps.GetPayloads()) == 0 {
 		return false

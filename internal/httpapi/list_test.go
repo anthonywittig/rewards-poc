@@ -14,9 +14,8 @@ import (
 )
 
 // The list endpoint scopes every query by workflow type, so if the constant and
-// the name the SDK actually registers ever diverge, the list silently returns
-// nothing -- no error, just an empty page. Derive the registered name the same
-// way the SDK does and compare.
+// the name the SDK registers ever diverge, the list silently returns an empty
+// page with no error.
 func TestWorkflowTypeNameMatchesRegistration(t *testing.T) {
 	fn := runtime.FuncForPC(reflect.ValueOf(workflows.CustomerRewardsWorkflow).Pointer()).Name()
 	registered := fn
@@ -51,9 +50,8 @@ func TestScopedQuery(t *testing.T) {
 }
 
 // Visibility holds one document per Run, so without excluding ContinuedAsNew a
-// customer appears once per generation -- three rows and a total of 3 for one
-// customer who has rolled over twice. Verified against the real stack; this
-// pins the clause so it cannot be dropped as redundant-looking noise.
+// customer appears once per generation. Pins the clause so it cannot be dropped
+// as redundant-looking noise.
 func TestScopedQueryExcludesRolledOverGenerations(t *testing.T) {
 	for _, q := range []string{"", "RewardsLevel = 'gold'"} {
 		got := scopedQuery(q)
@@ -116,7 +114,6 @@ func TestMapListError(t *testing.T) {
 	}
 }
 
-// Small helpers so the test reads as intent rather than as SDK plumbing.
 func newInvalidArgument(msg string) error  { return serviceerror.NewInvalidArgument(msg) }
 func newUnavailable(msg string) error      { return serviceerror.NewUnavailable(msg) }
 func asAPIError(err error, dst **apiError) { errors.As(err, dst) }
