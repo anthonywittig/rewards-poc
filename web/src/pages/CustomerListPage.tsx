@@ -12,11 +12,14 @@ type SortDir = 'asc' | 'desc'
 
 const TIERS = ['basic', 'gold', 'platinum'] as const
 
+/** Long enough to coalesce a burst of keystrokes, short enough to feel live. */
+const SEARCH_DEBOUNCE_MS = 250
+
 export function CustomerListPage() {
   const [tier, setTier] = useState<string | null>(null)
   const [status, setStatus] = useState<'active' | 'deactivated' | 'any'>('active')
-  const [raw, setRaw] = useState('')
-  const [rawDraft, setRawDraft] = useState('')
+  const [search, setSearch] = useState('')
+  const [name, setName] = useState('')
   const [sortKey, setSortKey] = useState<SortKey>(null)
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [data, setData] = useState<CustomerListResponse | null>(null)
@@ -25,9 +28,15 @@ export function CustomerListPage() {
   const [loading, setLoading] = useState(true)
 
   const query = useMemo(
-    () => buildListQuery({ tier, status, raw }),
-    [tier, status, raw],
+    () => buildListQuery({ tier, status, name }),
+    [tier, status, name],
   )
+
+  // Search as you type, one request per pause rather than one per keystroke.
+  useEffect(() => {
+    const t = window.setTimeout(() => setName(search), SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(t)
+  }, [search])
 
   useEffect(() => {
     let cancelled = false
@@ -156,51 +165,41 @@ export function CustomerListPage() {
           ))}
         </div>
 
-        <div className="raw-query">
-          <label htmlFor="raw-q">
-            Raw visibility query{' '}
-            <span className="hint">
-              (overrides chips — try in{' '}
+        <div className="chip-row">
+          <label className="label" htmlFor="name-q">
+            Name
+          </label>
+          <input
+            id="name-q"
+            className="search-input"
+            type="search"
+            value={search}
+            placeholder="Search by name…"
+            autoComplete="off"
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <p className="hint">
+          {query ? (
+            <>
+              Effective query: <code>{query}</code> — paste it into the{' '}
               <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
                 Temporal UI
               </a>
-              )
-            </span>
-          </label>
-          <input
-            id="raw-q"
-            value={rawDraft}
-            placeholder="RewardsLevel = 'gold' AND RewardsActive = true"
-            onChange={(e) => setRawDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') setRaw(rawDraft)
-            }}
-          />
-          <div className="form-actions">
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => setRaw(rawDraft)}
-            >
-              Run query
-            </button>
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={() => {
-                setRawDraft('')
-                setRaw('')
-              }}
-            >
-              Clear
-            </button>
-          </div>
-          {query ? (
-            <p className="hint">
-              Effective query: <code>{query}</code>
-            </p>
-          ) : null}
-        </div>
+              .
+            </>
+          ) : (
+            <>
+              No filters — listing every customer. Filters become a visibility query
+              you can paste into the{' '}
+              <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
+                Temporal UI
+              </a>
+              .
+            </>
+          )}
+        </p>
       </div>
 
       <ErrorBanner error={error} />
@@ -255,6 +254,9 @@ export function CustomerListPage() {
               <tr>
                 <td colSpan={6} className="muted">
                   No customers match this filter.
+                  {name.trim()
+                    ? ' Name search is a tokenized Text match — whole words only, so “lovelace” hits and “lovel” does not.'
+                    : ''}
                 </td>
               </tr>
             ) : null}

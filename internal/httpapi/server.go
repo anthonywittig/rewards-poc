@@ -310,9 +310,9 @@ func scopedQuery(userQuery string) string {
 // mapListError turns a rejected visibility query into a 400 carrying the
 // server's own diagnostics, and returns nil for anything else.
 //
-// Passing the message through is deliberate. The query is user input from a
-// raw-query box, and Temporal's errors are genuinely better than anything this
-// layer could write:
+// Passing the message through is deliberate. `?q=` is arbitrary user input --
+// hand-written from curl or built by the UI's filters -- and Temporal's errors
+// are genuinely better than anything this layer could write:
 //
 //	invalid search attribute: NoSuchAttribute
 //	invalid value for search attribute RewardsPoints of type Int: "not-an-int"
