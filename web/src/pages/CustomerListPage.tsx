@@ -48,9 +48,9 @@ export function CustomerListPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
-  // Tagging responses with their query makes "does this belong to the filter on
-  // screen?" a derived value, so rows still cannot render under a query they did
-  // not match — but nothing has to be torn down and rebuilt to guarantee that.
+  // Tagging responses with their query keeps "does this belong to the filter on
+  // screen?" a derived value, so rows cannot render under a query they did not
+  // match.
   const data = loaded?.query === query ? loaded.res : null
   const error = failed?.query === query ? failed.err : null
   const loading = !data && !error
@@ -77,9 +77,9 @@ export function CustomerListPage() {
 
     void run()
 
-    // Visibility lag only has something to catch up to while an optimistic row
-    // is still waiting to be indexed. Re-checking on every query change instead
-    // doubled every search and made the table settle twice, half a second apart.
+    // Only re-check while an optimistic row is still waiting to be indexed.
+    // Re-checking on every query change doubles every search and makes the
+    // table settle twice, half a second apart.
     const t = readPending().length
       ? window.setTimeout(() => {
           if (!cancelled) void run()
@@ -92,9 +92,9 @@ export function CustomerListPage() {
     }
   }, [query])
 
-  // Notices and the sort affordance stay on the last response while the next one
-  // loads. Unmounting them shifted the table up ~90px and back on every pause in
-  // typing; they describe the result set, not the rows, so holding them is safe.
+  // Notices and the sort affordance stay on the last response while the next
+  // one loads: they describe the result set rather than the rows, and
+  // unmounting them shifts the table ~90px on every pause in typing.
   const chrome = data ?? (loading ? loaded?.res ?? null : null)
 
   const items = useMemo(() => {
@@ -107,8 +107,8 @@ export function CustomerListPage() {
     return rows
   }, [data, pending, sortKey, sortDir, query])
 
-  // Blank rows standing in for the ones the previous query left on screen, so the
-  // body holds its height instead of collapsing to a single “Loading…” row.
+  // Blank rows so the body holds its height instead of collapsing to a single
+  // “Loading…” row.
   const placeholders = loading
     ? Math.max((loaded?.res.items.length ?? 0) - items.length, items.length ? 0 : 1)
     : 0
