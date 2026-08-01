@@ -1,7 +1,8 @@
 // Command seed fills a running stack with a demo dataset, driving the HTTP API
 // rather than the Temporal client.
 //
-//	make seed     # needs `make up`, `make worker`, `make api`
+//	make up       # runs this at the end, once the API answers
+//	make seed     # to re-run it on its own
 //	make reset    # the only true clean slate
 //
 // Read-then-create, never modify: deactivation is soft
@@ -92,7 +93,7 @@ func main() {
 	base := env("API_BASE", "http://localhost:8081")
 
 	if err := ping(base); err != nil {
-		log.Fatalf("no API at %s: %v\nis `make api` running (and `make up` and `make worker`)?", base, err)
+		log.Fatalf("no API at %s: %v\nis the stack up? try `make ps`, then `make up`", base, err)
 	}
 
 	set := append([]customer{}, seedSet...)

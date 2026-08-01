@@ -32,14 +32,18 @@ help: ## Show this help
 $(ENV):
 	@echo "No $(ENV) found. Defaults live in .env.example; for a local override run: cp .env.example $(ENV)" >&2; exit 1
 
-up: $(ENV) ## Start the stack and bootstrap it
+up: $(ENV) ## Start the stack, bootstrap it, and seed demo customers
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
 	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
 # Started after bootstrap, so neither one talks to a namespace that doesn't
 # exist yet; --build so a fresh checkout runs code built from its own tree.
-# --wait holds until the API answers /healthz, which is what `make seed`
-# immediately after `make up` depends on.
+# --wait holds until the API answers /healthz, which is what seeding needs.
 	$(COMPOSE) up -d --build --wait worker api
+# Idempotent, so `make up` on a stack that already has its customers reports
+# them and changes nothing. A mismatch fails the target on purpose -- it means
+# the running dataset is not the one in cmd/seed, and only `make reset` fixes
+# that. The stack is up either way.
+	@$(MAKE) --no-print-directory seed ENV=$(ENV)
 	@echo
 	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
@@ -269,5 +273,10 @@ audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 # Read-then-create: it only enrolls customers who are missing, and reports any
 # existing one whose balance disagrees with the dataset. Deactivation is soft,
 # so nothing here can reset a customer -- `make reset` is the clean slate.
+#
+# `make up` runs this, so the target is for re-running it after a `make reset`.
+# It is the one thing in `make up` that still runs on the host: seeding over the
+# published port exercises the same path a user takes, and Go is a prerequisite
+# for `make test` anyway.
 seed: $(ENV) ## Seed demo customers (idempotent; `make reset` first for a clean slate)
 	API_BASE=http://localhost:$(API_PORT) go run ./cmd/seed
