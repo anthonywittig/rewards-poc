@@ -1014,7 +1014,8 @@ nondeterministic workflow: extra replay command for ScheduleActivityTask:
 **Nothing else caught it.** Unit tests passed, the API worked, the UI rendered; the damage only
 exists for executions that started *before* the deploy, and the only thing that looks at those is
 a replay test. That is the whole argument for having one.
-`internal/rewards/testdata/pre-notification-*.json` are real histories recorded by the earlier
+`internal/rewards/workflows/testdata/pre-notification-*.json` are real histories recorded by the
+earlier
 worker, so replaying them is a rehearsal of that deploy.
 
 Fixed with `workflow.GetVersion` gating the Activity, so runs recorded before the marker keep the

@@ -1,79 +1,18 @@
 package rewards
 
-import (
-	"slices"
-	"time"
+import "slices"
 
-	"go.temporal.io/sdk/temporal"
-	"go.temporal.io/sdk/workflow"
-)
-
-// Tier-promotion delivery helpers. FINDINGS.md#tier-promotion-notifications.
+// What to notify a customer about, decided from state alone. The delivery half
+// -- scheduling the Activity, handling its failure -- lives in
+// internal/rewards/workflows, because that half needs a workflow.Context and
+// this half does not.
 //
-// The Update handler does not await the Activity. It applies the points, notices
-// an unannounced tier, sets a flag, and returns -- so a notification provider
-// being slow or down cannot fail a point-add that has already been recorded in
-// history, and cannot put a network call on the UI's critical path. The workflow
-// main loop observes the flag and runs the Activity there.
+// Splitting them that way is what lets these rules be tested as plain functions
+// rather than through a test environment, and it keeps the tier ladder (which is
+// unexported, and only in this package) as the single place a threshold is
+// attached to a tier.
 
-// notifyTimeout bounds one delivery attempt, and notifyMaxAttempts bounds the
-// retries.
-//
-// Bounding the retries is load-bearing rather than tidiness. The default policy
-// retries forever, and a failed send is only re-offered on a later add -- so an
-// unreachable provider must not pin the main loop in a retry spin that also
-// blocks continue-as-new for as long as the outage lasts.
-const (
-	notifyTimeout     = 10 * time.Second
-	notifyMaxAttempts = 3
-)
-
-// deliverPromotion runs NotifyCustomer for the customer's current unannounced
-// tier, if any, and records success in NotifiedLevels.
-//
-// Callers run this from the workflow main loop so the Update handler never
-// awaits the Activity.
-func deliverPromotion(ctx workflow.Context, state *CustomerState) {
-	note, ok := promotionFor(state)
-	if !ok {
-		return
-	}
-
-	logger := workflow.GetLogger(ctx)
-	if err := sendNotify(ctx, note); err != nil {
-		// The Activity's own retries are exhausted by this point, and they are
-		// bounded on purpose. Failing the workflow over an undelivered stub
-		// notification would be worse than the notification, so this attempt is
-		// recorded and abandoned -- but *not* given up on: the level stays out
-		// of NotifiedLevels, so the next add re-arms the main loop. That is the
-		// outer retry, and it is why promotionFor asks whether the customer's
-		// tier has been announced rather than whether this particular add
-		// crossed a line.
-		logger.Error("notification delivery failed after retries; will retry on the next add",
-			"customerId", note.CustomerID, "event", note.Event,
-			"level", note.Level, "error", err)
-		return
-	}
-
-	// Recorded only on success, and only for promotions. Marking a level
-	// notified that was never delivered would suppress exactly the retry
-	// described above.
-	state.NotifiedLevels = append(state.NotifiedLevels, note.Level)
-}
-
-// sendNotify runs the Activity and waits for it.
-func sendNotify(ctx workflow.Context, req NotifyRequest) error {
-	actCtx := workflow.WithActivityOptions(ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: notifyTimeout,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval: time.Second,
-			MaximumAttempts: notifyMaxAttempts,
-		},
-	})
-	return workflow.ExecuteActivity(actCtx, ActivityNotifyCustomer, req).Get(ctx, nil)
-}
-
-// promotionFor returns the notification to send if the customer has reached a
+// PromotionFor returns the notification to send if the customer has reached a
 // tier nobody has told them about.
 //
 // Deliberately *not* "did this add cross a boundary". A crossing is an event
@@ -105,7 +44,7 @@ func sendNotify(ctx workflow.Context, req NotifyRequest) error {
 // Tiers are derived rather than stored
 // (FINDINGS.md#tiers-are-derived-never-stored), so this needs no extra state to
 // work out.
-func promotionFor(state *CustomerState) (NotifyRequest, bool) {
+func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 	// Walk the ladder from the top down and stop at the first rule the balance
 	// satisfies. Top-down is the "only the tier they are at" decision above
 	// written as control flow rather than left implicit in a Level() call: the
@@ -149,10 +88,10 @@ func promotionFor(state *CustomerState) (NotifyRequest, bool) {
 	return NotifyRequest{}, false
 }
 
-// departureNotice is the same Activity reused for "this customer left", which is
+// DepartureNotice is the same Activity reused for "this customer left", which is
 // why there is no separate cleanup Activity.
 // FINDINGS.md#tier-promotion-notifications.
-func departureNotice(state *CustomerState) NotifyRequest {
+func DepartureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,
 		Email:          state.Email,

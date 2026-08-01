@@ -1,4 +1,4 @@
-package rewards_test
+package workflows_test
 
 import (
 	"os"
@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/sdk/internalbindings"
@@ -64,7 +65,7 @@ func loadHistory(t *testing.T, name string) *historypb.History {
 func replay(t *testing.T, h *historypb.History) error {
 	t.Helper()
 	r := worker.NewWorkflowReplayer()
-	r.RegisterWorkflow(rewards.CustomerRewardsWorkflow)
+	r.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
 
 	started := h.GetEvents()[0].GetWorkflowExecutionStartedEventAttributes()
 	if started == nil {
@@ -148,7 +149,7 @@ func TestReplay_HistoryRecordedByTheCurrentWorkflow(t *testing.T) {
 // tells us the workaround can go.
 func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 	r := worker.NewWorkflowReplayer()
-	r.RegisterWorkflow(rewards.CustomerRewardsWorkflow)
+	r.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
 
 	err := r.ReplayWorkflowHistory(nil, loadHistory(t, "pre-notification-enrollment.json"))
 	if err == nil {

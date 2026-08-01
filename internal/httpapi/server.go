@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	commonpb "go.temporal.io/api/common/v1"
 	enumspb "go.temporal.io/api/enums/v1"
@@ -88,7 +89,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		TaskQueue:                                rewards.TaskQueue,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, rewards.CustomerRewardsWorkflow, rewards.CustomerState{
+	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
 		Email:      req.Email,
