@@ -4,7 +4,12 @@ import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
 import { buildListQuery, formatDate } from '../format'
-import { clearPending, mergeWithPending, readPending } from '../pending'
+import {
+  clearPending,
+  matchesVisibilityQuery,
+  mergeWithPending,
+  readPending,
+} from '../pending'
 import type { CustomerListItem, CustomerListResponse } from '../types'
 
 type SortKey = 'points' | 'name' | 'enrolledAt' | null
@@ -92,20 +97,24 @@ export function CustomerListPage() {
     }
   }, [query])
 
-  // Notices and the sort affordance stay on the last response while the next
-  // one loads: they describe the result set rather than the rows, and
-  // unmounting them shifts the table ~90px on every pause in typing.
-  const chrome = data ?? (loading ? loaded?.res ?? null : null)
+  // The rows and chrome stay on the last response while the next one loads:
+  // unmounting the notices shifts the table ~90px on every pause in typing, and
+  // clearing the rows blanks the table on searches that change nothing.
+  const shown = data ?? (loading ? loaded?.res ?? null : null)
 
   const items = useMemo(() => {
     // Keep optimistic rows visible even when the list request failed.
-    const serverItems = data?.items ?? []
+    const serverItems = data
+      ? data.items
+      : // Held-over rows go through the same predicate as the optimistic ones, so
+        // a row still cannot render under a query it does not match.
+        (shown?.items ?? []).filter((c) => matchesVisibilityQuery(c, query))
     let rows = mergeWithPending(serverItems, pending, query)
-    if (data?.complete && sortKey) {
+    if (shown?.complete && sortKey) {
       rows = [...rows].sort((a, b) => compare(a, b, sortKey, sortDir))
     }
     return rows
-  }, [data, pending, sortKey, sortDir, query])
+  }, [data, shown, pending, sortKey, sortDir, query])
 
   // Blank rows so the body holds its height instead of collapsing to a single
   // “Loading…” row.
@@ -114,14 +123,14 @@ export function CustomerListPage() {
     : 0
 
   const incompleteNotice = useMemo(() => {
-    if (!chrome || chrome.complete) return null
+    if (!shown || shown.complete) return null
     const of =
-      chrome.total < 0 ? 'many' : String(chrome.total)
-    return `Showing ${chrome.items.length} of ${of} — filter to find additional results`
-  }, [chrome])
+      shown.total < 0 ? 'many' : String(shown.total)
+    return `Showing ${shown.items.length} of ${of} — filter to find additional results`
+  }, [shown])
 
   function toggleSort(key: SortKey) {
-    if (!chrome?.complete || !key) return
+    if (!shown?.complete || !key) return
     if (sortKey === key) {
       setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
     } else {
@@ -230,7 +239,7 @@ export function CustomerListPage() {
       <ErrorBanner error={error} />
 
       {incompleteNotice ? <p className="notice">{incompleteNotice}</p> : null}
-      {chrome && !chrome.complete ? (
+      {shown && !shown.complete ? (
         <p className="hint" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
           Sorting is disabled until the result set fits in one page — sorting five
           arbitrary rows of a larger match would look authoritative and be wrong.
@@ -245,7 +254,7 @@ export function CustomerListPage() {
                 label="Name"
                 active={sortKey === 'name'}
                 dir={sortDir}
-                enabled={!!chrome?.complete}
+                enabled={!!shown?.complete}
                 onClick={() => toggleSort('name')}
               />
               <th>Tier</th>
@@ -253,7 +262,7 @@ export function CustomerListPage() {
                 label="Points"
                 active={sortKey === 'points'}
                 dir={sortDir}
-                enabled={!!chrome?.complete}
+                enabled={!!shown?.complete}
                 onClick={() => toggleSort('points')}
               />
               <th>Status</th>
@@ -261,7 +270,7 @@ export function CustomerListPage() {
                 label="Enrolled"
                 active={sortKey === 'enrolledAt'}
                 dir={sortDir}
-                enabled={!!chrome?.complete}
+                enabled={!!shown?.complete}
                 onClick={() => toggleSort('enrolledAt')}
               />
               <th>Gen</th>
