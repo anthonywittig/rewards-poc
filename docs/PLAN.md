@@ -69,14 +69,21 @@ where the boundary actually sits.
 cmd/worker/main.go            worker process
 cmd/api/main.go               HTTP API process
 cmd/seed/main.go              demo data, via the API rather than around it
-internal/rewards/
+internal/rewards/             domain: types and rules, no Temporal orchestration
   state.go                    CustomerState, tier thresholds, derived Level()
-  workflow.go                 CustomerRewardsWorkflow
-  workflow_test.go            unit tests via testsuite
-  replay_test.go              deploy rehearsal against recorded histories (§10)
+  contract.go                 Update/Query contract and the derived status view
+  enrollment.go               ValidateEnrollment
+  promotion.go                PromotionFor / DepartureNotice, decided from state (§3.7)
   searchattr.go               typed search attribute keys
-  notify.go / notifier.go     notification contract, promotion detection (§3.7)
-  activity.go                 NotifyCustomer (the only Activity)
+  notify.go                   NotifyRequest and the Activity's registered name
+  workflows/                  workflow layer; imports neither activities nor the SDK's activity pkg
+    workflow.go               CustomerRewardsWorkflow
+    notify.go                 Activity scheduling and retry policy
+    workflow_test.go          unit tests via testsuite
+    replay_test.go            deploy rehearsal against recorded histories (§10)
+    testdata/                 recorded histories, including pre-Phase-6 ones
+  activities/                 Activity layer; the only package allowed side effects
+    notify.go                 Activities struct; NotifyCustomer (the only Activity)
 internal/httpapi/             handlers, DTOs, error mapping
   audit.go                    multi-run history crawl → audit entries
 web/                          Vite + React + TS
@@ -1325,7 +1332,7 @@ browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
   main loop, but the test remains the thing that catches a regression.)
 - **Replay test** against a checked-in history JSON. **Done, and it earned its place
   immediately**: it caught Phase 6 as a change that would have wedged every existing customer
-  ([§12.11](#12-sharp-edges)). `internal/rewards/testdata/pre-notification-*` are histories
+  ([§12.11](#12-sharp-edges)). `internal/rewards/workflows/testdata/pre-notification-*` are histories
   recorded by the Phase 5 worker, so replaying them is a rehearsal of that deploy. Note the
   replayer needs `OriginalExecution` or it invents a workflow ID and fails misleadingly
   ([§12.35](#12-sharp-edges)).

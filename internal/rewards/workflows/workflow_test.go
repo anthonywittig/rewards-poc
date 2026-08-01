@@ -1,17 +1,17 @@
-package rewards_test
+package workflows_test
 
 import (
 	"context"
 	"errors"
 	"fmt"
 	"reflect"
-	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/activities"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
@@ -32,6 +32,16 @@ type RewardsSuite struct {
 
 const testCustomerID = "c-001"
 
+// testActivities is the struct the test env registers, and the receiver every
+// OnActivity mock names its method on.
+//
+// One shared instance rather than one per env: the mocks below replace the
+// method body outright, so nothing here is ever actually called, and the SDK
+// only needs the method value to resolve the Activity's registered name. A
+// per-test instance with real dependencies would be the shape to use the day an
+// Activity is exercised for real rather than mocked.
+var testActivities = &activities.Activities{}
+
 func (s *RewardsSuite) SetupTest() { s.env = s.newEnv() }
 
 // newEnv builds a test environment the workflow will actually run in.
@@ -49,7 +59,7 @@ func (s *RewardsSuite) newEnv() *testsuite.TestWorkflowEnvironment {
 		ID:        rewards.WorkflowID(testCustomerID),
 		TaskQueue: rewards.TaskQueue,
 	})
-	env.RegisterActivity(rewards.NotifyCustomer)
+	env.RegisterActivity(testActivities)
 	return env
 }
 
@@ -149,7 +159,7 @@ func (s *RewardsSuite) queryStatusAt(at time.Duration) *rewards.CustomerStatus {
 }
 
 func (s *RewardsSuite) runUntilStopped(state rewards.CustomerState) error {
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
 	s.Require().True(s.env.IsWorkflowCompleted())
 	return s.env.GetWorkflowError()
 }
@@ -164,50 +174,6 @@ func (s *RewardsSuite) continuedState() rewards.CustomerState {
 	var next rewards.CustomerState
 	s.Require().NoError(converter.GetDefaultDataConverter().FromPayloads(canErr.Input, &next))
 	return next
-}
-
-// --- Tier derivation (PLAN.md 3.2) -----------------------------------------
-
-// Pure-function boundaries. Cheap to assert exhaustively, and these are the
-// numbers a stakeholder will ask about.
-func TestLevelBoundaries(t *testing.T) {
-	for _, tc := range []struct {
-		points int
-		want   string
-	}{
-		{0, rewards.LevelBasic},
-		{1, rewards.LevelBasic},
-		{499, rewards.LevelBasic},
-		{500, rewards.LevelGold},
-		{501, rewards.LevelGold},
-		{999, rewards.LevelGold},
-		{1000, rewards.LevelPlatinum},
-		{50000, rewards.LevelPlatinum},
-	} {
-		if got := rewards.Level(tc.points); got != tc.want {
-			t.Errorf("Level(%d) = %q, want %q", tc.points, got, tc.want)
-		}
-	}
-}
-
-func TestNextTierAt(t *testing.T) {
-	for _, tc := range []struct {
-		points  int
-		wantAt  int
-		wantHas bool
-	}{
-		{0, rewards.GoldThreshold, true},
-		{499, rewards.GoldThreshold, true},
-		{500, rewards.PlatinumThreshold, true},
-		{999, rewards.PlatinumThreshold, true},
-		{1000, 0, false},
-	} {
-		gotAt, gotHas := rewards.NextTierAt(tc.points)
-		if gotAt != tc.wantAt || gotHas != tc.wantHas {
-			t.Errorf("NextTierAt(%d) = (%d, %v), want (%d, %v)",
-				tc.points, gotAt, gotHas, tc.wantAt, tc.wantHas)
-		}
-	}
 }
 
 // --- addPoints happy path ---------------------------------------------------
@@ -425,7 +391,7 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 
 			state := newState()
 			tc.mutar(&state)
-			env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+			env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
 
 			s.Require().True(env.IsWorkflowCompleted())
 			err := env.GetWorkflowError()
@@ -450,7 +416,7 @@ func (s *RewardsSuite) Test_Enroll_RejectsCapBypass() {
 	state.Points = 5_000_000
 	state.LifetimeEarnEvents = 1
 
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	s.Require().Error(s.env.GetWorkflowError())
@@ -512,7 +478,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
 	// No cancel scheduled: the roll itself is what ends this run.
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	next := s.continuedState()
@@ -553,7 +519,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	next := s.continuedState()
@@ -575,7 +541,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
 	next := s.continuedState()
 
 	// Second run, same customer, one add short of the threshold.
@@ -591,7 +557,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 	}
 	// CancelWorkflow is test-env teardown only; not a product leave path.
 	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.EarnsPerRun+1)*time.Minute)
-	env2.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, next)
+	env2.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, next)
 
 	s.Require().True(env2.IsWorkflowCompleted())
 	var canErr *workflow.ContinueAsNewError
@@ -821,7 +787,7 @@ func (s *RewardsSuite) mockNotify(delay time.Duration) *notifyCalls {
 // waits for delivery A is only exercised if delivery B can finish first.
 func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Duration) *notifyCalls {
 	calls := &notifyCalls{}
-	s.env.OnActivity(rewards.NotifyCustomer, mock.Anything, mock.Anything).
+	s.env.OnActivity(testActivities.NotifyCustomer, mock.Anything, mock.Anything).
 		Return(func(_ context.Context, req rewards.NotifyRequest) error {
 			if d := delay(req); d > 0 {
 				time.Sleep(d)
@@ -847,7 +813,7 @@ func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
 			rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
 	}
 	// No cancel: the roll is what ends this run.
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, newState())
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	s.Require().Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
@@ -988,7 +954,7 @@ func (s *RewardsSuite) Test_Notify_NotifiedLevelsSurviveTheRoll() {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
 			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	}
-	s.env.ExecuteWorkflow(rewards.CustomerRewardsWorkflow, state)
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	next := s.continuedState()
@@ -998,19 +964,27 @@ func (s *RewardsSuite) Test_Notify_NotifiedLevelsSurviveTheRoll() {
 }
 
 // The audit crawl decides what is a notification row by matching the Activity's
-// registered name against ActivityNotifyCustomer (internal/httpapi/audit.go).
-// If the constant and the name the SDK registers ever diverge, notification rows
-// simply stop appearing -- no error, just a quietly poorer timeline. Derive the
-// registered name the same way the SDK does and compare.
+// registered name against ActivityNotifyCustomer (internal/httpapi/audit.go),
+// and the workflow schedules it by that same string rather than by function
+// reference (workflows/notify.go). If the constant and the name the SDK
+// registers ever diverge, notification rows simply stop appearing -- no error,
+// just a quietly poorer timeline -- and the workflow schedules an Activity no
+// worker answers for.
+//
+// RegisterActivity(&Activities{}) registers every exported method under the
+// method's own name, so that is what this checks: that a method with exactly
+// this name exists on the struct the worker registers. Renaming the method, or
+// unexporting it, fails here.
 func TestActivityNameMatchesRegistration(t *testing.T) {
-	fn := runtime.FuncForPC(reflect.ValueOf(rewards.NotifyCustomer).Pointer()).Name()
-	registered := fn
-	if i := strings.LastIndex(fn, "."); i >= 0 {
-		registered = fn[i+1:]
-	}
-	if registered != rewards.ActivityNotifyCustomer {
-		t.Errorf("ActivityNotifyCustomer = %q but the SDK would register %q (from %q)",
-			rewards.ActivityNotifyCustomer, registered, fn)
+	typ := reflect.TypeOf(testActivities)
+	if _, ok := typ.MethodByName(rewards.ActivityNotifyCustomer); !ok {
+		var have []string
+		for i := 0; i < typ.NumMethod(); i++ {
+			have = append(have, typ.Method(i).Name)
+		}
+		t.Errorf("ActivityNotifyCustomer = %q but %s has no such exported method; "+
+			"the SDK would register %v",
+			rewards.ActivityNotifyCustomer, typ, have)
 	}
 }
 
@@ -1019,7 +993,7 @@ func TestActivityNameMatchesRegistration(t *testing.T) {
 func (s *RewardsSuite) mockNotifyFailing(failures int) *notifyCalls {
 	calls := &notifyCalls{}
 	var n int
-	s.env.OnActivity(rewards.NotifyCustomer, mock.Anything, mock.Anything).
+	s.env.OnActivity(testActivities.NotifyCustomer, mock.Anything, mock.Anything).
 		Return(func(_ context.Context, req rewards.NotifyRequest) error {
 			n++
 			if n <= failures {

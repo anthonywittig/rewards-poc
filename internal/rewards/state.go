@@ -1,5 +1,22 @@
-// Package rewards contains the customer rewards Entity Workflow and the state
-// it carries. See docs/PLAN.md section 3.
+// Package rewards is the domain layer for the customer rewards Entity Workflow:
+// the state it carries, the Update/Query contract every caller speaks, and the
+// rules -- tiers, enrollment validity, which promotion is owed -- expressed as
+// plain functions over that state. See docs/PLAN.md section 3.
+//
+// It deliberately contains no workflow or Activity code. Those live in the two
+// sub-packages, and the split is structural rather than cosmetic:
+//
+//	internal/rewards            this package: types and pure logic
+//	internal/rewards/workflows  CustomerRewardsWorkflow and its handlers
+//	internal/rewards/activities the Activities struct, and the only code here
+//	                            allowed to touch the outside world
+//
+// Both sub-packages import this one; neither imports the other. That last part
+// is the point. The Go SDK has no workflow sandbox, so nothing at runtime stops
+// workflow code from calling a database handle directly and silently breaking
+// determinism -- a package boundary is the only structural guard available, and
+// it only works while workflows cannot reach activities. Workflow code names the
+// Activity by the ActivityNotifyCustomer string constant below instead.
 package rewards
 
 import "time"

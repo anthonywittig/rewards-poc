@@ -203,11 +203,11 @@ the handler —
 **The replay test is the one that matters.**
 
 ```sh
-go test ./internal/rewards/ -run TestReplay
+go test ./internal/rewards/workflows/ -run TestReplay
 ```
 
 A customer's workflow outlives deploys, so today's code gets replayed against histories recorded
-weeks ago and the commands must match event for event. `internal/rewards/testdata/pre-notification-*.json`
+weeks ago and the commands must match event for event. `internal/rewards/workflows/testdata/pre-notification-*.json`
 are real histories from before the notification Activity existed; replaying them is a rehearsal
 of the deploy that added it, and the first run failed — adding the Activity would have wedged
 every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
@@ -221,6 +221,25 @@ It fires when a customer sits at a tier they haven't been told about — a prope
 so a failed delivery is picked up by the next add — and the handler doesn't await it. Delivery
 runs in the workflow's main loop as **notify → depart → continue-as-new**, which is what keeps a
 promotion from rolling away unsent. [§3.7](docs/PLAN.md#37-tier-promotion-notifications).
+
+**Workflows and Activities are separate packages, and that boundary is load-bearing.** The Go SDK
+has no workflow sandbox: nothing at runtime stops workflow code from calling a database handle
+directly and silently breaking determinism, so a package boundary is the only structural guard
+there is. `internal/rewards/workflows` therefore does not import `internal/rewards/activities` —
+it schedules by the `rewards.ActivityNotifyCustomer` name instead, and an Activity's dependencies
+stay reachable only from the `Activities` struct the worker builds. Both import the parent
+`internal/rewards`, which holds the types and the rules as plain functions and imports neither.
+
+Activities are registered as that struct rather than as bare functions:
+
+```go
+w.RegisterActivity(&activities.Activities{Notifier: activities.LogNotifier{}})
+```
+
+`RegisterActivity` on a struct registers every exported method under the method's own name, so
+`NotifyCustomer` is still registered as `"NotifyCustomer"` — which the audit crawl matches on, and
+`TestActivityNameMatchesRegistration` pins. Injecting a real email or push provider is a different
+value in that one line and no change anywhere else.
 
 ## Behaviour to expect
 
@@ -277,16 +296,23 @@ baked into recorded history. In dev, `make reset` and start over.
 cmd/worker/                   the worker process
 cmd/api/                      the HTTP API
 cmd/seed/                     demo data, via the API rather than around it
-internal/rewards/
+internal/rewards/             the domain: types and rules, no Temporal orchestration
   state.go                    CustomerState, tier thresholds, derived Level()
-  workflow.go                 CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
+  contract.go                 the Update/Query contract every caller speaks
+  enrollment.go               what makes a starting payload valid
+  promotion.go                which promotion a customer is owed, decided from state
   searchattr.go               typed search attribute keys
   notify.go                   the notification contract the audit crawl decodes
-  notifier.go                 promotion detection and delivery, run from the main loop
-  activity.go                 NotifyCustomer -- the only side effect in the system
-  workflow_test.go            unit tests (no Docker required)
-  replay_test.go              deploy rehearsal against recorded histories
-  testdata/                   real histories, including pre-Phase-6 ones
+  level_test.go               tier derivation, no test environment needed
+  tiers_test.go               the tier ladder's ordering invariant
+  workflows/                  the workflow layer
+    workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
+    notify.go                 notification delivery, run from the main loop
+    workflow_test.go          unit tests (no Docker required)
+    replay_test.go            deploy rehearsal against recorded histories
+    testdata/                 real histories, including pre-Phase-6 ones
+  activities/                 the Activity layer
+    notify.go                 NotifyCustomer -- the only side effect in the system
 internal/httpapi/
   server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection

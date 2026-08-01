@@ -1,90 +1,56 @@
-package rewards
+// Package workflows holds the customer rewards Entity Workflow and its Update
+// and Query handlers. See docs/PLAN.md section 3.
+//
+// Everything here runs under the workflow's determinism constraints. The rules
+// it applies -- tiers, enrollment validity, which promotion is owed -- live in
+// the parent internal/rewards package as plain functions, so this package is
+// orchestration and little else: what to await, what to schedule, when to roll.
+//
+// It deliberately does not import internal/rewards/activities. The Go SDK has no
+// workflow sandbox, so an import of the Activity package is an import of its
+// dependencies, and calling one of those directly from here is a determinism bug
+// the compiler would be happy to accept. Activities are named by the
+// rewards.ActivityNotifyCustomer string constant instead.
+package workflows
 
 import (
 	"fmt"
 	"strings"
-	"time"
+
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 )
 
-// Handler names. Exported because the API layer (Phase 3) and the `temporal`
-// CLI both address handlers by string, and a typo there is a runtime error.
+// Versioning markers for workflow.GetVersion. PLAN.md 12.11.
+//
+// Entity workflows outlive deploys by design, so a change that alters the
+// commands a run emits has to be gated or it breaks every execution already in
+// flight. These names are recorded in Event History and can never be reused or
+// renamed -- a marker is as permanent as the history it sits in.
+//
+// They are unexported and live beside the workflow rather than with the domain
+// types, because a version marker means nothing outside the code it gates.
 const (
-	UpdateAddPoints  = "addPoints"
-	UpdateDeactivate = "deactivate"
-	UpdateReactivate = "reactivate"
-	QueryGetStatus   = "getStatus"
+	// changeTierNotifications gates the Phase 6 notification Activity. Runs
+	// started before it keep the Phase 5 behaviour for the rest of their lives,
+	// and pick notifications up at their next continue-as-new -- at most
+	// rewards.EarnsPerRun adds away.
+	changeTierNotifications  = "tier-notifications"
+	versionTierNotifications = 1
 )
-
-// Error types returned by Update handlers. The API layer maps these to HTTP
-// status codes; naming them here keeps that mapping from being a string match
-// on an error message.
-const (
-	ErrTypePointsCapExceeded = "PointsCapExceeded"
-	ErrTypeInvalidEnrollment = "InvalidEnrollment"
-	ErrTypeDeactivated       = "Deactivated"
-)
-
-// AddPointsRequest is the addPoints Update argument.
-type AddPointsRequest struct {
-	Amount int    `json:"amount"`
-	Reason string `json:"reason"`
-}
-
-// AddPointsResult is what a successful add returns to the caller.
-type AddPointsResult struct {
-	Balance int    `json:"balance"`
-	Level   string `json:"level"`
-	EventID string `json:"eventId"`
-}
-
-// DeactivateResult is what deactivate returns so the audit crawl can tell a
-// real leave from an idempotent no-op (repeat DELETE).
-type DeactivateResult struct {
-	Changed bool `json:"changed"`
-}
-
-// ReactivateRequest is the reactivate Update argument (re-enrollment).
-type ReactivateRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
-// ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
-// re-enrollment from a no-op against a customer who was already active. The API
-// needs that to tell a restore (200) from a duplicate enrollment (409), and the
-// audit crawl needs it so a no-op does not draw a rejoin row.
-type ReactivateResult struct {
-	Changed bool           `json:"changed"`
-	Status  CustomerStatus `json:"status"`
-}
-
-// CustomerStatus is the getStatus Query result.
-type CustomerStatus struct {
-	CustomerID string    `json:"customerId"`
-	Name       string    `json:"name"`
-	Email      string    `json:"email"`
-	Points     int       `json:"points"`
-	Level      string    `json:"level"`
-	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
-	EnrolledAt time.Time `json:"enrolledAt"`
-
-	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
-	Generation         int  `json:"generation"`
-	Active             bool `json:"active"`
-}
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
 // The main loop is: wait for work, then notify → continue-as-new.
 // Product leave is soft (Deactivated flag); the workflow keeps running.
-func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
+func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) error {
 	logger := workflow.GetLogger(ctx)
 
-	if err := validateEnrollment(ctx, &state); err != nil {
-		logger.Error("rejecting enrollment", "workflowId", workflow.GetInfo(ctx).WorkflowExecution.ID, "error", err)
+	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
+	if err := rewards.ValidateEnrollment(wfID, &state); err != nil {
+		logger.Error("rejecting enrollment", "workflowId", wfID, "error", err)
 		return err
 	}
 
@@ -133,27 +99,27 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
 		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
 
-	if err := workflow.SetQueryHandler(ctx, QueryGetStatus, func() (CustomerStatus, error) {
-		return statusOf(&state), nil
+	if err := workflow.SetQueryHandler(ctx, rewards.QueryGetStatus, func() (rewards.CustomerStatus, error) {
+		return rewards.StatusOf(&state), nil
 	}); err != nil {
-		return fmt.Errorf("register %s query: %w", QueryGetStatus, err)
+		return fmt.Errorf("register %s query: %w", rewards.QueryGetStatus, err)
 	}
 
-	err := workflow.SetUpdateHandlerWithOptions(ctx, UpdateAddPoints,
-		func(ctx workflow.Context, req AddPointsRequest) (AddPointsResult, error) {
+	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
+		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
 			if state.Deactivated {
-				return AddPointsResult{}, temporal.NewNonRetryableApplicationError(
+				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					"customer is deactivated; re-enroll them before adding points",
-					ErrTypeDeactivated,
+					rewards.ErrTypeDeactivated,
 					nil,
 				)
 			}
 
-			if state.Points+req.Amount > PointsCap {
-				return AddPointsResult{}, temporal.NewNonRetryableApplicationError(
+			if state.Points+req.Amount > rewards.PointsCap {
+				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					fmt.Sprintf("add of %d would exceed the cap of %d (balance is %d)",
-						req.Amount, PointsCap, state.Points),
-					ErrTypePointsCapExceeded,
+						req.Amount, rewards.PointsCap, state.Points),
+					rewards.ErrTypePointsCapExceeded,
 					nil,
 				)
 			}
@@ -164,10 +130,10 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			// Gated: a run whose history predates the version marker must not arm
 			// this, or the loop emits a ScheduleActivityTask the history has no
 			// event for. See notifyEnabled above.
-			if _, ok := promotionFor(&state); ok && notifyEnabled {
+			if _, ok := rewards.PromotionFor(&state); ok && notifyEnabled {
 				needsNotify = true
 				logger.Info("tier promotion pending",
-					"customerId", state.CustomerID, "level", Level(state.Points))
+					"customerId", state.CustomerID, "level", rewards.Level(state.Points))
 			}
 
 			earnsThisRun++
@@ -184,23 +150,23 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 				"amount", req.Amount,
 				"reason", req.Reason,
 				"balance", state.Points,
-				"level", Level(state.Points),
+				"level", rewards.Level(state.Points),
 				"eventId", eventID)
 
-			return AddPointsResult{
+			return rewards.AddPointsResult{
 				Balance: state.Points,
-				Level:   Level(state.Points),
+				Level:   rewards.Level(state.Points),
 				EventID: eventID,
 			}, nil
 		},
 		workflow.UpdateHandlerOptions{
-			Validator: func(ctx workflow.Context, req AddPointsRequest) error {
+			Validator: func(ctx workflow.Context, req rewards.AddPointsRequest) error {
 				if req.Amount <= 0 {
 					return fmt.Errorf("amount must be positive, got %d", req.Amount)
 				}
-				if req.Amount > MaxPointsPerTxn {
+				if req.Amount > rewards.MaxPointsPerTxn {
 					return fmt.Errorf("amount %d exceeds the per-transaction maximum of %d",
-						req.Amount, MaxPointsPerTxn)
+						req.Amount, rewards.MaxPointsPerTxn)
 				}
 				if req.Reason == "" {
 					return fmt.Errorf("reason is required")
@@ -210,54 +176,55 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 		},
 	)
 	if err != nil {
-		return fmt.Errorf("register %s update: %w", UpdateAddPoints, err)
+		return fmt.Errorf("register %s update: %w", rewards.UpdateAddPoints, err)
 	}
 
-	if err := workflow.SetUpdateHandler(ctx, UpdateDeactivate, func(ctx workflow.Context) (DeactivateResult, error) {
-		if state.Deactivated {
-			return DeactivateResult{Changed: false}, nil
-		}
+	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateDeactivate,
+		func(ctx workflow.Context) (rewards.DeactivateResult, error) {
+			if state.Deactivated {
+				return rewards.DeactivateResult{Changed: false}, nil
+			}
 
-		// Staged on a copy and committed only once the upsert is issued, so a
-		// failed Update really did change nothing. Mutating first and returning
-		// the error would leave the customer deactivated, the departure notice
-		// armed, and addPoints 409ing -- while the caller was told it failed.
-		//
-		// The upsert has to be part of that: if visibility cannot record
-		// Active=false the list falls back to ExecutionStatus=Running and shows
-		// them active, so a leave visibility never saw is not a leave.
-		next := state
-		next.Deactivated = true
-		if err := upsertSearchAttributes(ctx, &next); err != nil {
-			return DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
-		}
-		state = next
-		// Gated for the same reason as the promotion above: the departure notice
-		// schedules the same Activity, and a pre-marker run being deactivated
-		// after the deploy must not emit a command its history cannot account for.
-		needsDeparture = notifyEnabled
+			// Staged on a copy and committed only once the upsert is issued, so a
+			// failed Update really did change nothing. Mutating first and returning
+			// the error would leave the customer deactivated, the departure notice
+			// armed, and addPoints 409ing -- while the caller was told it failed.
+			//
+			// The upsert has to be part of that: if visibility cannot record
+			// Active=false the list falls back to ExecutionStatus=Running and shows
+			// them active, so a leave visibility never saw is not a leave.
+			next := state
+			next.Deactivated = true
+			if err := upsertSearchAttributes(ctx, &next); err != nil {
+				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
+			}
+			state = next
+			// Gated for the same reason as the promotion above: the departure notice
+			// schedules the same Activity, and a pre-marker run being deactivated
+			// after the deploy must not emit a command its history cannot account for.
+			needsDeparture = notifyEnabled
 
-		logger.Info("customer deactivated",
-			"customerId", state.CustomerID,
-			"points", state.Points,
-			"level", Level(state.Points))
-		return DeactivateResult{Changed: true}, nil
-	}); err != nil {
-		return fmt.Errorf("register %s update: %w", UpdateDeactivate, err)
+			logger.Info("customer deactivated",
+				"customerId", state.CustomerID,
+				"points", state.Points,
+				"level", rewards.Level(state.Points))
+			return rewards.DeactivateResult{Changed: true}, nil
+		}); err != nil {
+		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
 	}
 
-	if err := workflow.SetUpdateHandlerWithOptions(ctx, UpdateReactivate,
-		func(ctx workflow.Context, req ReactivateRequest) (ReactivateResult, error) {
+	if err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateReactivate,
+		func(ctx workflow.Context, req rewards.ReactivateRequest) (rewards.ReactivateResult, error) {
 			// Not an error: re-enrolling an active customer is a duplicate, and
 			// the API turns Changed=false into the 409 it owes them. Reported
 			// rather than applied, so a racing enroll cannot quietly overwrite a
 			// live customer's name and email with a second signup's.
 			if !state.Deactivated {
-				return ReactivateResult{Changed: false, Status: statusOf(&state)}, nil
+				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
 			}
 			if strings.TrimSpace(req.Email) == "" {
-				return ReactivateResult{}, temporal.NewNonRetryableApplicationError(
-					"email is required", ErrTypeInvalidEnrollment, nil)
+				return rewards.ReactivateResult{}, temporal.NewNonRetryableApplicationError(
+					"email is required", rewards.ErrTypeInvalidEnrollment, nil)
 			}
 
 			// Staged and committed exactly as deactivate does, and for the same
@@ -270,18 +237,18 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			next.Email = strings.TrimSpace(req.Email)
 			next.Deactivated = false
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
-				return ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
+				return rewards.ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
 
 			logger.Info("customer reactivated",
 				"customerId", state.CustomerID,
 				"points", state.Points,
-				"level", Level(state.Points))
-			return ReactivateResult{Changed: true, Status: statusOf(&state)}, nil
+				"level", rewards.Level(state.Points))
+			return rewards.ReactivateResult{Changed: true, Status: rewards.StatusOf(&state)}, nil
 		},
 		workflow.UpdateHandlerOptions{
-			Validator: func(ctx workflow.Context, req ReactivateRequest) error {
+			Validator: func(ctx workflow.Context, req rewards.ReactivateRequest) error {
 				if strings.TrimSpace(req.Email) == "" {
 					return fmt.Errorf("email is required")
 				}
@@ -289,7 +256,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 			},
 		},
 	); err != nil {
-		return fmt.Errorf("register %s update: %w", UpdateReactivate, err)
+		return fmt.Errorf("register %s update: %w", rewards.UpdateReactivate, err)
 	}
 
 	logger.Info("customer enrolled",
@@ -302,7 +269,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	// earn count -- see the longer note that used to live here, and PLAN.md 3.5.
 	for {
 		if err := workflow.Await(ctx, func() bool {
-			return needsNotify || needsDeparture || earnsThisRun >= EarnsPerRun
+			return needsNotify || needsDeparture || earnsThisRun >= rewards.EarnsPerRun
 		}); err != nil {
 			return err
 		}
@@ -315,7 +282,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 
 		if needsDeparture {
 			needsDeparture = false
-			if err := sendNotify(ctx, departureNotice(&state)); err != nil {
+			if err := sendNotify(ctx, rewards.DepartureNotice(&state)); err != nil {
 				logger.Error("departure notification failed after retries",
 					"customerId", state.CustomerID, "error", err)
 			}
@@ -343,71 +310,15 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	}
 }
 
-func validateEnrollment(ctx workflow.Context, state *CustomerState) error {
-	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	if !strings.HasPrefix(wfID, WorkflowIDPrefix) {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("workflow ID %q does not start with %q", wfID, WorkflowIDPrefix),
-			ErrTypeInvalidEnrollment, nil)
-	}
-	if want := strings.TrimPrefix(wfID, WorkflowIDPrefix); state.CustomerID != want {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("customerId %q does not match workflow ID %q (expected customerId %q)",
-				state.CustomerID, wfID, want),
-			ErrTypeInvalidEnrollment, nil)
-	}
-	if state.CustomerID == "" {
-		return temporal.NewNonRetryableApplicationError(
-			"customerId is required", ErrTypeInvalidEnrollment, nil)
-	}
-
-	if state.Points < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("counters must be non-negative (points=%d lifetimeEarnEvents=%d generation=%d)",
-				state.Points, state.LifetimeEarnEvents, state.Generation),
-			ErrTypeInvalidEnrollment, nil)
-	}
-
-	if state.Points > PointsCap {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("points (%d) exceeds the cap of %d", state.Points, PointsCap),
-			ErrTypeInvalidEnrollment, nil)
-	}
-
-	if state.LifetimeEarnEvents == 0 && state.Points > 0 {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("points is %d but lifetimeEarnEvents is 0", state.Points),
-			ErrTypeInvalidEnrollment, nil)
-	}
-
-	return nil
-}
-
-func statusOf(state *CustomerState) CustomerStatus {
-	nextAt, _ := NextTierAt(state.Points)
-	return CustomerStatus{
-		CustomerID:         state.CustomerID,
-		Name:               state.Name,
-		Email:              state.Email,
-		Points:             state.Points,
-		Level:              Level(state.Points),
-		NextTierAt:         nextAt,
-		EnrolledAt:         state.EnrolledAt,
-		LifetimeEarnEvents: state.LifetimeEarnEvents,
-		Generation:         state.Generation,
-		Active:             !state.Deactivated,
-	}
-}
-
-func upsertSearchAttributes(ctx workflow.Context, state *CustomerState) error {
+func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {
 	return workflow.UpsertTypedSearchAttributes(ctx,
-		KeyCustomerID.ValueSet(state.CustomerID),
-		KeyCustomerEmail.ValueSet(state.Email),
-		KeyCustomerName.ValueSet(state.Name),
-		KeyRewardsLevel.ValueSet(Level(state.Points)),
-		KeyRewardsPoints.ValueSet(int64(state.Points)),
-		KeyEnrolledAt.ValueSet(state.EnrolledAt),
-		KeyGeneration.ValueSet(int64(state.Generation)),
-		KeyActive.ValueSet(!state.Deactivated),
+		rewards.KeyCustomerID.ValueSet(state.CustomerID),
+		rewards.KeyCustomerEmail.ValueSet(state.Email),
+		rewards.KeyCustomerName.ValueSet(state.Name),
+		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
+		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),
+		rewards.KeyEnrolledAt.ValueSet(state.EnrolledAt),
+		rewards.KeyGeneration.ValueSet(int64(state.Generation)),
+		rewards.KeyActive.ValueSet(!state.Deactivated),
 	)
 }
