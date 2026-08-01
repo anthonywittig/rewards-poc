@@ -56,7 +56,8 @@ SERVER_BIN=/usr/local/bin/temporal-server
 # Use `grep -c`, not `grep -q`: -q exits on the first match, `strings` then dies
 # of SIGPIPE, and `set -o pipefail` reports the whole pipeline as failed even
 # though the key was found. -c consumes the stream to the end.
-for key in history.retentionTimerJitterDuration worker.ESProcessorFlushInterval; do
+for key in history.retentionTimerJitterDuration worker.ESProcessorFlushInterval \
+           system.forceSearchAttributesCacheRefreshOnRead; do
   hits="$(strings "${SERVER_BIN}" 2>/dev/null | grep -cF "${key}" || true)"
   if [ "${hits:-0}" -gt 0 ]; then
     pass "${key} is a registered key"

@@ -175,6 +175,9 @@ services:
     environment:
       # In-network, so the container port rather than the published one.
       - API_BASE=http://api:8081
+      # Only for the "where to look next" line it prints at the end, which has
+      # to name an address the reader can actually open.
+      - API_PUBLIC_BASE=http://localhost:${API_PORT}
 
 volumes:
   postgres-data:

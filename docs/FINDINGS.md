@@ -22,7 +22,7 @@ For how Temporal uses Postgres and Elasticsearch underneath, see
 - [Workflow design](#workflow-design) — the integrity boundary, tiers, the validator/handler
   split, continue-as-new, notifications, soft deactivation
 - [Search attributes and visibility](#search-attributes-and-visibility) — the registered set,
-  runs-vs-customers, ORDER BY, prefix search, visibility lag
+  the registration cache, runs-vs-customers, ORDER BY, prefix search, visibility lag
 - [The HTTP API](#the-http-api) — error classification, timeouts, the rollover race,
   pagination
 - [The history crawl](#the-history-crawl) — walking the run chain, events read, truncation
@@ -526,6 +526,35 @@ Two notes:
   safe to re-run. Forgetting the bootstrap step produces an empty customer list with no error,
   which is a confusing first-run experience; it is wired into `make up` rather than documented
   as a manual step.
+
+### Registering a search attribute does not make it usable
+
+**A newly registered search attribute is invisible to workflow tasks for about a minute.** The
+server caches the definitions, and `UpsertSearchAttributes` is validated against that cache, so
+for the first ~60s after `bootstrap.sh` registers them the workflow task fails with:
+
+```
+BadSearchAttributes: search attribute CustomerId is not defined
+```
+
+Which surfaces at the caller as a *successful* enrollment followed by every Update failing with
+`Unable to perform workflow execution update due to unexpected workflow task failure` — a 500,
+not a 400, and nothing in it names search attributes. Starting a workflow is unaffected, because
+the upsert happens inside the workflow: it looks like adding points is broken, when what is
+actually broken is the attribute registry the caller never touched.
+
+Measured on a cold stack: 16 of 18 seeded customers failed their first add, and the same code
+succeeded ~33 s later with no change. The workflow tasks were retried and eventually applied, so
+the data arrived — after the seed had already reported failures and exited non-zero.
+
+Nothing on the client side fixes this; it is server state. `system.forceSearchAttributesCacheRefreshOnRead`
+reads through the cache instead, at the cost of a lookup per read, and is documented as a
+development-only setting — which is exactly the tradeoff a stack that bootstraps and seeds in the
+same command wants. It is in `deploy/dynamicconfig/dev.yaml`.
+
+The general shape is worth remembering for a real deployment, where the same window exists but is
+usually hidden by the gap between provisioning a namespace and deploying code against it:
+**register search attributes well before the first workflow that upserts them.**
 
 ### Visibility indexes runs, not customers
 
