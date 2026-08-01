@@ -1,16 +1,10 @@
 package rewards
 
-// The tier-promotion notification contract. The Activity itself is Phase 6
-// (FINDINGS.md#tier-promotion-notifications); only its *name* and *argument shape*
-// live here, because the Phase 5 audit crawl needs both to turn
-// `ActivityTaskScheduled` / `ActivityTaskCompleted` into notification rows.
-//
-// Declaring them a phase early is the same trade already made for
-// CustomerState.NotifiedLevels: the alternative is for the crawler to guess at an
-// activity name and payload shape it cannot compile against, which is how "the
-// audit log picks it up for free" (FINDINGS.md#tier-promotion-notifications)
-// quietly becomes false. Sharing the type means Phase 6 cannot change the shape
-// without the crawler failing to build.
+// The tier-promotion notification contract. Only the Activity's *name* and
+// *argument shape* live here, so the audit crawl can turn ActivityTaskScheduled
+// / ActivityTaskCompleted into notification rows without guessing at either --
+// changing the shape breaks the crawler's build rather than its output.
+// FINDINGS.md#tier-promotion-notifications.
 
 // ActivityNotifyCustomer is the registered name of the notification Activity.
 // The audit crawl matches on it to distinguish notification rows from any other
