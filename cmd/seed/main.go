@@ -50,17 +50,11 @@ type customer struct {
 	why        string
 }
 
+// Six active-or-notable customers per tier (basic < 500, gold < 1000,
+// platinum ≥ 1000). That fills the tier filter and pushes the unfiltered list
+// well past ListLimit so the "Showing 5 of N" notice renders.
 var seedSet = []customer{
-	{
-		id: "ada", name: "Ada Lovelace", email: "ada@example.com",
-		adds: []int{120, 200, 180, 60, 40, 20, 20},
-		why:  "ordinary active customer, gold, a few generations in",
-	},
-	{
-		id: "grace", name: "Grace Hopper", email: "grace@example.com",
-		adds: []int{500, 500, 250, 250},
-		why:  "top tier: nextTierAt is 0, which the progress bar has to survive",
-	},
+	// --- basic ----------------------------------------------------------------
 	{
 		id: "newbie", name: "Newly Enrolled", email: "new@example.com",
 		why: "enrolled, never earned -- the empty-timeline case",
@@ -70,12 +64,38 @@ var seedSet = []customer{
 		adds: []int{100, 100, 100, 10}, deactivate: true,
 		why: "deactivated: no add-points form, and a departure notification",
 	},
-	// Filler, so an unfiltered list exceeds ListLimit and the
-	// "Showing 5 of 9 -- filter to find additional results" notice renders.
-	{id: "alan", name: "Alan Turing", email: "alan@example.com", adds: []int{300, 180}, why: "filler"},
-	{id: "barbara", name: "Barbara Liskov", email: "barbara@example.com", adds: []int{400, 320}, why: "filler"},
-	{id: "edsger", name: "Edsger Dijkstra", email: "edsger@example.com", adds: []int{600, 600}, why: "filler"},
-	{id: "katherine", name: "Katherine Johnson", email: "katherine@example.com", adds: []int{95}, why: "filler"},
+	{id: "katherine", name: "Katherine Johnson", email: "katherine@example.com", adds: []int{95}, why: "basic"},
+	{id: "alan", name: "Alan Turing", email: "alan@example.com", adds: []int{300, 180}, why: "basic, near gold"},
+	{id: "margaret", name: "Margaret Hamilton", email: "margaret@example.com", adds: []int{200, 150}, why: "basic"},
+	{id: "donald", name: "Donald Knuth", email: "donald@example.com", adds: []int{400, 50}, why: "basic"},
+
+	// --- gold -----------------------------------------------------------------
+	{
+		id: "ada", name: "Ada Lovelace", email: "ada@example.com",
+		adds: []int{120, 200, 180, 60, 40, 20, 20},
+		why:  "ordinary active customer, gold, a few generations in",
+	},
+	{id: "barbara", name: "Barbara Liskov", email: "barbara@example.com", adds: []int{400, 320}, why: "gold"},
+	{id: "dennis", name: "Dennis Ritchie", email: "dennis@example.com", adds: []int{500}, why: "gold"},
+	{id: "ken", name: "Ken Thompson", email: "ken@example.com", adds: []int{300, 300}, why: "gold"},
+	{id: "bjarne", name: "Bjarne Stroustrup", email: "bjarne@example.com", adds: []int{700}, why: "gold"},
+	{id: "guido", name: "Guido van Rossum", email: "guido@example.com", adds: []int{500, 400}, why: "gold"},
+
+	// --- platinum -------------------------------------------------------------
+	{
+		id: "grace", name: "Grace Hopper", email: "grace@example.com",
+		adds: []int{500, 500, 250, 250},
+		why:  "top tier: nextTierAt is 0, which the progress bar has to survive",
+	},
+	{id: "edsger", name: "Edsger Dijkstra", email: "edsger@example.com", adds: []int{600, 600}, why: "platinum"},
+	{id: "john", name: "John von Neumann", email: "john@example.com", adds: []int{1000}, why: "platinum"},
+	{id: "claude", name: "Claude Shannon", email: "claude@example.com", adds: []int{800, 800}, why: "platinum"},
+	{id: "linus", name: "Linus Torvalds", email: "linus@example.com", adds: []int{1000, 500}, why: "platinum"},
+	{
+		id: "capped", name: "Max Capacity", email: "max@example.com",
+		adds: cappedAdds(),
+		why:  "just under the points cap, so handler rejections are reachable",
+	},
 }
 
 // cappedAdds takes a customer to 99,960 points: high enough that any add over
@@ -106,11 +126,6 @@ func main() {
 	}
 
 	set := append([]customer{}, seedSet...)
-	set = append(set, customer{
-		id: "capped", name: "Max Capacity", email: "max@example.com",
-		adds: cappedAdds(),
-		why:  "just under the points cap, so handler rejections are reachable",
-	})
 
 	start := time.Now()
 	created, matched, wrong := 0, 0, 0
