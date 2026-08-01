@@ -1,12 +1,8 @@
 #!/usr/bin/env bash
 # Force-delete closed Workflow Executions, immediately.
 #
-# Why this exists: the plan wanted a 20-minute namespace retention so that
-# audit-log truncation (docs/FINDINGS.md#truncation-detection) would be
-# observable in a coffee break. Temporal enforces a 1h minimum retention on released servers, so
-# waiting for natural reaping is impractical during a demo. This produces the
-# same end state on demand -- delete a closed run's data, then watch the audit
-# log report that it can no longer see that far back.
+# Retention has a 1h floor, so this is how audit-log truncation
+# (docs/FINDINGS.md#truncation-detection) gets demonstrated on demand.
 #
 #   make reap                      # every closed execution in the namespace
 #   make reap WF=customer-abc123   # only that customer's closed runs
@@ -29,8 +25,8 @@ echo "Namespace: ${NS}"
 echo "Query:     ${QUERY}"
 echo
 
-# Show what will go before going. Visibility is eventually consistent, so this
-# listing and the batch job's own scan can disagree slightly at the margins.
+# Visibility is eventually consistent, so this listing and the batch job's own
+# scan can disagree slightly at the margins.
 temporal --address "${ADDR}" workflow list \
   --namespace "${NS}" --query "${QUERY}" --limit 25 2>/dev/null || true
 echo

@@ -1,19 +1,13 @@
 #!/usr/bin/env bash
 # Wipe every customer workflow in the namespace, running ones included.
 #
-# A development affordance, and a deliberately blunt one. Entity workflows
-# outlive deploys (docs/FINDINGS.md#versioning-is-the-real-risk), so while
-# iterating on workflow code you will routinely have executions recorded by
-# yesterday's version that
-# today's version cannot replay. Production answers that with versioning; in dev
-# the honest answer is usually to throw the customers away and start again.
+# A dev affordance for when executions recorded by yesterday's workflow code
+# cannot be replayed by today's (docs/FINDINGS.md#versioning-is-the-real-risk).
 #
 #   make reset
 #
-# This is NOT what `make reap` does. reap deletes *closed* executions to force
-# audit-log truncation and deliberately spares running ones. reset deletes
-# everything -- `workflow delete` terminates a running execution first -- so the
-# distinction between them is exactly the ExecutionStatus filter reap carries.
+# NOT what `make reap` does: reap deletes only *closed* executions and spares
+# running ones. reset deletes everything, terminating running executions first.
 #
 # Deletion is asynchronous; expect ~30s before executions stop resolving.
 
@@ -22,8 +16,8 @@ set -uo pipefail
 ADDR="$(hostname -i):7233"
 NS="${TEMPORAL_NAMESPACE:-rewards}"
 
-# Scoped to our workflow type rather than the whole namespace, so a shared dev
-# namespace does not lose someone else's work to a `make reset` typed here.
+# Scoped to our workflow type, so a shared dev namespace does not lose someone
+# else's work.
 QUERY='WorkflowType = "CustomerRewardsWorkflow"'
 
 echo "Namespace: ${NS}"

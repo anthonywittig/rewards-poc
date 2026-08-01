@@ -7,15 +7,11 @@
 # Run inside the temporal container: make verify-config
 #
 # Checks:
-#   1. Minimum namespace retention. The plan wanted 20m. Temporal enforces a
-#      1h floor and the key that would lower it (system.namespaceMinRetentionLocal)
-#      is not registered in released servers. This asserts the floor is still 1h
-#      so we find out immediately if a future version relaxes it.
-#   2. Every key in dynamicconfig/dev.yaml is actually registered. An unregistered
-#      key is loaded and then silently ignored -- the server warns once at startup
-#      and otherwise behaves as if you had not set it.
-#   3. On-demand deletion works, which is how truncation gets demonstrated now
-#      that sub-hour retention is unavailable.
+#   1. The 1h retention floor still holds, so we find out immediately if a
+#      future version relaxes it.
+#   2. Every key in dynamicconfig/dev.yaml is actually registered. An
+#      unregistered key is loaded and then silently ignored.
+#   3. On-demand deletion works, which is how truncation gets demonstrated.
 
 set -uo pipefail
 
@@ -51,14 +47,10 @@ fi
 
 echo
 echo "=== 2. Dynamic config keys are registered ==="
-# The server logs `unregistered key "<name>"` at startup for anything it does
-# not recognise, then ignores it. Checking the log is the only reliable signal;
-# there is no API that reports whether a key took effect.
-#
-# The key table lives in the server binary. Two things to get right: `strings`
-# runs adjacent constants together into long blobs, so match as a substring
-# rather than a whole line; and the output is ~25MB, so pipe it straight into
-# grep instead of capturing it in a shell variable.
+# There is no API that reports whether a key took effect, so match against the
+# key table in the server binary. `strings` runs adjacent constants together
+# into long blobs, so match as a substring rather than a whole line; its output
+# is ~25MB, so pipe it straight into grep rather than into a shell variable.
 SERVER_BIN=/usr/local/bin/temporal-server
 #
 # Use `grep -c`, not `grep -q`: -q exits on the first match, `strings` then dies
