@@ -1268,8 +1268,11 @@ Vite + React + TypeScript in `web/`. **Done** — three screens against the real
 - **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
   ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status
   toggle driven by `RewardsActive` (not `ExecutionStatus` — soft-left customers are still
-  `Running`), and a raw search-attribute query box so we can show the same query working in
-  the Temporal UI. This is where search attributes earn their keep — and where the design has
+  `Running`), and a name box that searches as you type. Each control contributes a clause to
+  one visibility query, shown beneath the filters so the same query can be pasted into the
+  Temporal UI. Name searches `CustomerName`, which is `Text`: a tokenized match, so whole
+  words hit and prefixes do not — the empty state says so rather than letting a half-typed
+  word look broken. This is where search attributes earn their keep — and where the design has
   to be honest that filtering, not browsing, is what the visibility store supports.
 
   When more matched than fit, render **"Showing 5 of 23 — filter to find additional results"**
