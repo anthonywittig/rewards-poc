@@ -130,10 +130,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state CustomerState) error {
 	//
 	// The lesson is upstream: gate a command-changing edit in the same commit
 	// that introduces it.
-	//
-	// Called unconditionally and in a fixed position, because the marker's place
-	// in history is part of the replayable sequence -- moving this call relative
-	// to the other commands is as breaking as removing it.
 	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
 		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
 
