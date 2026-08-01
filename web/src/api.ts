@@ -62,7 +62,7 @@ export function apiBase(): string {
   return proxy?.replace(/\/$/, '') || 'http://localhost:8081 (via Vite proxy)'
 }
 
-// `make web` sets VITE_TEMPORAL_UI_URL from TEMPORAL_UI_PORT, so a second
+// The web service sets VITE_TEMPORAL_UI_URL from TEMPORAL_UI_PORT, so a second
 // stack's links do not point at the first stack's UI.
 export function temporalUiUrl(): string {
   const fromEnv = import.meta.env.VITE_TEMPORAL_UI_URL as string | undefined

@@ -18,7 +18,7 @@ WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
-        inspect inspect-pg inspect-es write-trace audit web seed reset
+        inspect inspect-pg inspect-es write-trace audit web web-logs web-stop seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -32,19 +32,21 @@ help: ## Show this help
 $(ENV):
 	@echo "No $(ENV) found. Defaults live in .env.example; for a local override run: cp .env.example $(ENV)" >&2; exit 1
 
-up: $(ENV) ## Start the stack, bootstrap it, and seed demo customers
+up: $(ENV) ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
 	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
-# Started after bootstrap, so neither one talks to a namespace that doesn't
-# exist yet; --build so a fresh checkout runs code built from its own tree.
-# --wait holds until the API answers /healthz, which is what seeding needs.
-	$(COMPOSE) up -d --build --wait worker api
+# Started after bootstrap, so nothing talks to a namespace that doesn't exist
+# yet; --build so a fresh checkout runs code built from its own tree. --wait
+# holds until the API answers /healthz, which is what seeding needs -- and until
+# the UI serves, which on a first run means npm install and a typecheck.
+	$(COMPOSE) up -d --build --wait worker api web
 # Idempotent, so `make up` on a stack that already has its customers reports
 # them and changes nothing. A mismatch fails the target on purpose -- it means
 # the running dataset is not the one in cmd/seed, and only `make reset` fixes
 # that. The stack is up either way.
 	@$(MAKE) --no-print-directory seed ENV=$(ENV)
 	@echo
+	@echo "React UI:     http://localhost:$(WEB_PORT)"
 	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
 	@echo "Namespace:    $(NAMESPACE) (retention $(RETENTION))"
@@ -199,21 +201,22 @@ api-logs: $(ENV) ## Tail the API's logs (Ctrl-C to stop tailing)
 api-stop: $(ENV) ## Stop the API (leaves the rest of the stack up)
 	$(COMPOSE) stop api
 
-# One target from a cold checkout: installs dependencies, typechecks and builds
-# (so a type error stops here rather than after the dev server is already up),
-# then serves. Ctrl-C to stop.
+# The Vite dev server is a Compose service too, with web/ bind-mounted, so an
+# edit still hot-reloads without restarting anything. It installs dependencies
+# and typechecks on the way up, which makes the first start the slow one.
 #
-# The serve port, proxy target and Temporal UI URL are passed from $(ENV)
-# rather than left to vite.config.ts's defaults, so `make web ENV=.env.beta`
-# serves on beta's WEB_PORT and points at beta's API and Temporal UI instead of
-# alpha's. A shell variable outranks web/.env* in Vite's loadEnv, so this wins
-# over a local override file.
-web: $(ENV) ## Install, typecheck/build, and run the Vite UI (proxies /api to the API)
-	cd web && npm install && npm run build && \
-	  WEB_PORT=$(WEB_PORT) \
-	  VITE_API_PROXY_TARGET=http://localhost:$(API_PORT) \
-	  VITE_TEMPORAL_UI_URL=http://localhost:$(UI_PORT) \
-	  npm run dev
+# Its serve port, proxy target and Temporal UI URL come from $(ENV) via compose,
+# so `make web ENV=.env.beta` serves on beta's WEB_PORT and points at beta's API
+# and Temporal UI. A shell variable outranks web/.env* in Vite's loadEnv, so this
+# wins over a local override file.
+web: $(ENV) ## Start (or restart) the Vite UI in the stack
+	$(COMPOSE) up -d --wait web
+
+web-logs: $(ENV) ## Tail the Vite dev server's logs (Ctrl-C to stop tailing)
+	$(COMPOSE) logs -f web
+
+web-stop: $(ENV) ## Stop the UI (leaves the rest of the stack up)
+	$(COMPOSE) stop web
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
 # drivable without an API or UI. ID=<customer id> selects the customer.

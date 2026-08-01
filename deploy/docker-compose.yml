@@ -1,6 +1,6 @@
 # Postgres (persistence) + Elasticsearch (visibility) + Temporal + the workflow
-# worker + the HTTP API, plus the seed one-shot behind a profile. Only the Vite
-# dev server runs on the host, via `make web`.
+# worker + the HTTP API + the Vite dev server, plus the seed one-shot behind a
+# profile. Nothing runs on the host.
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
@@ -158,6 +158,52 @@ services:
       retries: 10
     restart: unless-stopped
 
+  # The Vite dev server, with web/ bind-mounted so hot reload still works --
+  # editing the UI and watching it update is the whole point of running a dev
+  # server rather than serving a build. node_modules lives in a volume instead of
+  # the bind mount, so a host-side install and the container's never overwrite
+  # each other.
+  #
+  # No image of its own: it is node plus the repo's own source, and npm install
+  # on start is what a dev server does anyway.
+  web:
+    image: node:${NODE_VERSION}
+    working_dir: /app
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      # Unlike the api, the container binds the published port rather than a
+      # fixed one: Vite's hot-reload socket connects back to the port the browser
+      # sees, so container and host have to agree on it.
+      - WEB_PORT=${WEB_PORT}
+      # Vite proxies /api itself, from inside the network, so this is a service
+      # name. The Temporal UI link is followed by the browser, so that one is the
+      # published port.
+      - VITE_API_PROXY_TARGET=http://api:8081
+      - VITE_TEMPORAL_UI_URL=http://localhost:${TEMPORAL_UI_PORT}
+    volumes:
+      - ../web:/app
+      - web-node-modules:/app/node_modules
+    ports:
+      - "${WEB_PORT}:${WEB_PORT}"
+    # Typecheck before serving, so a type error stops here rather than after the
+    # dev server is already up. --host because Vite binds loopback by default,
+    # which from outside the container is nothing at all.
+    #
+    # A type error therefore exits the container, and restart: unless-stopped
+    # retries it -- the error stays in `make web-logs` until the source is fixed,
+    # and the next retry serves the fix, because the source is a bind mount.
+    command: sh -c "npm install && npm run build && npm run dev -- --host 0.0.0.0"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:${WEB_PORT}/ >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      # The first start installs dependencies and builds before it serves.
+      start_period: 60s
+    restart: unless-stopped
+
   # A one-shot, not a service: the `tools` profile keeps `compose up` from
   # starting it, and `make seed` runs it with `run --rm`. depends_on carries the
   # ordering, so seeding waits for a healthy API whether it is `make up` running
@@ -182,3 +228,4 @@ services:
 volumes:
   postgres-data:
   es-data:
+  web-node-modules:

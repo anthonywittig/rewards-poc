@@ -1194,9 +1194,10 @@ logic.
 ## The local stack
 
 `postgres` (persistence), `elasticsearch` (visibility), `temporal` (auto-setup image),
-`temporal-ui`, `worker` and `api` in Compose, plus `seed` as a one-shot behind a profile; only
-the Vite dev server runs on the host, via `make web`. The three Go services share one
-`deploy/Dockerfile`, selected by a `CMD` build arg, so `make up` needs Docker and no toolchain.
+`temporal-ui`, `worker`, `api` and `web` in Compose, plus `seed` as a one-shot behind a profile.
+Nothing runs on the host. The three Go services share one `deploy/Dockerfile`, selected by a
+`CMD` build arg, and the UI is the stock `node` image with `web/` bind-mounted, so `make up`
+needs Docker and no toolchain at all.
 `temporalio/auto-setup` with `DB=postgres12`, `ENABLE_ES=true`, `ES_SEEDS=elasticsearch` creates
 schemas and installs the ES index template for us.
 
@@ -1376,8 +1377,9 @@ UI has to translate `active` ↔ `RewardsActive = true` (and still exclude `Cont
 
 ### The Go API sends no CORS headers
 
-Pointing a browser at it with a cross-origin base URL fails;
-`make web` proxies `/api` through Vite instead (`VITE_API_PROXY_TARGET=http://localhost:8081`).
+Pointing a browser at it with a cross-origin base URL fails; the `web` service proxies `/api`
+through Vite instead (`VITE_API_PROXY_TARGET=http://api:8081`, a hop that happens inside the
+compose network rather than in the browser).
 Left as-is rather than "fixed" by adding permissive CORS: same-origin proxying is the normal Vite
 setup and the one that survives into production, whereas an unauthenticated API advertising
 `Access-Control-Allow-Origin: *` is a shape worth not copying out of a POC.

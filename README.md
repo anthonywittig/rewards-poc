@@ -18,10 +18,11 @@ first is [versioning](docs/FINDINGS.md#versioning-is-the-real-risk).
 
 ## Quick start
 
-Prerequisites: **Docker** with Compose v2 (~1.5 GB of images, ~1 GB of RAM) is all `make up`
-needs — the Go services are compiled inside their images. **Node** 20+ is for the UI, and **Go**
-1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an older Go the default
-`GOTOOLCHAIN=auto` fetches it) only for `make test` and `make workflowcheck`.
+Prerequisites: **Docker** with Compose v2 (~1.7 GB of images, ~1 GB of RAM), and nothing else —
+every process runs in the stack, Go compiled into its images and the UI served from the `node`
+one. **Go** 1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an older Go the default
+`GOTOOLCHAIN=auto` fetches it) is only for `make test` and `make workflowcheck`, and **Node** 20+
+only if you want to run `npm` against `web/` yourself.
 
 Configuration defaults come from `.env.example`, so a fresh checkout needs no copy step. Copy it
 to `.env` only when you want local overrides.
@@ -30,13 +31,10 @@ to `.env` only when you want local overrides.
 # 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
 #    namespace and search-attribute bootstrap, then the workflow worker and the
 #    HTTP API, then eighteen demo customers, six per tier, including the
-#    interesting edge cases. Takes a minute the first time, since it compiles the
-#    Go services into their images on the way up.
+#    interesting edge cases, and the React UI. Takes a couple of minutes the
+#    first time: it compiles the Go services into their images and installs and
+#    typechecks the UI on the way up.
 make up
-
-# 2. The React UI on :5173, in its own terminal.
-#    Installs dependencies and typechecks on the way up, so the first run is slower.
-make web
 ```
 
 That's everything up. Where it all is:
@@ -48,10 +46,11 @@ That's everything up. Where it all is:
 | Temporal UI | <http://localhost:8080> |
 | Temporal gRPC | `localhost:7233`, namespace `rewards` |
 
-Neither the worker nor the API has a terminal of its own — both are Compose services, so
-`make worker-logs` / `make api-logs` tail them, and `make worker` / `make api` rebuild and
-restart them after a code change. The seed is a Compose one-shot off the same image. Only the
-Vite dev server still runs on the host, which is why `make up` needs Docker and nothing else.
+Nothing here has a terminal of its own — the worker, the API and the Vite dev server are all
+Compose services, so `make worker-logs` / `make api-logs` / `make web-logs` tail them, and
+`make worker` / `make api` rebuild and restart them after a code change. The UI needs no restart:
+`web/` is bind-mounted, so edits hot-reload. The seed is a Compose one-shot off the same image as
+the worker and API.
 
 `make test` runs the Go unit tests and needs neither Docker nor a running server. `make down`
 stops the stack and keeps the data; `make destroy` deletes the volumes too.
@@ -84,7 +83,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
 | `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
 | `make api` / `api-logs` / `api-stop` | the same three for the HTTP API on `:8081` |
-| `make web` | install, typecheck/build, and serve the UI on `:5173` |
+| `make web` / `web-logs` / `web-stop` | restart / tail / stop the UI on `:5173` |
 | `make test` | Go unit tests, no Docker needed |
 | `make workflowcheck` | static determinism check on workflow code, no Docker needed |
 | `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |
@@ -95,8 +94,8 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
 `.env.example` to `.env.beta`, set a different `COMPOSE_PROJECT_NAME` and bump every `*_PORT`,
 then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
-and volumes, and `make web ENV=.env.beta` serves on beta's `WEB_PORT`, proxying to beta's API
-and linking to beta's Temporal UI.
+and volumes — beta's UI serves on beta's `WEB_PORT`, proxying to beta's API and linking to beta's
+Temporal UI.
 Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
 on one stack is much cheaper if you only need isolated workflows.
 
@@ -147,8 +146,8 @@ development.
 
 The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
 deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
-the one that survives into production. `make web` sets `VITE_API_PROXY_TARGET` from the selected
-env file, so the UI follows `API_PORT` and a second stack proxies to its own API. See
+the one that survives into production. The `web` service proxies to the API over the compose
+network, so a second stack's UI reaches its own API without either one publishing a port. See
 [FINDINGS.md](docs/FINDINGS.md#the-go-api-sends-no-cors-headers).
 
 ## Things worth seeing
