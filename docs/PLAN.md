@@ -22,7 +22,7 @@ effect — see [§8](#8-inspecting-postgres-and-elasticsearch).
 | Stack | Go worker + Go HTTP API + React/TypeScript (Vite) UI |
 | Visibility store | Elasticsearch, only. Postgres is persistence only — we care about it for how *workflows* are stored, not as a visibility backend |
 | Audit log durability | Namespace retention **1 hour** (the platform floor; 20m proved impossible — see [§6.3](#63-truncation-is-the-feature)); continue-as-new input carries running totals; UI renders as much history as survives plus an explicit truncation notice. `make reap` forces truncation on demand |
-| Deactivate | `CancelWorkflow` (graceful), not Terminate |
+| Deactivate | Soft — `deactivate` Update sets a flag; execution stays Running. Re-enroll restores the balance. Out-of-band `CancelWorkflow` is ops-only ([§3.6](#36-soft-deactivation)) |
 | Add points | Update (not Signal), so the UI gets synchronous success/failure |
 | Continue-as-new | After **3** successful point-add updates (hardcoded; production should use `GetContinueAsNewSuggested()` — see [§3.5](#35-continue-as-new-after-3-updates)) |
 | Datastore inspection | An explicit POC goal — tooling and docs for looking inside both stores ([§8](#8-inspecting-postgres-and-elasticsearch)) |
@@ -129,6 +129,10 @@ type CustomerState struct {
     // Levels we've already sent a promotion notification for. Guards against
     // at-least-once Activity delivery re-notifying after a replay. See §3.7.
     NotifiedLevels []string
+
+    // Soft leave. Zero value (false) means active — including continue-as-new
+    // payloads from before this field existed. See §3.6.
+    Deactivated bool
 }
 ```
 
@@ -151,9 +155,10 @@ and §6.3 needs it to quantify how much of the audit log has been reaped.
 Two things follow that are worth being explicit about, since both are places a reviewer will
 reasonably expect different behaviour:
 
-- **Re-enrollment starts at zero** (§3.6) is the only way a balance ever decreases, and it does
-  so by starting a *new* execution rather than by mutating one — the old customer's final
-  balance is simply gone with them.
+- **Product leave does not reset the balance.** Soft deactivation ([§3.6](#36-soft-deactivation))
+  keeps the execution Running with `Deactivated` set; re-enrollment clears the flag and restores
+  the same points. The only way a balance ever decreases is an *ops* cancel that closes the
+  execution, after which a fresh Start is a new enrollment at zero.
 - **Tier demotion cannot happen** through normal operation. Since tiers are derived from a
   monotonic balance (§3.2), a customer's tier is monotonic too. The only way to demote is to
   raise a threshold, which retroactively demotes everyone at once.
@@ -227,8 +232,9 @@ program would want an explicitly stored, monotonic "achieved tier."
 | Kind | Name | Signature |
 |---|---|---|
 | Update | `addPoints` | `AddPointsRequest{Amount int, Reason string} → AddPointsResult{Balance int, Level string, EventID string}` |
-| Query | `getStatus` | `→ CustomerStatus{CustomerID, Name, Email, Points, Level, NextTierAt, EnrolledAt, LifetimeEarnEvents, Generation}` |
-| Cancellation | — | graceful "leave the program" |
+| Update | `deactivate` | `→ DeactivateResult{Changed bool}` — soft leave; idempotent |
+| Update | `reactivate` | `ReactivateRequest{Name, Email} → ReactivateResult{Changed bool, Status CustomerStatus}` — restore membership |
+| Query | `getStatus` | `→ CustomerStatus{…, Active bool, …}` — `Active` is `!Deactivated` |
 
 ### 3.4 Validation — and a deliberate split
 
@@ -387,18 +393,28 @@ into recorded history, which is precisely the shape that causes the non-determin
 should do instead is both simpler and harder to misuse than a switch inviting people to change
 it at runtime.
 
-### 3.6 Deactivation via cancel
+### 3.6 Soft deactivation
 
-`client.CancelWorkflow(ctx, "customer-<id>", "")`. The pending `workflow.Await` returns a
-cancelled error, `handleLeave` records the departure and returns `ctx.Err()`, and the
-execution closes as `Canceled`.
+**Done.** Product leave is an Update, not a cancellation. `deactivate` sets
+`CustomerState.Deactivated = true`, upserts `RewardsActive = false`, arms the departure
+notification, and returns. The execution stays `Running`. `reactivate` clears the flag,
+optionally refreshes name/email, upserts `RewardsActive = true`, and returns the same balance
+the customer left with. The audit timeline shows a `deactivated` row followed by a
+`reactivated` one — there is no closed run in between.
 
-Cancel, not Terminate: Terminate skips workflow code entirely, so no cleanup runs and the
-departure is never recorded by our own code.
+That is a deliberate reversal of the earlier cancel-based design. Cancel closed the execution,
+freed the workflow ID, and made re-enrollment a fresh Start at zero — irreversible in a way
+"deactivate" does not imply, and dependent on history that `make reap` usually deletes. Soft
+leave keeps membership as workflow state, so restore does not need the old run's history at
+all. Membership for the list is `RewardsActive`, not `ExecutionStatus`: a soft-left customer
+is still `Running`.
 
-Re-enrollment works because the workflow ID is free once the execution closes. A double-create
-against a *running* customer should return a clean 409 rather than silently attaching to the
-existing run — which takes **two** settings on `StartWorkflowOptions`, not one:
+`DELETE /api/customers/{id}` is the deactivate Update (idempotent: already-deactivated →
+`Changed: false`). `POST /api/customers` against a soft-deactivated ID reactivates rather than
+409ing; against an *active* running customer it still 409s.
+
+A double-create against a *running active* customer should return a clean 409 rather than
+silently attaching — which takes **two** settings on `StartWorkflowOptions`, not one:
 
 ```go
 WorkflowIDConflictPolicy:                 enums.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
@@ -416,12 +432,10 @@ The `temporal` CLI hides this too: `workflow start --id-conflict-policy Fail` ag
 running execution prints `Running execution:` with the existing run ID and **exits 0**. So the
 CLI cannot be used to verify this behaviour — check it through the SDK.
 
-**Re-enrolling starts over at zero points and basic tier** — decided, not a default. A
-returning customer is simply a fresh enrollment that happens to reuse the workflow ID, so
-there is no "restore the prior balance" path to build and no dependency on the old run's
-history (which after reaping is usually gone anyway). The UI should say so at
-the point of deactivation, since it makes the action irreversible in a way "deactivate"
-doesn't imply on its own.
+**Out-of-band cancel is the ops path, not the product one.** `temporal workflow cancel` (or
+Terminate) still closes the execution. Re-enrolling that ID is a fresh Start at zero — the
+old balance left with the closed run. The UI should say that product deactivate *preserves*
+points and that only an operator wipe resets them. `make reset` is the clean slate for demos.
 
 ### 3.7 Tier promotion notifications
 
@@ -502,10 +516,11 @@ knowing, and is recorded at [§12.6](#12-sharp-edges); it is simply no longer lo
 
 One detail the sketch keeps for a reason:
 
-- **Delivery runs on a disconnected context.** On the workflow's own context, deactivating a
-  customer mid-delivery cancels a promotion they had already earned. A promotion is not unmade
-  by the customer leaving a moment later, so `handleLeave` delivers any armed promotion before
-  sending the departure notice.
+- **Delivery runs on a disconnected context.** On the workflow's own context, a cancellation
+  mid-delivery would cancel a promotion the customer had already earned. Soft deactivate does
+  not cancel the workflow, but the disconnected context stays: the main loop delivers any
+  armed promotion before the departure notice, and neither delivery should die with an
+  operator cancel arriving mid-flight.
 - **The Activity's retries must be bounded.** The default policy retries forever, and the
   continue-as-new guard waits for the notifier to go idle, so an unreachable notification
   provider would stop the customer's workflow rolling for as long as it stayed down. A cosmetic
@@ -543,10 +558,9 @@ One row it does *not* produce is the departure notice — see [§12.31](#12-shar
 
 #### Reuse for departure
 
-`handleLeave` (§3.6) sends the same Activity with `Event: "departed"`, which removes the need
-for the separate cleanup Activity the plan previously carried. It runs on a disconnected
-context, since by then `ctx` is already cancelled — a compact demonstration of why
-`workflow.NewDisconnectedContext` exists.
+Soft deactivate arms a departure notice; the main loop delivers it with
+`Event: "departed"` on a disconnected context — the same Activity as promotions, no separate
+cleanup Activity. An out-of-band cancel skips that path entirely (see [§3.6](#36-soft-deactivation)).
 
 ---
 
@@ -564,9 +578,12 @@ Registered once at bootstrap, before any workflow starts. Using the typed API
 | `RewardsPoints` | Int | on every balance change |
 | `RewardsEnrolledAt` | Datetime | at start of each run, from carried state |
 | `RewardsGeneration` | Int | on continue-as-new |
+| `RewardsActive` | Bool | at start `true`; flipped by deactivate / reactivate |
 
-Built-ins we get free and will use: `ExecutionStatus` (Running vs Canceled → active vs
-deactivated), `StartTime`, `CloseTime`, `WorkflowId`, `RunId`.
+Built-ins we get free and will use: `ExecutionStatus` (for excluding `ContinuedAsNew`
+generations and for ops-closed runs), `StartTime`, `CloseTime`, `WorkflowId`, `RunId`.
+**Membership is not `ExecutionStatus`.** Soft-left customers stay `Running`; the list filters
+on `RewardsActive`.
 
 ### Visibility indexes Runs, not customers
 
@@ -586,8 +603,9 @@ Every list and count must exclude rolled-over generations:
 ExecutionStatus != 'ContinuedAsNew'
 ```
 
-That leaves exactly the current generation whatever its final state — `Running` for an active
-customer, `Canceled` for a departed one, `Failed` for an enrollment that never validated.
+That leaves exactly the current generation whatever its final state — `Running` for both
+active and soft-deactivated customers (tell them apart with `RewardsActive`), `Canceled` /
+`Terminated` for an ops-closed run, `Failed` for an enrollment that never validated.
 `IN ('Running','Canceled')` looks equivalent and silently drops that last group: 45 against 47
 on the same data.
 
@@ -597,7 +615,7 @@ deliverable rather than a nice-to-have. No API test would have found it, because
 faithfully reporting what it was asked for.
 
 This powers the customer list page's **filtering**:
-`RewardsLevel = "gold" AND ExecutionStatus = "Running"`.
+`RewardsLevel = "gold" AND ExecutionStatus = "Running" AND RewardsActive = true`.
 
 **It cannot do the sorting.** `ORDER BY` is rejected outright by server 1.29.7 —
 `ORDER BY clause is not supported` — and not just for custom attributes: it is refused for
@@ -607,8 +625,8 @@ stack, so this is the platform's answer, not a misconfiguration.
 
 What still works, and is enough: equality and range filters on custom attributes
 (`RewardsPoints >= 500`), `Text` partial match on `CustomerName`, `Keyword` exact match on
-`CustomerEmail`, and `ExecutionStatus` for active-vs-deactivated. Results come back in the
-server's default order (most recent first).
+`CustomerEmail`, `RewardsActive` for active-vs-deactivated, and `ExecutionStatus` to exclude
+rolled-over generations. Results come back in the server's default order (most recent first).
 
 The consequence lands on Phase 4 and Phase 8: **sorting must happen client-side**, which is
 only equivalent to server-side sorting when the full filtered result set fits in one page.
@@ -631,12 +649,12 @@ Two notes:
 ## 5. HTTP API
 
 ```
-POST   /api/customers              → ExecuteWorkflow (conflict policy FAIL)     Phase 3
-GET    /api/customers?q=<sql>      → ListWorkflow + CountWorkflow                Phase 3
-GET    /api/customers/{id}         → QueryWorkflow(getStatus) + Describe        Phase 3
-POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous     Phase 3
-DELETE /api/customers/{id}         → CancelWorkflow                             Phase 3
-GET    /api/customers/{id}/audit   → history crawl (§6)                         Phase 5
+POST   /api/customers              → ExecuteWorkflow, or reactivate if soft-deactivated   Phase 3
+GET    /api/customers?q=<sql>      → ListWorkflow + CountWorkflow                          Phase 3
+GET    /api/customers/{id}         → QueryWorkflow(getStatus) + Describe                  Phase 3
+POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous               Phase 3
+DELETE /api/customers/{id}         → UpdateWorkflow(deactivate), soft leave               Phase 3
+GET    /api/customers/{id}/audit   → history crawl (§6)                                   Phase 5
 ```
 
 The API holds a Temporal Client and nothing else — no database, no cache, no ORM. That is
@@ -685,13 +703,14 @@ top-tier customer with no next tier, a customer with an empty timeline, a deacti
 a truncated audit log, a customer sitting under the points cap so handler rejections are
 reachable, and the ~400 ms visibility lag on newly created customers.
 
-**A closed execution answers Queries perfectly well.** Temporal replays its history to serve
-them, so a deactivated customer returns full state — balance, tier, `LifetimeEarnEvents`, the
-lot. Worth stating because assuming the opposite is easy and the cost is silent: Phase 3
-initially short-circuited on status and fell straight to search attributes, which carry no
-`LifetimeEarnEvents`, so departed customers read back missing a field that had been available
-all along. The assumption was never tested because the code path that would have tested it was
-skipped. Corrected once measured.
+**A soft-deactivated execution answers Queries perfectly well** — it is still Running, and the
+Query returns full state including `Active: false`, balance, tier, and `LifetimeEarnEvents`.
+An *ops-closed* execution (out-of-band cancel) also answers Queries via history replay, so the
+same fields are available until the run is reaped. Worth stating because assuming the opposite
+is easy and the cost is silent: Phase 3 initially short-circuited on status and fell straight
+to search attributes, which carry no `LifetimeEarnEvents`, so departed customers read back
+missing a field that had been available all along. The assumption was never tested because the
+code path that would have tested it was skipped. Corrected once measured.
 
 The search-attribute fallback survives, on the degraded path only: replay needs a worker, so a
 closed customer with none would otherwise 503 despite the execution record already holding most
@@ -891,11 +910,12 @@ an intact audit log is visible side by side.
 
 ### 6.4 Consequences to expect
 
-- **Deactivated customers eventually vanish from the list**, at the 1 h mark or on the next
-  reap. Their workflow is closed, so it gets reaped and the detail page starts returning 404.
-  Running executions are exempt, so this only affects deactivated customers — and it is why
-  the reap query filters on status.
-- The reaping timer is jittered, so natural deletion lands somewhere in
+- **Soft-deactivated customers do not vanish on retention.** They stay `Running`, so neither
+  the 1 h reaper nor `make reap` (which filters `ExecutionStatus != "Running"`) touches them.
+  What *does* get reaped are rolled-over generations and any ops-closed (`Canceled` /
+  `Terminated`) executions. The list keeps showing soft-left customers via
+  `RewardsActive = false` until someone reactivates or an operator runs `make reset`.
+- The reaping timer is jittered, so natural deletion of closed runs lands somewhere in
   `[retention, retention + jitter]` rather than exactly on the hour.
   `history.retentionTimerJitterDuration` **is** a registered key (verified against the 1.29.7
   binary and by the server logging it applied), and dev config pins it to 1m.
@@ -919,11 +939,11 @@ an intact audit log is visible side by side.
   |---|---|---|
   | active, intact history | 200 | 200, `truncated: false` |
   | active, old generations reaped | 200 | 200, `truncated: true`, e.g. shown 1 of 100 |
-  | deactivated, not yet reaped | 200 | 200, ending in a `deactivated` row |
+  | soft-deactivated, not reaped | 200 | 200, ending in a `deactivated` row |
   | re-enrolled after leaving | 200 | 200, `deactivated` then `reactivated`, balance carried through |
-  | reaped entirely | 404 | 404 |
+  | ops-closed then fully reaped | 404 | 404 |
 
-  The middle row is the demo: `make reap WF=customer-x` on an *active* customer leaves the
+  The middle active row is the demo: `make reap WF=customer-x` on an *active* customer leaves the
   running generation and deletes every closed one, so the header still reads 100 lifetime
   point-adds while the timeline beneath it can only show the one that survives.
 
@@ -1141,7 +1161,10 @@ Four things worth demonstrating, because each one explains a decision elsewhere 
 3. **`visibility_tasks` drains asynchronously.** Add points and poll this table fast enough
    and you catch rows in flight. This *is* the read-after-write lag from
    [§7.5](#75-cutting-the-visibility-lag) — not an abstract caveat but a queue you can watch,
-   and a direct way to confirm the flush-interval tuning actually did something.
+   and a direct way to confirm the flush-interval tuning actually did something. At rest the
+   table is empty; a single `SELECT count(*)` after the fact usually reports 0 even though the
+   queue was used — `make write-trace` polls alongside the write so the demo does not look
+   broken ([§12.20](#12-sharp-edges)).
 4. **Retention deletion is visible at the storage layer.** After a continue-as-new, watch the
    closed run's rows disappear from `history_node` after a `make reap` (or an hour). That is the
    audit-log truncation from [§6.3](#63-truncation-is-the-feature) happening in the database
@@ -1156,10 +1179,13 @@ One index, `temporal_visibility_v1_dev` by default. One document per Workflow Ex
 keyed by run ID.
 
 The contrast with §8.1 is the point. Postgres stores *what happened*, losslessly and
-unqueryably. ES stores *what is currently true and worth filtering on* — our seven search
+unqueryably. ES stores *what is currently true and worth filtering on* — our search
 attributes as real named fields (`RewardsLevel` is literally a keyword field called
-`RewardsLevel`) plus the built-ins, and nothing else. No history, no state blob, no audit
-trail. It is a lossy index built for one job.
+`RewardsLevel`, `RewardsActive` a boolean) plus the built-ins, and nothing else. No history,
+no state blob, no audit trail. It is a lossy index built for one job.
+
+**One document per Run, not per Workflow ID** — already covered in [§4](#4-search-attributes);
+after continue-as-new, a bare `WorkflowId` query returns every retained generation.
 
 Canned queries to ship:
 
@@ -1167,25 +1193,28 @@ Canned queries to ship:
 # The index mapping — see our attributes as first-class fields
 curl -s "$ES/temporal_visibility_v1_dev/_mapping?pretty"
 
-# One customer's visibility document
+# One customer's visibility document(s) — expect one per retained generation
 curl -s "$ES/temporal_visibility_v1_dev/_search?pretty" \
   -H 'Content-Type: application/json' \
   -d '{"query":{"term":{"WorkflowId":"customer-abc"}}}'
 
-# What the customer list page is really asking
+# What the customer list page is really asking (filter in ES; sort is client-side in the API)
 curl -s "$ES/temporal_visibility_v1_dev/_search?pretty" \
   -H 'Content-Type: application/json' \
   -d '{"query":{"bool":{"filter":[{"term":{"RewardsLevel":"gold"}},
-      {"term":{"ExecutionStatus":"Running"}}]}},"sort":[{"RewardsPoints":"desc"}]}'
+      {"term":{"ExecutionStatus":"Running"}},
+      {"term":{"RewardsActive":true}}]}},"sort":[{"RewardsPoints":"desc"}]}'
 
 # Index size for our handful of customers — makes the ES-is-overkill point concretely
-curl -s "$ES/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size"
+curl -s "$ES/_cat/indices/temporal_visibility*?v&h=index,docs.count,docs.deleted,store.size"
 ```
 
-Also worth capturing: the document for a **closed** (deactivated) customer, and then the same
-query again after `make reap`. ES does not decide to delete that document
-on its own — it goes because the source in Postgres went. That is the projection relationship
-made concrete.
+Also worth capturing: the document for a **soft-deactivated** customer (`Running` +
+`RewardsActive: false`), and a rolled-over generation before/after `make reap`. ES does not
+decide to delete documents on its own — they go because the source in Postgres went. That is
+the projection relationship made concrete. After reap, prefer `_search` / `_count` over
+`_cat/indices` `docs.count`, which can lag until merges clear soft-deletes
+([§12.21](#12-sharp-edges)).
 
 ### 8.3 Following one write all the way through
 
@@ -1220,12 +1249,11 @@ Vite + React + TypeScript in `web/`. **Done** — three screens against the real
 (`make api` + Vite proxy).
 
 - **Customer list** — table backed by `ListWorkflow`, capped at five rows with no pagination
-  ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status toggle
-  (Running/Canceled was the early visibility vocabulary; soft-inactive uses `RewardsActive`),
-  and a raw search-attribute query box so we can show
-  the same query working in the Temporal UI. This is where search attributes earn their keep —
-  and where the design has to be honest that filtering, not browsing, is what the visibility
-  store supports.
+  ([§5.1](#51-the-contract-is-frozen-ahead-of-the-endpoints)). Tier filter chips, a status
+  toggle driven by `RewardsActive` (not `ExecutionStatus` — soft-left customers are still
+  `Running`), and a raw search-attribute query box so we can show the same query working in
+  the Temporal UI. This is where search attributes earn their keep — and where the design has
+  to be honest that filtering, not browsing, is what the visibility store supports.
 
   When more matched than fit, render **"Showing 5 of 23 — filter to find additional results"**
   (or "of many" when `Total` is `-1`). Sorting is offered only when `Complete`; otherwise it
@@ -1233,12 +1261,13 @@ Vite + React + TypeScript in `web/`. **Done** — three screens against the real
   sample.
 - **Create customer** — name + email + `customerId` (auto-slugged from the name, editable),
   POSTs, redirects to detail. The ID field is required by `EnrollRequest` even though an earlier
-  draft of this section omitted it.
+  draft of this section omitted it. Re-POSTing a soft-deactivated ID restores that customer's
+  balance rather than starting over.
 - **Customer detail** — tier badge, points, progress bar to next tier (`nextTierAt == 0` means
   none — do not divide by it), enrollment date; an add-points form showing synchronous success
   or the rejection message (hidden when deactivated); a Deactivate button with confirmation and
-  an explicit note that re-enrollment starts at zero; and the audit timeline with generation
-  dividers, notification rows, and the truncation notice
+  an explicit note that **re-enrollment restores their points**; and the audit timeline with
+  generation dividers, notification rows, and the truncation notice
   ("Showing N of M point events. Earlier history has been deleted.").
 
 **The one UI gotcha that will bite:** Elasticsearch visibility is *asynchronous*, so after
@@ -1292,13 +1321,13 @@ browser — use the proxy. Findings for §12 live in `web/NOTES.md`.
 | # | Deliverable | Notes |
 |---|---|---|
 | 0 | Compose stack, dynamic config, bootstrap, Makefile, `.env.example`, `make verify-config` | **Done.** 20m retention proved impossible; 1h floor plus `make reap` instead — §6.3 |
-| 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | Drive it entirely from `temporal` CLI before any UI exists |
+| 1 | Workflow + worker: enroll, `addPoints` update, `getStatus` query, cancel, tier derivation, unit tests | **Done.** Drivable from the `temporal` CLI before any UI existed |
 | 2 | Continue-as-new after 3 adds, carrying totals | **Done.** Includes the `AllHandlersFinished` guard, though it is unfalsifiable until Phase 6 gives a handler something to block on |
 | 3 | Go HTTP API + error mapping | **Done.** Error shapes captured against a real server, not guessed — several plan assumptions were wrong; see [§5](#5-http-api) |
 | 4 | Search attributes end to end; list + filter | **Done.** Same query verified identical in the API and the Temporal CLI |
 | 5 | History crawl + truncation detection | **Done.** §6.3 predicted the wrong error type for a reaped run, which had truncation surfacing as a 500 — see [§6.3](#63-truncation-is-the-feature) |
 | 6 | `NotifyCustomer` Activity: unannounced-tier detection, main-loop delivery, `NotifiedLevels` dedup and retry, departure reuse (§3.7) | **Done.** The dropped-notification test was written first and did fail — [§12.6](#12-sharp-edges). Audit rows appeared with no change to the Phase 5 crawl |
-| 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings for §12 in `docs/DATASTORES.md` ("Findings for PLAN.md") — integrator to splice |
+| 7 | Datastore inspection: `DATASTORES.md`, `deploy/inspect/`, `make psql` / `make es`, the end-to-end write trace | **Done.** Findings spliced into [§8](#8-inspecting-postgres-and-elasticsearch) and [§12](#12-sharp-edges) |
 | 8 | React UI, all three screens | **Done.** See `web/` and `web/NOTES.md` |
 | 9 | Replay test, seed script, README | **Done.** The replay test caught Phase 6 as a breaking change for every running customer, fixed with `GetVersion` — [§12.11](#12-sharp-edges) |
 
@@ -1379,7 +1408,7 @@ Things not in the original brief that will come up.
    to make `ExecuteWorkflow` return an error — it also needs
    `WorkflowExecutionErrorWhenAlreadyStarted: true`, or it returns the existing run and a nil
    error. The `temporal` CLI hides it as well, exiting 0. Confirmed in Phase 1;
-   see [§3.6](#36-deactivation-via-cancel).
+   see [§3.6](#36-soft-deactivation).
 8. **`ORDER BY` is not supported in visibility queries**, for custom *or* built-in attributes,
    even on Elasticsearch visibility. Filtering is server-side; sorting is the caller's problem,
    and is only correct when the whole filtered set fits one page. Confirmed in Phase 1 on
@@ -1550,12 +1579,11 @@ Elasticsearch 7.17.27; details and the queries that show them are in
 
 29. **"Status" means two different things, in two different vocabularies.** The visibility
     query language says `ExecutionStatus = 'Running' | 'Canceled'`; the API's DTOs say
-    `status: "active" | "deactivated"`. Same concept, same English word, no overlap in
-    spelling — and they are not interchangeable in either direction, because one is a Temporal
-    built-in search attribute and the other is our projection of it. A status filter in the UI
-    has to translate. The mismatch is not accidental: a workflow cannot record its own closure
-    ([§3.6](#36-deactivation-via-cancel)), so the API is deriving a rewards-domain word from a
-    platform-domain one.
+    `status: "active" | "deactivated"`. Same English word, no overlap in spelling — and they
+    are not interchangeable. Under soft deactivation ([§3.6](#36-soft-deactivation)) membership
+    is `RewardsActive`, so a status filter in the UI has to translate `active` ↔
+    `RewardsActive = true` (and still exclude `ContinuedAsNew`). `ExecutionStatus` alone cannot
+    answer "is this customer still in the program?"
 
 30. **The Go API sends no CORS headers; only the mock does.** So pointing a browser at it with
     a cross-origin base URL fails, and `make web` proxies `/api` through Vite instead
@@ -1676,12 +1704,12 @@ Elasticsearch 7.17.27; details and the queries that show them are in
     notification. Measured: DELETE returned in 13 ms, the execution closed 75 ms later.
 
     Anything that deactivates and then re-enrolls has to wait, because enrollment fails on
-    conflict ([§3.6](#36-deactivation-via-cancel)) and 60 ms is plenty of window. `make seed
+    conflict ([§3.6](#36-soft-deactivation)) and 60 ms is plenty of window. `make seed
     FRESH=1` did not, and skipped 8 of 9 customers with *"already enrolled and active"* — the
     one thing `FRESH=1` existed to prevent. Raised on PR #16.
 
     **Both the race and the flag are now moot**, which is worth recording rather than deleting.
-    Soft deactivation ([§3.6](#36-deactivation-via-cancel)) means the workflow never closes, so
+    Soft deactivation ([§3.6](#36-soft-deactivation)) means the workflow never closes, so
     there is no window to race — and no way to reset a customer through the API at all, since
     re-enrolling restores their points. `FRESH=1` was removed; `make reset` is the clean slate.
     The finding survives because the property it describes does: an operation that returns once
