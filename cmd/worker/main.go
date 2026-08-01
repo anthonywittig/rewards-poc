@@ -9,6 +9,8 @@ import (
 	"os"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/activities"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/worker"
@@ -39,10 +41,21 @@ func main() {
 	defer c.Close()
 
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
-	w.RegisterWorkflow(rewards.CustomerRewardsWorkflow)
-	// Registered under its function name, which is what rewards.ActivityNotifyCustomer
-	// holds and what the audit crawl matches on to render notification rows.
-	w.RegisterActivity(rewards.NotifyCustomer)
+	w.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
+
+	// Activities are registered as a struct, which is where dependency injection
+	// happens: whatever an Activity needs to reach the outside world is assembled
+	// here, once, and every exported method on the struct becomes an Activity
+	// named for the method. NotifyCustomer therefore registers as
+	// "NotifyCustomer" -- which is what rewards.ActivityNotifyCustomer holds, what
+	// the workflow schedules by, and what the audit crawl matches on to render
+	// notification rows.
+	//
+	// LogNotifier is the POC's delivery. A real provider is a different value
+	// here and no change anywhere else.
+	w.RegisterActivity(&activities.Activities{
+		Notifier: activities.LogNotifier{},
+	})
 
 	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
 		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)

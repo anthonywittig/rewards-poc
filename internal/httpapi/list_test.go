@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
+	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	"go.temporal.io/api/serviceerror"
 )
@@ -17,7 +18,7 @@ import (
 // nothing -- no error, just an empty page. Derive the registered name the same
 // way the SDK does and compare.
 func TestWorkflowTypeNameMatchesRegistration(t *testing.T) {
-	fn := runtime.FuncForPC(reflect.ValueOf(rewards.CustomerRewardsWorkflow).Pointer()).Name()
+	fn := runtime.FuncForPC(reflect.ValueOf(workflows.CustomerRewardsWorkflow).Pointer()).Name()
 	registered := fn
 	if i := strings.LastIndex(fn, "."); i >= 0 {
 		registered = fn[i+1:]

@@ -19,7 +19,7 @@ WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
 STACK     = $(shell grep -E '^COMPOSE_PROJECT_NAME=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
-        worker worker-stop workers api api-stop test enroll status add deactivate reactivate \
+        worker worker-stop workers api api-stop test workflowcheck enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -142,6 +142,28 @@ write-trace: $(ENV) ## Trace one addPoints through Postgres + ES (make write-tra
 
 test: ## Run the Go unit tests
 	go test ./...
+
+# The Go SDK has no workflow sandbox: `time.Now()` in workflow code compiles,
+# passes vet, and passes the unit tests, then wedges a customer on replay weeks
+# later. workflowcheck is the static analysis that catches it -- it walks the
+# call graph from every function taking a workflow.Context and flags anything
+# reaching a non-deterministic call.
+#
+# Pinned rather than @latest so a tool upgrade is a commit and not a surprise.
+#
+# GOTOOLCHAIN is derived from the repo's own effective toolchain, and is
+# load-bearing. workflowcheck type-checks our dependencies in-process, so a
+# binary built with an older Go than they require fails on every one of them
+# ("package requires newer Go version") rather than on anything real -- and the
+# system Go here is older than the go.mod toolchain the repo actually builds
+# with. Deriving it means this keeps working when that directive moves.
+WORKFLOWCHECK_VERSION = v0.5.0
+WORKFLOWCHECK = $(shell go env GOPATH)/bin/workflowcheck
+
+workflowcheck: ## Static determinism check on workflow code
+	@GOTOOLCHAIN=$$(go env GOVERSION) \
+	  go install go.temporal.io/sdk/contrib/tools/workflowcheck@$(WORKFLOWCHECK_VERSION)
+	$(WORKFLOWCHECK) ./...
 
 # The trailing stack=… argument is ignored by the program (it reads env vars
 # only); it exists so this stack's processes are identifiable in ps output, and
