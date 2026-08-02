@@ -893,13 +893,26 @@ initially short-circuited on status and fell straight to search attributes, whic
 all along. The assumption was never tested because the code path that would have tested it was
 skipped.
 
-The search-attribute fallback survives, on the degraded path only: replay needs a worker, so a
-closed customer with none would otherwise 503 despite the execution record already holding most
-of the page. Falling back beats failing for someone who cannot change anyway.
+**The search-attribute fallback is gone, and removing it was the simplification.** It survived
+for a while on the degraded path only: replay needs a worker, so a closed customer with none
+would otherwise 503 despite the execution record already holding most of the page, and falling
+back seemed to beat failing for someone who cannot change anyway.
 
-It does **not** cover a reaped customer. `make reap` deletes the whole execution record, search
-attributes included, so those fail at `Describe` and surface as a 404 rather than degrading.
-Truncation detection is the crawl's job, not this endpoint's.
+What it actually shipped was a second way to produce a customer detail — one assembled from a
+store that [lags writes](#visibility-lag) and cannot carry `LifetimeEarnEvents` at all. The
+result was a page that looked ordinary while being stale and short a field, announced by a log
+line nobody reads. The same instinct had already caused the bug two paragraphs up. `GET
+/api/customers/{id}` now has exactly one source, and 503s when it cannot be reached.
+
+The same went for the enroll conflict check, which guessed active-versus-vacant from visibility
+so a duplicate enroll stayed a 409 with the worker down. That is the one question whose wrong
+answer is destructive — enroll *reactivates* on a false, rewriting a live customer's name and
+email — and it was being answered by the laggiest read available. Failing cannot do that, so the
+503 is both the honest answer and the safe one.
+
+Neither ever covered a reaped customer: `make reap` deletes the whole execution record, search
+attributes included, so those fail at `Describe` and surface as a 404. Truncation detection is
+the crawl's job, not this endpoint's.
 
 ### Deactivation is a request, not a completion
 
