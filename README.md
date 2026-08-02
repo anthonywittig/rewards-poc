@@ -100,6 +100,13 @@ on one stack is much cheaper if you only need isolated workflows.
 ## The HTTP API
 
 ```sh
+# No customerId: the server derives one from the name (here, ada-lovelace) and
+# returns it. Signing up twice under one name is the same customer, so the
+# second attempt is a 409 -- or a rejoin, if they had left.
+curl -XPOST localhost:8081/api/customers \
+  -d '{"name":"Ada Lovelace","email":"ada@example.com"}'
+
+# Sending one picks the ID yourself, whatever the name says.
 curl -XPOST localhost:8081/api/customers \
   -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'
 
@@ -130,7 +137,7 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
 | | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
+| 400 | `invalid_request` | malformed body, missing `email`, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
 | 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |

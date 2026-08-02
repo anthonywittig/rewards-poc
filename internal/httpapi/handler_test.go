@@ -53,6 +53,9 @@ type stubTemporal struct {
 	deactivate   *rewards.DeactivateResult
 	reactivate   *rewards.ReactivateResult
 
+	// Workflow IDs passed to ExecuteWorkflow, in order.
+	startIDs []string
+
 	// Update names sent, in order. Nil means none -- which is the assertion
 	// for the paths that must never reach the workflow at all.
 	updates []string
@@ -72,12 +75,13 @@ func (s *stubTemporal) DescribeWorkflowExecution(
 }
 
 func (s *stubTemporal) ExecuteWorkflow(
-	context.Context, client.StartWorkflowOptions, any, ...any,
+	_ context.Context, opts client.StartWorkflowOptions, _ any, _ ...any,
 ) (client.WorkflowRun, error) {
+	s.startIDs = append(s.startIDs, opts.ID)
 	if s.startErr != nil {
 		return nil, s.startErr
 	}
-	return &stubRun{id: commonExecution.WorkflowId, runID: commonExecution.RunId}, nil
+	return &stubRun{id: opts.ID, runID: commonExecution.RunId}, nil
 }
 
 func (s *stubTemporal) QueryWorkflow(

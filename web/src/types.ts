@@ -75,7 +75,11 @@ export interface CustomerResponse {
 }
 
 export interface EnrollRequest {
-  customerId: string
+  /**
+   * Omitted by a new signup — the server mints the ID and returns it. Sent only
+   * to re-enroll a customer we already have an ID for (the Rejoin button).
+   */
+  customerId?: string
   name: string
   email: string
 }

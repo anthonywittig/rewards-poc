@@ -61,9 +61,14 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 
 // enroll starts a customer's workflow, or reactivates a soft-deactivated one.
 //
+// The ID is the caller's only when they send one. A signup from the UI does
+// not: it sends a name and an email, and the server derives the ID from the
+// name (rewards.CustomerIDForName).
+//
 // Re-enrollment keeps the existing balance: the workflow ID is still occupied,
 // so we Update rather than Start, and Deactivated flips back to false with
-// Points untouched.
+// Points untouched. That path needs the ID, which is why the endpoint still
+// takes one -- the detail page's Rejoin button sends the ID it is looking at.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -71,14 +76,21 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	req.CustomerID = strings.TrimSpace(req.CustomerID)
-	if req.CustomerID == "" {
-		return badRequest("customerId is required")
-	}
 	if strings.TrimSpace(req.Email) == "" {
 		return badRequest("email is required")
 	}
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
+	}
+	if req.CustomerID == "" {
+		// Derived, not minted: the same name derives the same ID every time, so
+		// a second enrollment under one name falls into the duplicate/rejoin
+		// path below rather than starting a second customer.
+		req.CustomerID = rewards.CustomerIDForName(req.Name)
+		if req.CustomerID == "" {
+			return badRequest("name must contain letters or digits; " +
+				"the customer ID is derived from it")
+		}
 	}
 
 	wfID := rewards.WorkflowID(req.CustomerID)
