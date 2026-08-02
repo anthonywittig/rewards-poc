@@ -210,12 +210,13 @@ go test ./internal/rewards/workflows/ -run TestReplay
 ```
 
 A customer's workflow outlives deploys, so today's code gets replayed against histories recorded
-weeks ago and the commands must match event for event. `internal/rewards/workflows/testdata/pre-notification-*.json`
-are real histories from before the notification Activity existed; replaying them is a rehearsal
-of the deploy that added it, and the first run failed — adding the Activity would have wedged
-every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
-the sharper lesson is that it arrived one commit too late to help executions created by the
-ungated build: **gate a command-changing edit in the same commit that introduces it.**
+weeks ago and the commands must match event for event.
+`internal/rewards/workflows/testdata/run-notification.json` is a real recorded history; an edit
+that changes what the workflow emits — adding an Activity, reordering commands — fails this test
+before it wedges every customer with an open run in production. The production-grade fix for such
+an edit is `workflow.GetVersion`, which this POC deliberately omits: executions here can simply
+be reset, and the gate's markers and replay fixtures were most of what made the workflow hard to
+read.
 
 **The determinism check runs before the replay test can save you.**
 
@@ -334,8 +335,8 @@ internal/rewards/             the domain: types and rules, no Temporal orchestra
     workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
     notify.go                 notification delivery, run from the main loop
     workflow_test.go          unit tests (no Docker required)
-    replay_test.go            deploy rehearsal against recorded histories
-    testdata/                 real histories, including pre-Phase-6 ones
+    replay_test.go            deploy rehearsal against a recorded history
+    testdata/                 a real recorded history
   activities/                 the Activity layer
     notify.go                 NotifyCustomer -- the only side effect in the system
 internal/httpapi/
