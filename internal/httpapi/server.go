@@ -79,6 +79,13 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
+	// Required whether or not the ID is derived from it. A caller who sends
+	// their own customerId would otherwise start a nameless customer, which the
+	// workflow refuses anyway -- as a failed execution rather than this 400.
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		return badRequest("name is required")
+	}
 	if req.CustomerID == "" {
 		// Derived, not minted: the same name derives the same ID every time, so
 		// a second enrollment under one name falls into the duplicate/rejoin

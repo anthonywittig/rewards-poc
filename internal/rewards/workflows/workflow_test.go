@@ -355,6 +355,12 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 		{"empty customerId",
 			func(st *rewards.CustomerState) { st.CustomerID = "" },
 			"does not match workflow ID"},
+		{"empty name",
+			func(st *rewards.CustomerState) { st.Name = "" },
+			"name is required"},
+		{"name is only whitespace",
+			func(st *rewards.CustomerState) { st.Name = "   " },
+			"name is required"},
 		{"seeded above the points cap",
 			func(st *rewards.CustomerState) {
 				st.Points = rewards.PointsCap + 1

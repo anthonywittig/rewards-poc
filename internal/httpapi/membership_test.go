@@ -370,3 +370,32 @@ func (h *stubHandle) Get(_ context.Context, out any) error {
 	}
 	return dc.FromPayloads(p, out)
 }
+
+// A name is required whether or not the ID is derived from it. Sending a
+// customerId is the path that would otherwise slip through -- the derivation is
+// skipped, so nothing else looks at the name, and the customer is started
+// nameless. The workflow refuses that too, but as a failed execution rather
+// than an answer the caller can act on.
+func TestEnroll_BlankNameIsA400EvenWithACustomerID(t *testing.T) {
+	for _, body := range []string{
+		`{"customerId":"ada","name":""}`,
+		`{"customerId":"ada","name":"   "}`,
+		`{"customerId":"ada"}`,
+		`{"name":"   "}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			stub := &stubTemporal{}
+			code, got := postEnroll(t, newTestServer(stub), body)
+
+			if code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", code, got)
+			}
+			if !strings.Contains(got, CodeInvalidRequest) {
+				t.Errorf("code should be %q, got %s", CodeInvalidRequest, got)
+			}
+			if stub.startIDs != nil {
+				t.Errorf("started a nameless customer anyway: %v", stub.startIDs)
+			}
+		})
+	}
+}

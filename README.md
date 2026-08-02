@@ -138,7 +138,7 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
 | | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | malformed body, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
+| 400 | `invalid_request` | malformed body, a missing `name`, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
 | 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |
