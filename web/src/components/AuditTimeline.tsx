@@ -20,7 +20,8 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
                 >
                   <div className="when">{formatWhen(e.at)}</div>
                   <div className="body">
-                    Generation {e.generation} — continue-as-new
+                    [debug] Generation {e.generation} — continue-as-new
+                    workflow started
                   </div>
                 </div>
               )
