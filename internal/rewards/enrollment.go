@@ -26,10 +26,6 @@ func ValidateEnrollment(workflowID string, state *CustomerState) error {
 				state.CustomerID, workflowID, want),
 			ErrTypeInvalidEnrollment, nil)
 	}
-	if state.CustomerID == "" {
-		return temporal.NewNonRetryableApplicationError(
-			"customerId is required", ErrTypeInvalidEnrollment, nil)
-	}
 	// Checked here rather than trusted from the API, for the same reason the
 	// counters below are: this is the only integrity boundary, and a customer
 	// with no name is one the list and the detail page both render as a blank
