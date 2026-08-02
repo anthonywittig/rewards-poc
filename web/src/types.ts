@@ -96,7 +96,6 @@ export interface AddPointsRequest {
 export interface AddPointsResponse {
   balance: number
   level: string
-  eventId: string
 }
 
 export type AuditEntryKind =

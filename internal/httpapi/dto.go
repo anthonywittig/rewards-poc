@@ -67,7 +67,6 @@ type CustomerResponse struct {
 type AddPointsResponse struct {
 	Balance int    `json:"balance"`
 	Level   string `json:"level"`
-	EventID string `json:"eventId"`
 }
 
 // EnrollResponse is what a successful enrollment returns.

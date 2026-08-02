@@ -432,7 +432,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	writeJSON(w, s.log, http.StatusOK, AddPointsResponse{
 		Balance: res.Balance,
 		Level:   res.Level,
-		EventID: res.EventID,
 	})
 	return nil
 }

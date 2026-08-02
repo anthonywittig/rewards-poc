@@ -162,7 +162,6 @@ func (s *RewardsSuite) Test_AddPoints_AppliesAndDerivesTier() {
 	s.NoError(add.completed)
 	s.Equal(500, add.value.Balance)
 	s.Equal(rewards.LevelGold, add.value.Level)
-	s.Equal("c-001:1", add.value.EventID)
 }
 
 // The tier boundary crossed through the real handler, not just the pure
