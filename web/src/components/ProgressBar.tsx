@@ -42,7 +42,7 @@ export function ProgressBar({
   // empty ladder degrades to, making the bar span the whole climb rather than
   // the current segment. Wrong, but bounded and monotonic, which is the most
   // useful thing to be when the ladder is missing.
-  const prev = (tiers ?? []).reduce(
+  const prev = tiers.reduce(
     (floor, t) => (t.minPoints <= points && t.minPoints > floor ? t.minPoints : floor),
     0,
   )

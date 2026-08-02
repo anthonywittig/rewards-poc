@@ -60,8 +60,11 @@ export function buildListQuery(opts: {
   // One clause per term, ANDed, so typing narrows instead of widening: the
   // `=` match this replaced ORs its words, and "ada turing" returned both Ada
   // Lovelace and Alan Turing.
+  //
+  // No escaping: nameTerms output is letters and digits only, so it embeds in
+  // a single-quoted literal as-is.
   for (const term of nameTerms(opts.name)) {
-    parts.push(`CustomerName STARTS_WITH '${escapeQueryLiteral(term)}'`)
+    parts.push(`CustomerName STARTS_WITH '${term}'`)
   }
   return parts.join(' AND ')
 }
@@ -87,9 +90,4 @@ export function nameTerms(input: string): string[] {
     // "O'Brien" matching nothing at all.
     .map((term) => term.split("'")[0])
     .filter(Boolean)
-}
-
-/** Escape a user-typed value for a single-quoted visibility-query literal. */
-export function escapeQueryLiteral(value: string): string {
-  return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }

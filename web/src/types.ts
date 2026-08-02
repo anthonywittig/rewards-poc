@@ -2,30 +2,19 @@
 
 export type CustomerStatus = 'active' | 'deactivated'
 
-export type ErrorCode =
-  | 'invalid_request'
-  | 'not_found'
-  | 'already_exists'
-  | 'deactivated'
-  | 'rollover_race'
-  | 'rejected'
-  | 'worker_unavailable'
-  | 'internal'
-
+/** The stable machine-readable codes live in internal/httpapi/errors.go. */
 export interface ApiErrorBody {
-  code: ErrorCode | string
+  code: string
   message: string
 }
 
 export class ApiError extends Error {
   readonly code: string
-  readonly status: number
 
-  constructor(status: number, body: ApiErrorBody) {
+  constructor(body: ApiErrorBody) {
     super(body.message)
     this.name = 'ApiError'
     this.code = body.code
-    this.status = status
   }
 }
 

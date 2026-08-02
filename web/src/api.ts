@@ -10,13 +10,9 @@ import type {
 } from './types'
 import { ApiError } from './types'
 
-// Same-origin by default, with Vite proxying /api to the Go API. Set
-// VITE_API_BASE only to hit an absolute URL without the proxy.
-const API_BASE = (import.meta.env.VITE_API_BASE as string | undefined)?.replace(/\/$/, '')
-  ?? ''
-
+// Same-origin: Vite proxies /api to the Go API, which sends no CORS headers.
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const res = await fetch(path, {
     ...init,
     headers: {
       Accept: 'application/json',
@@ -35,7 +31,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     try {
       data = JSON.parse(text)
     } catch {
-      throw new ApiError(res.status, {
+      throw new ApiError({
         code: 'internal',
         message: text || res.statusText || 'non-JSON response',
       })
@@ -45,9 +41,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!res.ok) {
     const err = data as { error?: ApiErrorBody } | null
     if (err?.error?.code) {
-      throw new ApiError(res.status, err.error)
+      throw new ApiError(err.error)
     }
-    throw new ApiError(res.status, {
+    throw new ApiError({
       code: 'internal',
       message: text || res.statusText || 'request failed',
     })
@@ -56,26 +52,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T
 }
 
-export function apiBase(): string {
-  if (API_BASE) return API_BASE
-  const proxy = import.meta.env.VITE_API_PROXY_TARGET as string | undefined
-  return proxy?.replace(/\/$/, '') || 'http://localhost:8081 (via Vite proxy)'
-}
-
 // The web service sets VITE_TEMPORAL_UI_URL from TEMPORAL_UI_PORT, so a second
 // stack's links do not point at the first stack's UI.
 export function temporalUiUrl(): string {
   const fromEnv = import.meta.env.VITE_TEMPORAL_UI_URL as string | undefined
   return fromEnv?.replace(/\/$/, '') || 'http://localhost:8080'
-}
-
-export function temporalUiPortLabel(): string {
-  try {
-    const port = new URL(temporalUiUrl()).port
-    return port ? `:${port}` : ':80'
-  } catch {
-    return ':8080'
-  }
 }
 
 export function listCustomers(query?: string): Promise<CustomerListResponse> {
