@@ -114,9 +114,8 @@ func TestMapQueryError(t *testing.T) {
 	}
 }
 
-// Both halves of the validator/handler split
-// (FINDINGS.md#the-validatorhandler-split) must reach the caller as the same 422
-// carrying the workflow's own words.
+// Both halves of the validator/handler split must reach the caller as the same
+// 422 carrying the workflow's own words.
 func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	cases := []struct {
 		name    string

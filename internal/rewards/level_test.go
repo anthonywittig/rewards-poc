@@ -6,7 +6,7 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
-// --- Tier derivation (FINDINGS.md#tiers-are-derived-never-stored) ----------
+// --- Tier derivation -------------------------------------------------------
 //
 // Pure-function boundaries, asserted exhaustively. No test environment needed,
 // which is the payoff of keeping the rules out of the workflow package.

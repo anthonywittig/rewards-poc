@@ -2,7 +2,6 @@
 # Pins the platform behaviour the design depends on -- the 1h retention floor,
 # that every dynamicconfig key is genuinely registered, and that on-demand
 # deletion works. Kept as a script so it can be re-run after a server upgrade.
-# See docs/FINDINGS.md#retention-has-a-one-hour-floor.
 #
 # Run inside the temporal container: make verify-config
 #
@@ -32,8 +31,7 @@ probe_retention() {
 }
 
 if probe_retention 59m a; then
-  fail "59m was accepted -- the 1h floor has been relaxed. Revisit"
-  echo "        docs/FINDINGS.md#retention-has-a-one-hour-floor;"
+  fail "59m was accepted -- the 1h floor has been relaxed."
   echo "        a shorter retention would let us drop the 'make reap' workaround."
 else
   pass "59m rejected (1h floor still enforced, as expected)"

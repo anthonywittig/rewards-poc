@@ -1,4 +1,4 @@
-# Rewards POC -- see docs/FINDINGS.md
+# Rewards POC
 #
 # Every target runs against one stack, selected by ENV. Default is .env when
 # present, otherwise .env.example (so a fresh checkout can `make up` with no
@@ -99,7 +99,7 @@ reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
 
 # Distinct from reap, which spares running executions on purpose. This one takes
 # everything, for when workflow code has changed under live executions and the
-# dev answer is to start over. See FINDINGS.md#versioning-is-the-real-risk.
+# dev answer is to start over.
 reset: $(ENV) ## Delete EVERY customer workflow, running included (dev only)
 	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) bash /reset.sh
 
@@ -193,7 +193,7 @@ worker-logs: $(ENV) ## Tail the worker's logs (Ctrl-C to stop tailing)
 
 # `compose stop` is an explicit stop, so restart: unless-stopped leaves it down
 # until `make worker` brings it back. Handy for watching the API's 503
-# worker_unavailable path -- see FINDINGS.md#read-and-write-timeouts.
+# worker_unavailable path.
 worker-stop: $(ENV) ## Stop the worker (leaves the rest of the stack up)
 	$(COMPOSE) stop worker
 
@@ -272,8 +272,7 @@ reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAM
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed
-# by crawling Event History (docs/FINDINGS.md#the-history-crawl). Compare with
-# the raw events behind it:
+# by crawling Event History. Compare with the raw events behind it:
 #
 #   make audit ID=c-001
 #   $(COMPOSE) exec temporal temporal workflow show --workflow-id customer-c-001

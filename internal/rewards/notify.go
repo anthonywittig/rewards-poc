@@ -4,7 +4,6 @@ package rewards
 // *argument shape* live here, so the audit crawl can turn ActivityTaskScheduled
 // / ActivityTaskCompleted into notification rows without guessing at either --
 // changing the shape breaks the crawler's build rather than its output.
-// FINDINGS.md#tier-promotion-notifications.
 
 // ActivityNotifyCustomer is the registered name of the notification Activity.
 // The audit crawl matches on it to distinguish notification rows from any other
@@ -12,7 +11,7 @@ package rewards
 const ActivityNotifyCustomer = "NotifyCustomer"
 
 // Notification events. Promotion is the tier crossing; departure reuses the same
-// Activity when a customer leaves (FINDINGS.md#tier-promotion-notifications).
+// Activity when a customer leaves.
 const (
 	NotifyEventPromoted = "promoted"
 	NotifyEventDeparted = "departed"

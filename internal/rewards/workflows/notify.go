@@ -9,7 +9,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Notification delivery. FINDINGS.md#tier-promotion-notifications.
+// Notification delivery.
 //
 // The Update handler does not await the Activity: it applies the points, sets a
 // flag, and returns, so a slow or down provider cannot fail a point-add already

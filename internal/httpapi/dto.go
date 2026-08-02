@@ -1,6 +1,5 @@
 // Package httpapi is the HTTP surface over the rewards workflow. It holds a
 // Temporal Client and nothing else -- no database, no cache, no ORM.
-// See FINDINGS.md#the-http-api.
 package httpapi
 
 import (
@@ -22,7 +21,6 @@ type EnrollRequest struct {
 // send a fresh UUID per click. Note dedup is scoped to a single Run, so a retry
 // straddling a continue-as-new can still double-apply -- adequate for points,
 // not for money.
-// FINDINGS.md#update-dedup-does-not-survive-continue-as-new.
 type AddPointsRequest struct {
 	Amount    int    `json:"amount"`
 	Reason    string `json:"reason"`
@@ -67,8 +65,7 @@ type CustomerResponse struct {
 }
 
 // AddPointsResponse is what a successful add returns. No "promoted" flag:
-// tier-crossing detection happens inside the handler, where it is atomic
-// (FINDINGS.md#tier-promotion-notifications).
+// tier-crossing detection happens inside the handler, where it is atomic.
 type AddPointsResponse struct {
 	Balance int    `json:"balance"`
 	Level   string `json:"level"`
@@ -100,9 +97,9 @@ type CustomerListItem struct {
 }
 
 // ListLimit caps GET /api/customers. There is no pagination: Temporal rejects
-// ORDER BY (FINDINGS.md#order-by-is-not-supported), so "page 2" of an unordered
-// set could overlap or skip rows. The list returns a small fixed slice, says how
-// many matched, and tells the user to filter.
+// ORDER BY, so "page 2" of an unordered set could overlap or skip rows. The
+// list returns a small fixed slice, says how many matched, and tells the user
+// to filter.
 const ListLimit = 5
 
 // CustomerListResponse is the body of GET /api/customers.
@@ -123,7 +120,7 @@ const ListLimit = 5
 //     ordering, so the same request can return a different five.
 //   - **Results lag writes.** Elasticsearch visibility is asynchronous,
 //     ~200-300ms after tuning and never zero, so a just-created customer may be
-//     missing from both Items and Total. FINDINGS.md#visibility-lag.
+//     missing from both Items and Total.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
 	// The cap that was applied, echoed so the UI does not hardcode it.
@@ -155,7 +152,7 @@ const (
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
-// Event History (FINDINGS.md#events-the-crawl-reads).
+// Event History.
 //
 // Which fields are populated depends on Kind:
 //
@@ -168,7 +165,6 @@ const (
 //
 // Note points_rejected only ever covers *handler*-side rejections. A validator
 // rejection writes nothing to history, so it is invisible here by design.
-// FINDINGS.md#the-validatorhandler-split.
 type AuditEntry struct {
 	Kind       AuditEntryKind `json:"kind"`
 	At         time.Time      `json:"at"`
@@ -194,7 +190,6 @@ type AuditEntry struct {
 // says so; the carried CustomerState is what lets it *quantify* the gap rather
 // than silently showing less. The UI renders "Showing 7 of 23 point events."
 // from ShownEarnEvents and LifetimeEarnEvents.
-// FINDINGS.md#truncation-detection.
 type AuditResponse struct {
 	CustomerID string       `json:"customerId"`
 	Entries    []AuditEntry `json:"entries"` // oldest first
