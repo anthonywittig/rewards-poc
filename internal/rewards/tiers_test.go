@@ -6,18 +6,17 @@ import (
 )
 
 // The ladder's ordering is load-bearing, and this is in-package because tiers is
-// unexported. Level takes the last rung it reaches, NextTierAt the first it has
-// not, and PromotionFor walks it backwards -- all three go wrong if the entries
-// are not sorted by MinPoints ascending, and all three go wrong *quietly*: no
-// panic, just a customer told they are gold when they are platinum.
+// unexported. Level takes the last rung it reaches and NextTierAt the first it
+// has not -- both go wrong if the entries are not sorted by MinPoints ascending,
+// and both go wrong *quietly*: no panic, just a customer told they are gold when
+// they are platinum.
 func TestTierLadderIsOrdered(t *testing.T) {
 	if len(tiers) == 0 {
 		t.Fatal("the ladder is empty; Level would always answer basic")
 	}
 	for i, tier := range tiers {
 		if tier.Level == LevelBasic {
-			t.Errorf("tiers[%d] is basic, which is the floor rather than a rung: "+
-				"a rule for it would make promotionFor offer 'promoted to basic'", i)
+			t.Errorf("tiers[%d] is basic, which is the floor rather than a rung", i)
 		}
 		if tier.MinPoints <= 0 {
 			t.Errorf("tiers[%d] (%s) has MinPoints %d; a rung at or below zero is "+
@@ -33,7 +32,7 @@ func TestTierLadderIsOrdered(t *testing.T) {
 }
 
 // Ladder hands the rungs to the API, and from there to a client that is free to
-// sort or append. Level, NextTierAt and PromotionFor all read the package's own
+// sort or append. Level and NextTierAt read the package's own
 // slice trusting the ordering TestTierLadderIsOrdered pins, and never re-check
 // it -- so if Ladder aliased that slice, one client mutating what it was given
 // would silently mis-derive every customer's tier process-wide.
@@ -63,9 +62,7 @@ func TestLadderIsACopy(t *testing.T) {
 // Basic is the floor, not a rung, so it is absent from the ladder by design --
 // which means a client cannot render the first segment from the rungs alone and
 // has to supply the zero-to-first-rung span itself. Pinned because the UI's
-// progress bar depends on it: were basic to appear at MinPoints 0, the bar's
-// floor lookup would still work, but PromotionFor would start congratulating
-// people for being basic.
+// progress bar depends on it.
 func TestLadderOmitsBasic(t *testing.T) {
 	for _, rung := range Ladder() {
 		if rung.Level == LevelBasic {
@@ -74,15 +71,14 @@ func TestLadderOmitsBasic(t *testing.T) {
 	}
 }
 
-// The ladder is what Level answers with, so a duplicate name would make one rung
-// unreachable by NotifiedLevels: announcing the lower one would suppress the
-// higher.
+// The ladder is what Level answers with, so a duplicate name would make two
+// rungs indistinguishable everywhere a level travels -- search attributes,
+// API responses, the UI.
 func TestTierLevelsAreDistinct(t *testing.T) {
 	seen := make(map[string]int, len(tiers))
 	for i, tier := range tiers {
 		if first, dup := seen[tier.Level]; dup {
-			t.Errorf("tiers[%d] repeats the level %q from tiers[%d]; NotifiedLevels "+
-				"keys on the name, so the second would be suppressed by the first",
+			t.Errorf("tiers[%d] repeats the level %q from tiers[%d]",
 				i, tier.Level, first)
 		}
 		seen[tier.Level] = i

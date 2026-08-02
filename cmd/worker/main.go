@@ -6,7 +6,6 @@ import (
 	"os"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
-	"github.com/anthonywittig/rewards-poc/internal/rewards/activities"
 	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	"go.temporal.io/sdk/client"
@@ -32,11 +31,6 @@ func main() {
 
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
-
-	// Every exported method on the struct registers as an Activity named for the
-	// method, which is what rewards.ActivityNotifyCustomer and the audit crawl
-	// match on.
-	w.RegisterActivity(&activities.Activities{})
 
 	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
 		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)
