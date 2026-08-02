@@ -18,13 +18,11 @@ const (
 )
 
 // NotifyRequest is the NotifyCustomer argument.
-//
-// IdempotencyKey is <customerID>:<level> -- a customer reaches gold exactly
-// once, so that is a natural key. The stub will ignore it; it is here because a
-// real notification service would honour it, and Activities are at-least-once.
 type NotifyRequest struct {
-	CustomerID     string `json:"customerId"`
-	Event          string `json:"event"`
-	Level          string `json:"level"`
+	CustomerID string `json:"customerId"`
+	Event      string `json:"event"`
+	Level      string `json:"level"`
+	// <customerID>:<level>. Stub ignores it; a real provider must honour it
+	// because Activities are at-least-once.
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`
 }

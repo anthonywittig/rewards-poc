@@ -36,9 +36,7 @@ func main() {
 	// Every exported method on the struct registers as an Activity named for the
 	// method, which is what rewards.ActivityNotifyCustomer and the audit crawl
 	// match on.
-	w.RegisterActivity(&activities.Activities{
-		Notifier: activities.LogNotifier{},
-	})
+	w.RegisterActivity(&activities.Activities{})
 
 	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
 		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)
