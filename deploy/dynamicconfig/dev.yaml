@@ -1,9 +1,8 @@
 # Temporal dynamic config -- DEVELOPMENT ONLY.
 #
 # These settings make this POC's behaviour observable on a laptop; none is a
-# good production value. All are checked by `make verify-config`, which fails
-# if a server upgrade stops recognising the key -- an unregistered key is
-# silently ignored.
+# good production value. Note that an unregistered key is silently ignored
+# (after one startup warning), so re-check these names after a server upgrade.
 #
 # Retention itself is not tunable here: it has a 1h floor, so truncation is
 # demonstrated with `make reap` instead.
