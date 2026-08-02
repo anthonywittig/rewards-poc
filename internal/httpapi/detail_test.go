@@ -75,12 +75,10 @@ func TestGetCustomer_LadderComesFromTheWorkerNotTheAPI(t *testing.T) {
 	}
 }
 
-// The case the deleted fallback existed for, now inverted: a departed customer
-// whose execution record holds everything the page renders, and no worker to ask.
-// It used to answer 200 from search attributes. Serving that is worse than
-// failing -- visibility lags writes and carries no LifetimeEarnEvents, so the
-// page looked ordinary while being both stale and short a field, with only a log
-// line to say so.
+// The strongest case for answering without a worker: a departed customer, whose
+// execution record already holds almost everything the page renders and whose
+// balance cannot move anyway. Still a 503, because "almost everything" is a page
+// that looks ordinary while being stale and missing LifetimeEarnEvents.
 func TestGetCustomer_NoWorkerIs503EvenWhenVisibilityCouldAnswer(t *testing.T) {
 	rec := httptest.NewRecorder()
 	h := newTestServer(&stubTemporal{

@@ -312,11 +312,11 @@ func mapListError(err error, userQuery string) error {
 // getCustomer reads current state via Query. Status is active only when the
 // execution is still Running and soft-inactive says Active.
 //
-// The Query is the only source. There was a degraded path that rebuilt most of
-// this from search attributes when no worker answered, which meant a page that
-// looked ordinary but was assembled from a store that lags writes and cannot
-// carry LifetimeEarnEvents at all. Two ways to produce a customer detail is one
-// too many: with the worker down this now fails, and says so.
+// The Query is the only source, including for customers who have left and for
+// closed executions. Search attributes would answer most of this without a
+// worker, but they lag writes and carry no LifetimeEarnEvents, so a page built
+// from them looks ordinary while being stale and short a field. Better to fail
+// and say which worker is missing.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -496,11 +496,11 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 // isActive answers "is this customer currently enrolled and active", from the
 // workflow's own word and nothing else.
 //
-// It used to degrade to visibility when no worker answered, so a duplicate
-// enroll stayed a 409 during an outage. That guessed at the one question whose
-// wrong answer is destructive -- enroll reactivates on a false, rewriting a live
-// customer's name and email -- using a store that lags writes. An error is the
-// honest answer, and it is also the safe one: the caller cannot act on it.
+// Deliberately not answerable from visibility, however tempting: enroll
+// *reactivates* on a false, rewriting a live customer's name and email, so this
+// is the question here whose wrong answer is destructive and the last one to
+// settle from a store that lags writes. An error the caller cannot act on is
+// both the honest answer and the safe one.
 func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
 	enc, err := s.queryStatus(ctx, wfID)
 	if err != nil {

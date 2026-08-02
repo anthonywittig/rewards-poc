@@ -199,15 +199,13 @@ func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
 }
 
 // Telling an active duplicate from a soft-deactivated vacancy is the Query's job
-// and no other read's. With the worker down that question has no answer, and
-// enroll used to guess it from search attributes to keep the duplicate a 409.
+// and no other read's, so with the worker down that question has no answer and
+// the request is a 503.
 //
-// 503 now -- but the property that mattered is unchanged and asserted here: a
-// guess that came back "not active" would fall through to reactivate and rewrite
-// a live customer's name and email. Failing cannot do that.
-//
-// Visibility saying the customer is plainly active is the strongest case for
-// guessing, which is why it is the one stubbed.
+// The assertion that matters is the second one. Enroll reactivates on a "not
+// active", so anything that answers this from a laggy read can rewrite a live
+// customer's name and email; failing cannot. Visibility plainly saying "active"
+// is the strongest case for guessing, which is why it is the one stubbed.
 func TestEnroll_DuplicateNeedsAWorkerAndSendsNoUpdateWithoutOne(t *testing.T) {
 	stub := &stubTemporal{
 		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
