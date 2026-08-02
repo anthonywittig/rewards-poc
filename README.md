@@ -32,8 +32,9 @@ to `.env` only when you want local overrides.
 #    namespace and search-attribute bootstrap, then the workflow worker and the
 #    HTTP API, then eighteen demo customers, six per tier, including the
 #    interesting edge cases, and the React UI. Takes a couple of minutes the
-#    first time: it compiles the Go services into their images and installs and
-#    typechecks the UI on the way up.
+#    first time, since it compiles the Go services into their images. The UI
+#    starts last and is not waited on -- its first start installs npm packages,
+#    which takes a few minutes more. `make web-logs` shows how far along it is.
 make up
 ```
 
@@ -84,6 +85,7 @@ Re-enrollment takes the name and email it is given, so pass them unless you mean
 | `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
 | `make api` / `api-logs` / `api-stop` | the same three for the HTTP API on `:8081` |
 | `make web` / `web-logs` / `web-stop` | restart / tail / stop the UI on `:5173` |
+| `make web-check` | typecheck and production-build the UI (the dev server doesn't) |
 | `make test` | Go unit tests, no Docker needed |
 | `make workflowcheck` | static determinism check on workflow code, no Docker needed |
 | `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |

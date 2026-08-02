@@ -6,7 +6,12 @@ React app over the rewards API. See [docs/FINDINGS.md](../docs/FINDINGS.md).
 # from repo root — `make up` brings up the whole stack, this included
 make web-logs  # what the dev server is saying, on :5173
 make web       # restart it (rarely needed: web/ is bind-mounted, edits hot-reload)
+make web-check # tsc -b && vite build -- the dev server does not typecheck
 ```
+
+The dev server starts last in `make up` and nothing waits on it, because a first
+start installs a few hundred npm packages over a bind mount. Until that finishes
+`:5173` refuses connections; `make web-logs` shows where it is.
 
 The dev server runs in Compose off the `node` image, with this directory
 bind-mounted, so an edit reloads without rebuilding anything. `node_modules`
