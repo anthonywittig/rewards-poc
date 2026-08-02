@@ -2,7 +2,7 @@ import { nameTerms } from './format'
 import type { CustomerListItem, CustomerResponse } from './types'
 
 const KEY = 'rewards.pendingList'
-/** Longer than mock lag (400ms) and real ES lag (~300ms). After this, drop the optimistic row. */
+/** Comfortably longer than the ES visibility lag (~300ms). After this, drop the optimistic row. */
 const PENDING_TTL_MS = 2000
 
 interface PendingEntry {
@@ -22,14 +22,7 @@ export function rememberPending(customer: CustomerListItem): void {
 function readPendingEntries(): PendingEntry[] {
   try {
     const raw = sessionStorage.getItem(KEY)
-    if (!raw) return []
-    const parsed = JSON.parse(raw) as PendingEntry[] | CustomerListItem[]
-    // Migrate legacy bare CustomerListItem[] if present.
-    if (Array.isArray(parsed) && parsed.length > 0 && !('customer' in parsed[0])) {
-      const now = Date.now()
-      return (parsed as CustomerListItem[]).map((customer) => ({ customer, at: now }))
-    }
-    return parsed as PendingEntry[]
+    return raw ? (JSON.parse(raw) as PendingEntry[]) : []
   } catch {
     return []
   }
@@ -68,7 +61,7 @@ export function customerToListItem(c: CustomerResponse): CustomerListItem {
 
 /**
  * Whether a list item would match the effective visibility query.
- * Covers the chip-built queries and the same small clause set the mock understands.
+ * Covers exactly the clauses buildListQuery emits.
  */
 export function matchesVisibilityQuery(c: CustomerListItem, query: string): boolean {
   const q = query.trim()
@@ -80,10 +73,6 @@ export function matchesVisibilityQuery(c: CustomerListItem, query: string): bool
     } else if (clause.startsWith('RewardsActive')) {
       const wantActive = clause.includes('true')
       if (wantActive !== (c.status === 'active')) return false
-    } else if (clause.startsWith('ExecutionStatus')) {
-      // Legacy chip queries; soft-inactive uses RewardsActive instead.
-      const want = c.status === 'deactivated' ? 'Canceled' : 'Running'
-      if (!clause.includes(`'${want}'`)) return false
     } else if (clause.startsWith('CustomerName STARTS_WITH')) {
       // One clause per term, so this is one prefix against the name's tokens --
       // split by the same function that produced the term, rather than
