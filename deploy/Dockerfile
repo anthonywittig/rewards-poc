@@ -6,10 +6,10 @@
 # docker-compose.yml -- because the binaries need cmd/ and internal/, which live
 # above this file. What lands in the context is an allowlist in the root
 # .dockerignore: go.mod, go.sum, cmd/ and internal/. Nothing else, so
-# web/node_modules and any .env never reach the daemon.
+# web/node_modules and .git never reach the daemon.
 #
-# The two base images are pinned here rather than in the env file, unlike the
-# server images: they are a property of how this repo builds, not of a stack.
+# The two base images are pinned here rather than in docker-compose.yml, unlike
+# the server images: they are a property of how this repo builds, not of a stack.
 # Keep golang in step with go.mod's toolchain directive -- on a lower patch the
 # build still works, but GOTOOLCHAIN=auto fetches the right one every time.
 FROM golang:1.25.12-alpine AS build

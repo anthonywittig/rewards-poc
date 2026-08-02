@@ -37,8 +37,8 @@ import (
 // Recaptured with:
 //
 //	make enroll ID=hist && ...adds...
-//	docker compose --env-file .env -f deploy/docker-compose.yml exec -T \
-//	  -e TEMPORAL_ADDRESS=temporal:7233 -e TEMPORAL_NAMESPACE=rewards \
+//	docker compose -f deploy/docker-compose.yml exec -T \
+//	  -e TEMPORAL_ADDRESS=temporal:7233 \
 //	  temporal temporal workflow show --workflow-id customer-hist \
 //	  --run-id <run> -o json
 //

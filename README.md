@@ -20,9 +20,8 @@ one. **Go** 1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an old
 `GOTOOLCHAIN=auto` fetches it) is only for `make test` and `make workflowcheck`, and **Node** 20+
 only if you want to run `npm` against `web/` yourself.
 
-Every setting lives in `.env.example`, which is tracked, so a fresh checkout needs no copy step.
-Copy it to `.env` when you want local overrides — a full copy, since neither compose nor the
-Makefile merges the two.
+There is no env file to copy: every setting is written out literally in `deploy/docker-compose.yml`.
+Change a port or an image version by editing it there.
 
 ```sh
 # 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
@@ -340,14 +339,13 @@ internal/httpapi/
   testdata/                   real run histories, for the crawl's golden tests
 web/                          the React UI
 deploy/
-  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker + api
+  docker-compose.yml          the whole stack, and every setting it has
   Dockerfile                  the worker, api and seed images, built from the repo root
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
   reset.sh                    delete every customer workflow (make reset)
   inspect/verify-config.sh    platform assumption checks
-.env.example                  ports, versions, tuning
 Makefile
 ```
 

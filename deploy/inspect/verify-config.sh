@@ -40,7 +40,7 @@ fi
 if probe_retention 1h b; then
   pass "1h accepted"
 else
-  fail "1h rejected -- the floor moved up. TEMPORAL_RETENTION in .env needs raising."
+  fail "1h rejected -- the floor moved up. TEMPORAL_RETENTION in the compose file needs raising."
 fi
 
 echo

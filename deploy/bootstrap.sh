@@ -35,7 +35,7 @@ if temporal operator namespace describe \
      --address "${TEMPORAL_ADDRESS}" --namespace "${NAMESPACE}" >/dev/null 2>&1; then
   log "already exists"
   # Retention is set at creation, so an existing namespace may disagree with
-  # .env. Report rather than silently diverge.
+  # TEMPORAL_RETENTION. Report rather than silently diverge.
   current="$(temporal operator namespace describe \
       --address "${TEMPORAL_ADDRESS}" --namespace "${NAMESPACE}" -o json 2>/dev/null \
       | grep -o '"workflowExecutionRetentionTtl"[^,}]*' || true)"

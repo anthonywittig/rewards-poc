@@ -1,17 +1,19 @@
 # Rewards POC
 #
-# Settings live in .env.example, which is tracked so a fresh checkout runs with
-# no copy step. `cp .env.example .env` to override anything locally; .env wins
-# when it exists, and it has to be a full copy rather than a partial one,
-# because neither compose nor make merges the two.
+# Every setting lives in deploy/docker-compose.yml, written out literally. There
+# is no env file: nothing here varies per checkout, so an indirection layer only
+# meant reading two files to learn one port.
 
-ENV_FILE := $(shell test -f .env && echo .env || echo .env.example)
-COMPOSE := docker compose --env-file $(ENV_FILE) -f deploy/docker-compose.yml
+COMPOSE := docker compose -f deploy/docker-compose.yml
 
-# The env file is KEY=value, which is also valid make syntax, so host-side
-# targets read the same settings compose does by including it rather than by
-# grepping each one back out.
-include $(ENV_FILE)
+# The only settings this file needs, and the only ones written down twice. All
+# three are host-side: the banner below and `make audit`'s curl name addresses a
+# person will open, which compose's published ports have to agree with. The
+# namespace is deliberately absent -- it lives on the temporal service, and the
+# scripts and CLI commands that run there inherit it.
+API_PORT = 8081
+WEB_PORT = 5173
+TEMPORAL_UI_PORT = 8080
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
@@ -48,7 +50,6 @@ up: ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make web-logs)"
 	@echo "Temporal UI:  http://localhost:$(TEMPORAL_UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
-	@echo "Namespace:    $(TEMPORAL_NAMESPACE) (retention $(TEMPORAL_RETENTION))"
 
 down: ## Stop the stack, keep data
 	$(COMPOSE) down
@@ -56,9 +57,10 @@ down: ## Stop the stack, keep data
 destroy: ## Stop the stack and delete its volumes
 	$(COMPOSE) down -v
 
+# The namespace, its retention and the ES refresh interval are set on the
+# temporal service, so the script inherits them rather than being handed them.
 bootstrap: ## Create namespace + search attributes (idempotent)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) TEMPORAL_RETENTION=$(TEMPORAL_RETENTION) \
-	  ES_REFRESH_INTERVAL=$(ES_REFRESH_INTERVAL) bash /bootstrap.sh
+	@$(TCTL) bash /bootstrap.sh
 
 logs: ## Tail logs (make logs SVC=temporal)
 	$(COMPOSE) logs -f $(SVC)
@@ -89,13 +91,13 @@ verify-config: ## Check the platform behaviour the plan depends on
 	@$(TCTL) bash /inspect/verify-config.sh
 
 reap: ## Delete closed executions now (make reap WF=customer-x)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) WF="$(WF)" bash /reap.sh
+	@$(TCTL) env WF="$(WF)" bash /reap.sh
 
 # Distinct from reap, which spares running executions on purpose. This one takes
 # everything, for when workflow code has changed under live executions and the
 # dev answer is to start over.
 reset: ## Delete EVERY customer workflow, running included (dev only)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) bash /reset.sh
+	@$(TCTL) bash /reset.sh
 
 # --- Datastore inspection -----------------------------------------------------
 # Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
@@ -144,9 +146,7 @@ inspect-es: ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
 	 $(TCTL) env WF=customer-$(ID) bash /inspect/$$f
 
 write-trace: ## Trace one addPoints through Postgres + ES (make write-trace ID=inspect)
-	@TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) ENV_FILE=$(ENV_FILE) \
-	  ID=$(ID) AMOUNT=$(or $(AMOUNT),10) \
-	  bash deploy/inspect/write-trace.sh
+	@ID=$(ID) AMOUNT=$(or $(AMOUNT),10) bash deploy/inspect/write-trace.sh
 
 # --- Workflow (Phase 1) -----------------------------------------------------
 
@@ -229,10 +229,11 @@ web-stop: ## Stop the UI (leaves the rest of the stack up)
 # Addressed as temporal:7233, not localhost: the frontend binds the container's
 # own interface, so loopback is refused even from inside its own container --
 # the same quirk that made the Phase 0 healthcheck fail.
+# The namespace comes from the container's own environment (see the temporal
+# service), which is where the CLI reads TEMPORAL_NAMESPACE from anyway.
 ID ?= c-001
 TCLI = $(COMPOSE) exec -T \
          -e TEMPORAL_ADDRESS=temporal:7233 \
-         -e TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) \
          temporal temporal
 
 enroll: ## Enroll a customer (make enroll ID=c-001 NAME="Ada")
