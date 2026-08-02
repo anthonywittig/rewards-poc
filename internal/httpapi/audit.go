@@ -31,7 +31,7 @@ const auditTimeout = 30 * time.Second
 // see mapStoreReadError.
 const auditSubject = "the audit crawl"
 
-// getAudit walks the customer's run chain newest-first and renders it oldest-first.
+// getAudit walks the customer's run chain newest-first and renders it newest-first.
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -103,7 +103,7 @@ func walkRuns(ctx context.Context, fetch historyFetcher, runID string) ([]runAud
 	return runs, false, nil
 }
 
-// assemble flattens the walked runs oldest-first and fills in the counts.
+// assemble flattens the walked runs newest-first and fills in the counts.
 func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse {
 	out := AuditResponse{
 		CustomerID: customerID,
@@ -115,9 +115,14 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 		out.OldestRunID = runs[len(runs)-1].runID
 	}
 
-	for i := len(runs) - 1; i >= 0; i-- { // reverse: oldest first
-		out.Entries = append(out.Entries, runs[i].entries...)
-		out.ShownEarnEvents += runs[i].earnEvents
+	// The walk already produced runs newest-first; auditRun built each run's
+	// entries in history order, so only those need reversing to put the newest
+	// event of the whole timeline first.
+	for _, run := range runs {
+		for i := len(run.entries) - 1; i >= 0; i-- {
+			out.Entries = append(out.Entries, run.entries[i])
+		}
+		out.ShownEarnEvents += run.earnEvents
 	}
 
 	if len(runs) > 0 {
