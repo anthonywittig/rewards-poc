@@ -21,17 +21,16 @@ import (
 )
 
 // The golden files in testdata/ are `temporal workflow show -o json` output from
-// the local stack, one file per run. Verbatim but for one edit: the customer
-// contact details those runs carried have been stripped from the recorded
-// payloads and search attributes, since nothing reads them any more. One file
-// per run:
+// the local stack, one file per run. Verbatim, except that the two oldest
+// captures carried customer contact details, which have been stripped from the
+// recorded payloads and search attributes since nothing reads them any more.
+// One file per run:
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then (historically) cancelled;
-//	                       tests strip the cancel tail and splice events-deactivate.json
+//	run-deactivated.json   the last run: rolled into, 1 add, then a soft
+//	                       deactivate -- an Update pair, the run stays open
 //	run-rejection.json     a run containing a handler rejection at the cap
-//	events-deactivate.json    a soft-deactivate UpdateAccepted/Completed pair
 //
 // Recaptured with:
 //
@@ -61,29 +60,12 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 	return h.GetEvents()
 }
 
-// softDeactivatedRun is the historical cancel-ended fixture with its cancel
-// tail removed and a soft-deactivate Update spliced on — product leave is an
-// Update now, not CancelWorkflow.
-func softDeactivatedRun(t *testing.T) []*historypb.HistoryEvent {
-	t.Helper()
-	events := loadEvents(t, "run-deactivated.json")
-	cut := len(events)
-	for i, e := range events {
-		if e.GetEventType() == enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_CANCEL_REQUESTED {
-			cut = i
-			break
-		}
-	}
-	return append(events[:cut], loadEvents(t, "events-deactivate.json")...)
-}
-
 // membershipUpdate builds the Accepted/Completed pair Temporal writes for a
 // deactivate or reactivate Update.
 //
 // Built rather than captured, unlike every fixture above, because the cases that
 // matter are the *combinations* -- leave, rejoin, repeat leave, no-op rejoin.
-// TestMembershipUpdateMatchesTheCapturedPair keeps the builder honest against
-// the one pair recorded from a real server.
+// It mirrors the real captured pair at the end of run-deactivated.json.
 func membershipUpdate(
 	t *testing.T, firstEventID int64, name, updateID string, result any,
 ) []*historypb.HistoryEvent {
@@ -230,7 +212,7 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 // Soft-deactivate is an Update, so it appears as Accepted/Completed rather than
 // a CancelRequested event.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
-	run := auditRun("run-2", softDeactivatedRun(t))
+	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
 
 	requireKinds(t, run.entries,
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
@@ -242,30 +224,10 @@ func TestAuditRun_DeactivatedRun(t *testing.T) {
 	}
 }
 
-// The builder used by the tests below has to produce what the server actually
-// wrote, or those tests only prove the code agrees with the builder. Checked
-// against the one membership pair that was captured from a real run.
-func TestMembershipUpdateMatchesTheCapturedPair(t *testing.T) {
-	captured := loadEvents(t, "events-deactivate.json")
-	built := membershipUpdate(t, captured[0].GetEventId(),
-		rewards.UpdateDeactivate, "soft-deactivate-1", rewards.DeactivateResult{Changed: true})
-
-	gotK := kinds(auditRun("run-x", built).entries)
-	wantK := kinds(auditRun("run-x", captured).entries)
-	if len(gotK) != len(wantK) || (len(wantK) == 1 && gotK[0] != wantK[0]) {
-		t.Fatalf("built pair renders as %v, captured pair renders as %v", gotK, wantK)
-	}
-
-	g, w := auditRun("run-x", built).entries[0], auditRun("run-x", captured).entries[0]
-	if g.RequestID != w.RequestID || g.EventID != w.EventID {
-		t.Errorf("built {%s, %d}, captured {%s, %d}", g.RequestID, g.EventID, w.RequestID, w.EventID)
-	}
-}
-
 // Without a rejoin row, a customer who left and came back reads as permanently
 // departed with unexplained point-adds after the departure.
 func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
-	events := append(softDeactivatedRun(t),
+	events := append(loadEvents(t, "run-deactivated.json"),
 		membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
 			rewards.ReactivateResult{Changed: true})...)
 
@@ -287,7 +249,7 @@ func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
 // completions are real events, but rendering them would show a customer leaving
 // twice or rejoining a program they never left.
 func TestAuditRun_IdempotentMembershipCallsDrawNoRow(t *testing.T) {
-	events := softDeactivatedRun(t)
+	events := loadEvents(t, "run-deactivated.json")
 	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
 		rewards.DeactivateResult{Changed: false})...)
 	events = append(events, membershipUpdate(t, 300, rewards.UpdateReactivate, "rejoin-1",
@@ -305,7 +267,7 @@ func TestAuditRun_IdempotentMembershipCallsDrawNoRow(t *testing.T) {
 // search attribute upsert is issued, so a failed membership Update applied
 // nothing -- and unlike a failed addPoints, there is no half-state to disclose.
 func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
-	events := softDeactivatedRun(t)
+	events := loadEvents(t, "run-deactivated.json")
 	pair := membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-failed",
 		rewards.ReactivateResult{Changed: true})
 	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
@@ -325,7 +287,7 @@ func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 // their arguments, so a missed name check shows up as a silent "+0 ()" row
 // rather than as a failure.
 func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
-	events := softDeactivatedRun(t)
+	events := loadEvents(t, "run-deactivated.json")
 	events = append(events, membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
 		rewards.ReactivateResult{Changed: true})...)
 
@@ -519,14 +481,11 @@ func TestAssemble_EmptyIsNotNull(t *testing.T) {
 // End to end over the golden chain, in the order the walk produces: the three
 // runs of one customer's life, rendered as one timeline.
 func TestCrawlShape_WholeCustomerLife(t *testing.T) {
-	deactivated := softDeactivatedRun(t)
+	deactivated := loadEvents(t, "run-deactivated.json")
 	continued := loadEvents(t, "run-continued.json")
 	enrollment := loadEvents(t, "run-enrollment.json")
 
-	// Predecessor run IDs still come from the historical cancel fixture's start
-	// event (the soft-deactivate splice does not replace it).
-	raw := loadEvents(t, "run-deactivated.json")
-	gen1 := raw[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
+	gen1 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 	gen0 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
