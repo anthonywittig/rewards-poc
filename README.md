@@ -254,7 +254,7 @@ w.RegisterActivity(&activities.Activities{Notifier: activities.LogNotifier{}})
 
 `RegisterActivity` on a struct registers every exported method under the method's own name, so
 `NotifyCustomer` is still registered as `"NotifyCustomer"` — which the audit crawl matches on, and
-`TestActivityNameMatchesRegistration` pins. Injecting a real email or push provider is a different
+`TestActivityNameMatchesRegistration` pins. Injecting a real notification provider is a different
 value in that one line and no change anywhere else.
 
 ## Behaviour to expect

@@ -19,7 +19,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsIm5hbWUiOiJVbmdhdGVkIFBoYXNlIFNpeCIsImVtYWlsIjoidW5nYXRlZEBleGFtcGxlLmNvbSIsInBvaW50cyI6MCwiZW5yb2xsZWRBdCI6IjAwMDEtMDEtMDFUMDA6MDA6MDBaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjowLCJnZW5lcmF0aW9uIjowfQ=="
+              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsIm5hbWUiOiJVbmdhdGVkIFBoYXNlIFNpeCIsInBvaW50cyI6MCwiZW5yb2xsZWRBdCI6IjAwMDEtMDEtMDFUMDA6MDA6MDBaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjowLCJnZW5lcmF0aW9uIjowfQ=="
             }
           ]
         },
@@ -96,13 +96,6 @@
         "workflowTaskCompletedEventId": "4",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InVuZ2F0ZWRAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -235,13 +228,6 @@
         "workflowTaskCompletedEventId": "8",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InVuZ2F0ZWRAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -398,13 +384,6 @@
         "workflowTaskCompletedEventId": "14",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InVuZ2F0ZWRAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -561,13 +540,6 @@
         "workflowTaskCompletedEventId": "20",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InVuZ2F0ZWRAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -659,7 +631,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsImVtYWlsIjoidW5nYXRlZEBleGFtcGxlLmNvbSIsImV2ZW50IjoicHJvbW90ZWQiLCJsZXZlbCI6ImdvbGQiLCJpZGVtcG90ZW5jeUtleSI6InVuZ2F0ZWQ6Z29sZCJ9"
+              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsImV2ZW50IjoicHJvbW90ZWQiLCJsZXZlbCI6ImdvbGQiLCJpZGVtcG90ZW5jeUtleSI6InVuZ2F0ZWQ6Z29sZCJ9"
             }
           ]
         },
@@ -769,7 +741,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsIm5hbWUiOiJVbmdhdGVkIFBoYXNlIFNpeCIsImVtYWlsIjoidW5nYXRlZEBleGFtcGxlLmNvbSIsInBvaW50cyI6NjAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wOC0wMVQwMzoxMTo1NC4zNTU5NDgyMzVaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjozLCJnZW5lcmF0aW9uIjoxLCJub3RpZmllZExldmVscyI6WyJnb2xkIl19"
+              "data": "eyJjdXN0b21lcklkIjoidW5nYXRlZCIsIm5hbWUiOiJVbmdhdGVkIFBoYXNlIFNpeCIsInBvaW50cyI6NjAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wOC0wMVQwMzoxMTo1NC4zNTU5NDgyMzVaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjozLCJnZW5lcmF0aW9uIjoxLCJub3RpZmllZExldmVscyI6WyJnb2xkIl19"
             }
           ]
         },
@@ -779,13 +751,6 @@
         "header": {},
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InVuZ2F0ZWRAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",

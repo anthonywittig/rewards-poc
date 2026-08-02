@@ -19,7 +19,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwiZW1haWwiOiJoaXN0QGV4YW1wbGUuY29tIiwicG9pbnRzIjo2MDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wNy0zMVQyMDozODo1MC43MTI2ODQyNjFaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjo2LCJnZW5lcmF0aW9uIjoyfQ=="
+              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwicG9pbnRzIjo2MDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wNy0zMVQyMDozODo1MC43MTI2ODQyNjFaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjo2LCJnZW5lcmF0aW9uIjoyfQ=="
             }
           ]
         },
@@ -34,13 +34,6 @@
         "firstWorkflowTaskBackoff": "1.874127940s",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -170,13 +163,6 @@
         "workflowTaskCompletedEventId": "4",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -263,13 +249,6 @@
         "workflowTaskCompletedEventId": "4",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "Imhpc3RAZXhhbXBsZS5jb20i"
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",

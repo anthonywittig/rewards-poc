@@ -393,7 +393,7 @@ CLI cannot be used to verify this behaviour — check it through the SDK.
 
 The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Event, Level})`
 logs a line saying what would be sent, and returns. The body is a stub — production would call
-an email or push service here — but everything *around* it is real. The request carries the
+a push or messaging service here — but everything *around* it is real. The request carries the
 customer ID and no contact details: a real provider looks those up itself, which keeps them out
 of Event History (#no-authentication-and-no-payload-encryption).
 
@@ -457,8 +457,8 @@ stuck entity workflow. `MaximumAttempts: 3`.
 #### At-least-once, and what that means here
 
 Activities are at-least-once: a worker crash after `NotifyCustomer` runs but before its
-completion is recorded means it runs again on replay. For a real email that is a duplicate in
-someone's inbox.
+completion is recorded means it runs again on replay. For a real notification that is a
+duplicate in someone's inbox.
 
 Two mitigations, both cheap:
 
@@ -1401,11 +1401,10 @@ Postgres implementation.
 Customer names land in Event History and are readable in plaintext in the Temporal UI. Fine for
 a POC; the production answer is a Codec Server. Use obviously fake seed data.
 
-Email addresses were removed from the system entirely rather than being protected: nothing here
-needed one, and the cheapest way to keep a piece of customer data out of plaintext history is not
-to carry it. A namespace bootstrapped before that change still has a `CustomerEmail` search
-attribute registered, holding whatever was last upserted — deregistering it, or a fresh
-`make destroy && make up`, is what actually clears it.
+Contact details are handled the other way round, and more cheaply: the system does not carry any.
+Nothing here needed them, and the surest way to keep a piece of customer data out of plaintext
+history is not to put it there. A real notifier looks up whatever it needs to deliver on, keyed
+by customer ID.
 
 There is no authentication anywhere either. Nothing here is a starting point for something
 exposed.
