@@ -59,6 +59,22 @@ export function temporalUiUrl(): string {
   return fromEnv?.replace(/\/$/, '') || 'http://localhost:8080'
 }
 
+// Matches the namespace the api and worker default to (TEMPORAL_NAMESPACE), and
+// is overridable the same way VITE_TEMPORAL_UI_URL is -- the UI's own routes are
+// namespaced, so a link built with the wrong one 404s rather than misleading.
+export function temporalNamespace(): string {
+  const fromEnv = import.meta.env.VITE_TEMPORAL_NAMESPACE as string | undefined
+  return fromEnv?.trim() || 'rewards'
+}
+
+/** Deep link to one run's Event History — the run the audit rows came from. */
+export function temporalRunUrl(workflowId: string, runId: string): string {
+  const ns = encodeURIComponent(temporalNamespace())
+  return `${temporalUiUrl()}/namespaces/${ns}/workflows/${encodeURIComponent(
+    workflowId,
+  )}/${encodeURIComponent(runId)}/history`
+}
+
 export function listCustomers(query?: string): Promise<CustomerListResponse> {
   const q = query?.trim()
   const qs = q ? `?q=${encodeURIComponent(q)}` : ''

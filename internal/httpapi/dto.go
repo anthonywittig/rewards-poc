@@ -183,7 +183,11 @@ type AuditEntry struct {
 // than silently showing less. The UI renders "Showing 7 of 23 point events."
 // from ShownEarnEvents and LifetimeEarnEvents.
 type AuditResponse struct {
-	CustomerID string       `json:"customerId"`
+	CustomerID string `json:"customerId"`
+	// The execution the entries were crawled from, so the UI can deep-link a run
+	// into the Temporal UI without hardcoding rewards.WorkflowIDPrefix -- a
+	// derivation that would go stale silently, since a wrong link still renders.
+	WorkflowID string       `json:"workflowId"`
 	Entries    []AuditEntry `json:"entries"` // newest first
 	// True when the crawl hit a run whose history had been deleted.
 	Truncated bool `json:"truncated"`

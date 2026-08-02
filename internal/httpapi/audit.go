@@ -104,6 +104,7 @@ func walkRuns(ctx context.Context, fetch historyFetcher, runID string) ([]runAud
 func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse {
 	out := AuditResponse{
 		CustomerID: customerID,
+		WorkflowID: rewards.WorkflowID(customerID),
 		Entries:    []AuditEntry{}, // never null on the wire
 		Truncated:  truncated,
 		RunsWalked: len(runs),
