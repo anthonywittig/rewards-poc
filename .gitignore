@@ -1,4 +1,2 @@
-# Per-stack env files. .env.example is the template and is tracked.
+# Local overrides. The defaults in .env.example are tracked.
 .env
-.env.*
-!.env.example

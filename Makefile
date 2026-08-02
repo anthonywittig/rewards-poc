@@ -1,20 +1,17 @@
 # Rewards POC
 #
-# Every target runs against one stack, selected by ENV. Default is .env when
-# present, otherwise .env.example (so a fresh checkout can `make up` with no
-# copy step). For a second stack side by side, copy .env.example to .env.beta
-# with a different COMPOSE_PROJECT_NAME and ports, then: make up ENV=.env.beta
+# Settings live in .env.example, which is tracked so a fresh checkout runs with
+# no copy step. `cp .env.example .env` to override anything locally; .env wins
+# when it exists, and it has to be a full copy rather than a partial one,
+# because neither compose nor make merges the two.
 
-ENV ?= $(shell test -f .env && echo .env || echo .env.example)
-COMPOSE := docker compose --env-file $(ENV) -f deploy/docker-compose.yml
+ENV_FILE := $(shell test -f .env && echo .env || echo .env.example)
+COMPOSE := docker compose --env-file $(ENV_FILE) -f deploy/docker-compose.yml
 
-# Pull TEMPORAL_* out of the env file so host-side targets can use them.
-NAMESPACE = $(shell grep -E '^TEMPORAL_NAMESPACE=' $(ENV) | cut -d= -f2)
-RETENTION = $(shell grep -E '^TEMPORAL_RETENTION=' $(ENV) | cut -d= -f2)
-REFRESH   = $(shell grep -E '^ES_REFRESH_INTERVAL=' $(ENV) | cut -d= -f2)
-UI_PORT   = $(shell grep -E '^TEMPORAL_UI_PORT=' $(ENV) | cut -d= -f2)
-API_PORT  = $(shell grep -E '^API_PORT=' $(ENV) | cut -d= -f2)
-WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
+# The env file is KEY=value, which is also valid make syntax, so host-side
+# targets read the same settings compose does by including it rather than by
+# grepping each one back out.
+include $(ENV_FILE)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
@@ -29,12 +26,9 @@ help: ## Show this help
 	@grep -hE '^[a-z-]+:.*?## ' $(MAKEFILE_LIST) \
 	  | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-16s\033[0m %s\n", $$1, $$2}'
 
-$(ENV):
-	@echo "No $(ENV) found. Defaults live in .env.example; for a local override run: cp .env.example $(ENV)" >&2; exit 1
-
-up: $(ENV) ## Start the whole stack: bootstrap, worker, API, UI, demo customers
+up: ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
-	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
+	@$(MAKE) --no-print-directory bootstrap
 # Started after bootstrap, so neither one talks to a namespace that doesn't
 # exist yet; --build so a fresh checkout runs code built from its own tree.
 # --wait holds until the API answers /healthz, which is what seeding needs.
@@ -43,7 +37,7 @@ up: $(ENV) ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 # them and changes nothing. A mismatch fails the target on purpose -- it means
 # the running dataset is not the one in cmd/seed, and only `make reset` fixes
 # that. The stack is up either way.
-	@$(MAKE) --no-print-directory seed ENV=$(ENV)
+	@$(MAKE) --no-print-directory seed
 # Last, and deliberately not waited on. A first start installs a few hundred
 # npm packages over a bind mount, which is minutes on Docker Desktop, and
 # nothing else here needs the UI -- blocking on it would hold up seeding and
@@ -52,56 +46,56 @@ up: $(ENV) ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 	$(COMPOSE) up -d web
 	@echo
 	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make web-logs)"
-	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
+	@echo "Temporal UI:  http://localhost:$(TEMPORAL_UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
-	@echo "Namespace:    $(NAMESPACE) (retention $(RETENTION))"
+	@echo "Namespace:    $(TEMPORAL_NAMESPACE) (retention $(TEMPORAL_RETENTION))"
 
-down: $(ENV) ## Stop the stack, keep data
+down: ## Stop the stack, keep data
 	$(COMPOSE) down
 
-destroy: $(ENV) ## Stop the stack and delete its volumes
+destroy: ## Stop the stack and delete its volumes
 	$(COMPOSE) down -v
 
-bootstrap: $(ENV) ## Create namespace + search attributes (idempotent)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) TEMPORAL_RETENTION=$(RETENTION) \
-	  ES_REFRESH_INTERVAL=$(REFRESH) bash /bootstrap.sh
+bootstrap: ## Create namespace + search attributes (idempotent)
+	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) TEMPORAL_RETENTION=$(TEMPORAL_RETENTION) \
+	  ES_REFRESH_INTERVAL=$(ES_REFRESH_INTERVAL) bash /bootstrap.sh
 
-logs: $(ENV) ## Tail logs (make logs SVC=temporal)
+logs: ## Tail logs (make logs SVC=temporal)
 	$(COMPOSE) logs -f $(SVC)
 
-ps: $(ENV) ## Show stack status
+ps: ## Show stack status
 	$(COMPOSE) ps
 
-tools: $(ENV) ## Shell in the temporal container (temporal CLI on PATH)
+tools: ## Shell in the temporal container (temporal CLI on PATH)
 	$(COMPOSE) exec temporal bash
 
 # Interactive shell, or a canned query: make psql Q=history-blob ID=inspect
-psql: $(ENV) ## psql into Temporal persistence (Q=… for canned inspect queries)
+psql: ## psql into Temporal persistence (Q=… for canned inspect queries)
 ifeq ($(Q),)
 	$(COMPOSE) exec postgres psql -U temporal -d temporal
 else
-	@$(MAKE) --no-print-directory inspect-pg ENV=$(ENV) Q=$(Q) ID=$(ID)
+	@$(MAKE) --no-print-directory inspect-pg Q=$(Q) ID=$(ID)
 endif
 
 # Index summary, or a canned query: make es Q=mapping
-es: $(ENV) ## Elasticsearch summary (Q=… for canned inspect queries)
+es: ## Elasticsearch summary (Q=… for canned inspect queries)
 ifeq ($(Q),)
 	@$(TCTL) curl -s "http://elasticsearch:9200/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size,docs.deleted"
 else
-	@$(MAKE) --no-print-directory inspect-es ENV=$(ENV) Q=$(Q) ID=$(ID)
+	@$(MAKE) --no-print-directory inspect-es Q=$(Q) ID=$(ID)
 endif
 
-verify-config: $(ENV) ## Check the platform behaviour the plan depends on
+verify-config: ## Check the platform behaviour the plan depends on
 	@$(TCTL) bash /inspect/verify-config.sh
 
-reap: $(ENV) ## Delete closed executions now (make reap WF=customer-x)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) WF="$(WF)" bash /reap.sh
+reap: ## Delete closed executions now (make reap WF=customer-x)
+	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) WF="$(WF)" bash /reap.sh
 
 # Distinct from reap, which spares running executions on purpose. This one takes
 # everything, for when workflow code has changed under live executions and the
 # dev answer is to start over.
-reset: $(ENV) ## Delete EVERY customer workflow, running included (dev only)
-	@$(TCTL) env TEMPORAL_NAMESPACE=$(NAMESPACE) bash /reset.sh
+reset: ## Delete EVERY customer workflow, running included (dev only)
+	@$(TCTL) env TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) bash /reset.sh
 
 # --- Datastore inspection -----------------------------------------------------
 # Canned queries live in deploy/inspect/. Docs: docs/DATASTORES.md.
@@ -124,7 +118,7 @@ inspect: ## List canned Postgres/ES inspect queries
 	@echo "End-to-end: make write-trace ID=$(ID) AMOUNT=10"
 	@echo "Docs:       docs/DATASTORES.md"
 
-inspect-pg: $(ENV) ## Run a Postgres inspect query (make inspect-pg Q=history-blob ID=inspect)
+inspect-pg: ## Run a Postgres inspect query (make inspect-pg Q=history-blob ID=inspect)
 	@case "$(Q)" in \
 	  history-blob) f=pg-01-history-blob.sql ;; \
 	  current-run) f=pg-02-current-run.sql ;; \
@@ -137,7 +131,7 @@ inspect-pg: $(ENV) ## Run a Postgres inspect query (make inspect-pg Q=history-bl
 	   psql -U temporal -d temporal -v ON_ERROR_STOP=1 -v wf=customer-$(ID) \
 	   < deploy/inspect/$$f
 
-inspect-es: $(ENV) ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
+inspect-es: ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
 	@case "$(Q)" in \
 	  mapping) f=es-01-mapping.sh ;; \
 	  customer) f=es-02-customer.sh ;; \
@@ -149,8 +143,9 @@ inspect-es: $(ENV) ## Run an ES inspect query (make inspect-es Q=mapping ID=insp
 	 echo "# deploy/inspect/$$f  (WF=customer-$(ID))"; \
 	 $(TCTL) env WF=customer-$(ID) bash /inspect/$$f
 
-write-trace: $(ENV) ## Trace one addPoints through Postgres + ES (make write-trace ID=inspect)
-	@NAMESPACE=$(NAMESPACE) ENV=$(ENV) ID=$(ID) AMOUNT=$(or $(AMOUNT),10) \
+write-trace: ## Trace one addPoints through Postgres + ES (make write-trace ID=inspect)
+	@TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) ENV_FILE=$(ENV_FILE) \
+	  ID=$(ID) AMOUNT=$(or $(AMOUNT),10) \
 	  bash deploy/inspect/write-trace.sh
 
 # --- Workflow (Phase 1) -----------------------------------------------------
@@ -181,29 +176,28 @@ workflowcheck: ## Static determinism check on workflow code
 	$(WORKFLOWCHECK) ./...
 
 # The worker and the api are Compose services (deploy/Dockerfile), started by
-# `make up` and isolated per stack by COMPOSE_PROJECT_NAME like everything else.
-# A code change is therefore a rebuild rather than a Ctrl-C, and these targets
-# are both halves of it: --build recompiles, `up -d` recreates the container.
+# `make up`. A code change is therefore a rebuild rather than a Ctrl-C, and these
+# targets are both halves of it: --build recompiles, `up -d` recreates the container.
 # What is running is never older than the source tree it was last built from.
-worker: $(ENV) ## Rebuild and restart the worker with the current code
+worker: ## Rebuild and restart the worker with the current code
 	$(COMPOSE) up -d --build worker
 
-worker-logs: $(ENV) ## Tail the worker's logs (Ctrl-C to stop tailing)
+worker-logs: ## Tail the worker's logs (Ctrl-C to stop tailing)
 	$(COMPOSE) logs -f worker
 
 # `compose stop` is an explicit stop, so restart: unless-stopped leaves it down
 # until `make worker` brings it back. Handy for watching the API's 503
 # worker_unavailable path.
-worker-stop: $(ENV) ## Stop the worker (leaves the rest of the stack up)
+worker-stop: ## Stop the worker (leaves the rest of the stack up)
 	$(COMPOSE) stop worker
 
-api: $(ENV) ## Rebuild and restart the HTTP API with the current code
+api: ## Rebuild and restart the HTTP API with the current code
 	$(COMPOSE) up -d --build --wait api
 
-api-logs: $(ENV) ## Tail the API's logs (Ctrl-C to stop tailing)
+api-logs: ## Tail the API's logs (Ctrl-C to stop tailing)
 	$(COMPOSE) logs -f api
 
-api-stop: $(ENV) ## Stop the API (leaves the rest of the stack up)
+api-stop: ## Stop the API (leaves the rest of the stack up)
 	$(COMPOSE) stop api
 
 # The Vite dev server is a Compose service too, with web/ bind-mounted, so an
@@ -211,23 +205,22 @@ api-stop: $(ENV) ## Stop the API (leaves the rest of the stack up)
 # the way up, so the first start is minutes and later ones are seconds; nothing
 # waits on it, so that cost lands on the UI alone.
 #
-# Its serve port, proxy target and Temporal UI URL come from $(ENV) via compose,
-# so `make web ENV=.env.beta` serves on beta's WEB_PORT and points at beta's API
-# and Temporal UI. A shell variable outranks web/.env* in Vite's loadEnv, so this
-# wins over a local override file.
-web: $(ENV) ## Start (or restart) the Vite UI in the stack
+# Its serve port, proxy target and Temporal UI URL are passed in by compose. A
+# shell variable outranks web/.env* in Vite's loadEnv, so those win over a local
+# override file.
+web: ## Start (or restart) the Vite UI in the stack
 	$(COMPOSE) up -d web
 
-web-logs: $(ENV) ## Tail the Vite dev server's logs (Ctrl-C to stop tailing)
+web-logs: ## Tail the Vite dev server's logs (Ctrl-C to stop tailing)
 	$(COMPOSE) logs -f web
 
 # The typecheck the container used to run on every start. Vite's dev server does
 # not typecheck, so this is the only thing that does -- run it before believing
 # the UI compiles.
-web-check: $(ENV) ## Typecheck and production-build the UI (tsc -b && vite build)
+web-check: ## Typecheck and production-build the UI (tsc -b && vite build)
 	$(COMPOSE) exec -T web npm run build
 
-web-stop: $(ENV) ## Stop the UI (leaves the rest of the stack up)
+web-stop: ## Stop the UI (leaves the rest of the stack up)
 	$(COMPOSE) stop web
 
 # The CLI targets below are the Phase 1 acceptance path: the whole workflow is
@@ -239,10 +232,10 @@ web-stop: $(ENV) ## Stop the UI (leaves the rest of the stack up)
 ID ?= c-001
 TCLI = $(COMPOSE) exec -T \
          -e TEMPORAL_ADDRESS=temporal:7233 \
-         -e TEMPORAL_NAMESPACE=$(NAMESPACE) \
+         -e TEMPORAL_NAMESPACE=$(TEMPORAL_NAMESPACE) \
          temporal temporal
 
-enroll: $(ENV) ## Enroll a customer (make enroll ID=c-001 NAME="Ada")
+enroll: ## Enroll a customer (make enroll ID=c-001 NAME="Ada")
 	@$(TCLI) workflow start \
 	  --task-queue rewards \
 	  --type CustomerRewardsWorkflow \
@@ -250,21 +243,21 @@ enroll: $(ENV) ## Enroll a customer (make enroll ID=c-001 NAME="Ada")
 	  --id-conflict-policy Fail \
 	  --input '{"customerId":"$(ID)","name":"$(or $(NAME),Ada Lovelace)"}'
 
-status: $(ENV) ## Query a customer's status (make status ID=c-001)
+status: ## Query a customer's status (make status ID=c-001)
 	@$(TCLI) workflow query --workflow-id customer-$(ID) --type getStatus
 
-add: $(ENV) ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
+add: ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: $(ENV) ## Soft-leave the program (make deactivate ID=c-001)
+deactivate: ## Soft-leave the program (make deactivate ID=c-001)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name deactivate
 
-reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001)
+reactivate: ## Re-enroll and restore points (make reactivate ID=c-001)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name reactivate
@@ -275,7 +268,7 @@ reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001)
 #
 #   make audit ID=c-001
 #   $(COMPOSE) exec temporal temporal workflow show --workflow-id customer-c-001
-audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
+audit: ## Show the reconstructed audit timeline (make audit ID=c-001)
 	@curl -sf localhost:$(API_PORT)/api/customers/$(ID)/audit \
 	  || { echo "no API on :$(API_PORT) -- check 'make ps'" >&2; exit 1; }
 
@@ -294,5 +287,5 @@ audit: $(ENV) ## Show the reconstructed audit timeline (make audit ID=c-001)
 # a step that is only meant to fill a demo stack. `run --rm` because it exits;
 # --build so it is never older than cmd/seed; -T because there is no terminal to
 # attach to when make calls it.
-seed: $(ENV) ## Seed demo customers (idempotent; `make reset` first for a clean slate)
+seed: ## Seed demo customers (idempotent; `make reset` first for a clean slate)
 	$(COMPOSE) run --rm -T --build seed

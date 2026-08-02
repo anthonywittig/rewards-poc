@@ -2,21 +2,15 @@
 # follow one addPoints call through Postgres and Elasticsearch.
 # Invoked from the host by `make write-trace ID=inspect AMOUNT=10`.
 #
-# Expects compose project env already loaded by Make (COMPOSE, NAMESPACE, …)
-# and a worker polling the rewards task queue.
+# Expects ENV_FILE and TEMPORAL_NAMESPACE passed in by Make, and a worker
+# polling the rewards task queue.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 
-if [[ -n "${ENV:-}" ]]; then
-  ENV_FILE="$ENV"
-elif [[ -f .env ]]; then
-  ENV_FILE=.env
-else
-  ENV_FILE=.env.example
-fi
+ENV_FILE="${ENV_FILE:?ENV_FILE must be set by Make}"
 ID="${ID:-inspect}"
 AMOUNT="${AMOUNT:-10}"
 REASON="${REASON:-write-trace}"
@@ -27,7 +21,7 @@ PSQL=("${COMPOSE[@]}" exec -T postgres psql -U temporal -d temporal -v "ON_ERROR
 TCTL=("${COMPOSE[@]}" exec -T temporal)
 TCLI=("${COMPOSE[@]}" exec -T \
   -e TEMPORAL_ADDRESS=temporal:7233 \
-  -e "TEMPORAL_NAMESPACE=${NAMESPACE:?NAMESPACE must be set by Make}" \
+  -e "TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE:?TEMPORAL_NAMESPACE must be set by Make}" \
   temporal temporal)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }

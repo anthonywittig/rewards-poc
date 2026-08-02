@@ -20,8 +20,9 @@ one. **Go** 1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an old
 `GOTOOLCHAIN=auto` fetches it) is only for `make test` and `make workflowcheck`, and **Node** 20+
 only if you want to run `npm` against `web/` yourself.
 
-Configuration defaults come from `.env.example`, so a fresh checkout needs no copy step. Copy it
-to `.env` only when you want local overrides.
+Every setting lives in `.env.example`, which is tracked, so a fresh checkout needs no copy step.
+Copy it to `.env` when you want local overrides — a full copy, since neither compose nor the
+Makefile merges the two.
 
 ```sh
 # 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
@@ -90,14 +91,6 @@ derives a different ID, which is a different customer.
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
 | `make verify-config` | re-check the platform assumptions the design depends on |
 
-Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
-`.env.example` to `.env.beta`, set a different `COMPOSE_PROJECT_NAME` and bump every `*_PORT`,
-then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
-and volumes — beta's UI serves on beta's `WEB_PORT`, proxying to beta's API and linking to beta's
-Temporal UI.
-Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
-on one stack is much cheaper if you only need isolated workflows.
-
 ## The HTTP API
 
 ```sh
@@ -152,7 +145,7 @@ development.
 The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
 deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
 the one that survives into production. The `web` service proxies to the API over the compose
-network, so a second stack's UI reaches its own API without either one publishing a port.
+network, so neither has to publish a port for the other to reach it.
 
 ## Things worth seeing
 

@@ -4,8 +4,11 @@
 #
 # Run via the Makefile at the repo root, which points here and loads .env
 # (or .env.example when .env is absent).
+#
+# The project name is fixed here rather than passed in, because it is what names
+# the containers, network and volumes, and nothing about it varies per checkout.
 
-name: ${COMPOSE_PROJECT_NAME:-rewards-alpha}
+name: rewards-poc
 
 services:
   postgres:
@@ -143,8 +146,8 @@ services:
       - TEMPORAL_HOSTPORT=temporal:7233
       - TEMPORAL_NAMESPACE=${TEMPORAL_NAMESPACE}
       # Fixed inside the container, like every other service here: API_PORT is
-      # the host-side knob, applied by the port mapping below, so a second stack
-      # publishes a different port without changing what the process binds.
+      # the host-side knob, applied by the port mapping below, so republishing on
+      # a different port does not change what the process binds.
       - API_PORT=8081
     ports:
       - "${API_PORT}:8081"
