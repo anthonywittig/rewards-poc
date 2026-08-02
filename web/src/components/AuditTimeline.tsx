@@ -1,3 +1,4 @@
+import { temporalRunUrl } from '../api'
 import type { AuditResponse } from '../types'
 import { formatWhen, tierLabel } from '../format'
 
@@ -20,8 +21,15 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
                 >
                   <div className="when">{formatWhen(e.at)}</div>
                   <div className="body">
-                    [debug] Generation {e.generation} — continue-as-new
-                    workflow started
+                    [debug]{' '}
+                    <a
+                      href={temporalRunUrl(audit.workflowId, e.runId)}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Generation {e.generation} — continue-as-new workflow
+                      started
+                    </a>
                   </div>
                 </div>
               )

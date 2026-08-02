@@ -208,6 +208,9 @@ services:
       # published port.
       - VITE_API_PROXY_TARGET=http://api:8081
       - VITE_TEMPORAL_UI_URL=http://localhost:8080
+      # The UI's routes are namespaced, so a run deep-link needs this to match
+      # the namespace the api and worker are pointed at.
+      - VITE_TEMPORAL_NAMESPACE=rewards
     volumes:
       - ../web:/app
       - web-node-modules:/app/node_modules

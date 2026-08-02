@@ -123,6 +123,7 @@ export interface AuditEntry {
 
 export interface AuditResponse {
   customerId: string
+  workflowId: string
   entries: AuditEntry[]
   truncated: boolean
   shownEarnEvents: number
