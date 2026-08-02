@@ -32,7 +32,6 @@ export class ApiError extends Error {
 export interface CustomerListItem {
   customerId: string
   name: string
-  email: string
   points: number
   level: string
   enrolledAt: string
@@ -61,7 +60,6 @@ export interface Tier {
 export interface CustomerResponse {
   customerId: string
   name: string
-  email: string
   points: number
   level: string
   nextTierAt: number
@@ -81,7 +79,6 @@ export interface EnrollRequest {
    */
   customerId?: string
   name: string
-  email: string
 }
 
 export interface EnrollResponse {

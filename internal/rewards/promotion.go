@@ -46,7 +46,6 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 		}
 		return NotifyRequest{
 			CustomerID: state.CustomerID,
-			Email:      state.Email,
 			Event:      NotifyEventPromoted,
 			Level:      t.Level,
 			// A customer reaches each tier once, so this is a natural key --
@@ -62,7 +61,6 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 func DepartureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,
-		Email:          state.Email,
 		Event:          NotifyEventDeparted,
 		Level:          Level(state.Points),
 		IdempotencyKey: state.CustomerID + ":" + NotifyEventDeparted,

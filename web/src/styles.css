@@ -388,8 +388,8 @@ tbody tr:last-child td {
   border-bottom: none;
 }
 
-/* The id · email line under a customer's name. Placeholder rows reproduce it so
-   they occupy exactly the height of the row they are standing in for. */
+/* The customer-id line under a customer's name. Placeholder rows reproduce it
+   so they occupy exactly the height of the row they are standing in for. */
 .row-sub {
   font-size: 0.78rem;
 }
@@ -516,7 +516,7 @@ tbody tr:last-child td {
   letter-spacing: -0.02em;
 }
 
-.detail-hero .email {
+.detail-hero .customer-id {
   margin: 0;
   color: var(--mist);
 }

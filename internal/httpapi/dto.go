@@ -12,7 +12,6 @@ import (
 type EnrollRequest struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
-	Email      string `json:"email"`
 }
 
 // AddPointsRequest is the body of POST /api/customers/{id}/points.
@@ -39,7 +38,6 @@ type AddPointsRequest struct {
 type CustomerResponse struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
-	Email      string    `json:"email"`
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	NextTierAt int       `json:"nextTierAt"`
@@ -87,7 +85,6 @@ type EnrollResponse struct {
 type CustomerListItem struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
-	Email      string    `json:"email"`
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	EnrolledAt time.Time `json:"enrolledAt"`

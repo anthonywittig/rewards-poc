@@ -33,7 +33,7 @@ Elasticsearch **7.17.27** and `ENABLE_ES=true`.
 
 ```sh
 make up          # Postgres + ES + Temporal + UI + worker + api, seeded
-make enroll ID=inspect NAME="Inspect Ada" EMAIL=inspect@example.com
+make enroll ID=inspect NAME="Inspect Ada"
 # a few adds so continue-as-new has something to show:
 for i in 1 2 3 4 5 6 7; do make add ID=inspect AMOUNT=100 REASON="add $i"; done
 ```

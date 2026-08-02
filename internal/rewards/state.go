@@ -121,7 +121,6 @@ const EarnsPerRun = 3
 type CustomerState struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
-	Email      string `json:"email"`
 
 	// Points only ever increase -- no spending, redemption, expiry or
 	// adjustment. That is why there is no separate lifetime total: with a

@@ -58,17 +58,18 @@ The whole workflow is usable with no API and no UI — these targets go straight
 CLI inside the server container.
 
 ```sh
-make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
+make enroll ID=c-001 NAME="Ada Lovelace"
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
 make deactivate ID=c-001                          # soft leave; the workflow keeps running
-make reactivate ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com   # rejoin, balance intact
+make reactivate ID=c-001                          # rejoin, balance intact
 make audit  ID=c-001                              # the timeline, crawled out of Event History
 ```
 
-Re-enrollment takes the name and email it is given, so pass them unless you mean to change them
-— the target's defaults are a convenience for throwaway IDs, not a no-op.
+Re-enrollment takes no argument: it restores membership and touches nothing else. The name
+cannot change, because the customer ID is derived from it — a signup under a different name
+derives a different ID, which is a different customer.
 
 ## Commands
 
@@ -104,11 +105,11 @@ on one stack is much cheaper if you only need isolated workflows.
 # returns it. Signing up twice under one name is the same customer, so the
 # second attempt is a 409 -- or a rejoin, if they had left.
 curl -XPOST localhost:8081/api/customers \
-  -d '{"name":"Ada Lovelace","email":"ada@example.com"}'
+  -d '{"name":"Ada Lovelace"}'
 
 # Sending one picks the ID yourself, whatever the name says.
 curl -XPOST localhost:8081/api/customers \
-  -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'
+  -d '{"customerId":"c-001","name":"Ada Lovelace"}'
 
 curl localhost:8081/api/customers/c-001
 curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":500,"reason":"purchase"}'
@@ -137,7 +138,7 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
 | | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | malformed body, missing `email`, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
+| 400 | `invalid_request` | malformed body, a missing `name`, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
 | 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |
@@ -161,7 +162,7 @@ Each of these takes a couple of commands against a running stack.
 one carrying state forward.
 
 ```sh
-make enroll ID=roll NAME="Rolly Poly" EMAIL=r@example.com
+make enroll ID=roll NAME="Rolly Poly"
 for i in 1 2 3 4 5 6 7; do make add ID=roll AMOUNT=100 REASON="add $i"; done
 make status ID=roll     # generation 2, points 700
 ```
@@ -252,7 +253,7 @@ w.RegisterActivity(&activities.Activities{Notifier: activities.LogNotifier{}})
 
 `RegisterActivity` on a struct registers every exported method under the method's own name, so
 `NotifyCustomer` is still registered as `"NotifyCustomer"` — which the audit crawl matches on, and
-`TestActivityNameMatchesRegistration` pins. Injecting a real email or push provider is a different
+`TestActivityNameMatchesRegistration` pins. Injecting a real notification provider is a different
 value in that one line and no change anywhere else.
 
 ## Behaviour to expect

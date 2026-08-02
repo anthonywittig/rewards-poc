@@ -13,7 +13,6 @@ package workflows
 
 import (
 	"fmt"
-	"strings"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
@@ -195,28 +194,26 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
 	}
 
-	if err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateReactivate,
-		func(ctx workflow.Context, req rewards.ReactivateRequest) (rewards.ReactivateResult, error) {
+	// Takes no argument, and there is nothing left for one to carry. The customer
+	// ID is derived from the name (rewards.CustomerIDForName), so a re-enrollment
+	// only reaches this handler when it landed on this customer's workflow ID --
+	// which means the name it arrived with already differs from the stored one by
+	// no more than the slug throws away. Adopting it could only overwrite a
+	// well-cased name with however the rejoiner typed it.
+	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateReactivate,
+		func(ctx workflow.Context) (rewards.ReactivateResult, error) {
 			// Not an error: re-enrolling an active customer is a duplicate, and
 			// the API turns Changed=false into a 409. Reported rather than
-			// applied, so a racing enroll cannot overwrite a live customer's
-			// name and email with a second signup's.
+			// applied, so a racing enroll cannot restart a membership that never
+			// ended.
 			if !state.Deactivated {
 				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
-			}
-			if strings.TrimSpace(req.Email) == "" {
-				return rewards.ReactivateResult{}, temporal.NewNonRetryableApplicationError(
-					"email is required", rewards.ErrTypeInvalidEnrollment, nil)
 			}
 
 			// Staged and committed exactly as deactivate does, and for the same
 			// reason: a failed upsert must not leave the customer reactivated
-			// under a name and email the caller was told did not take.
+			// after the caller was told it did not take.
 			next := state
-			if name := strings.TrimSpace(req.Name); name != "" {
-				next.Name = name
-			}
-			next.Email = strings.TrimSpace(req.Email)
 			next.Deactivated = false
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
 				return rewards.ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
@@ -228,16 +225,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"points", state.Points,
 				"level", rewards.Level(state.Points))
 			return rewards.ReactivateResult{Changed: true, Status: rewards.StatusOf(&state)}, nil
-		},
-		workflow.UpdateHandlerOptions{
-			Validator: func(ctx workflow.Context, req rewards.ReactivateRequest) error {
-				if strings.TrimSpace(req.Email) == "" {
-					return fmt.Errorf("email is required")
-				}
-				return nil
-			},
-		},
-	); err != nil {
+		}); err != nil {
 		return fmt.Errorf("register %s update: %w", rewards.UpdateReactivate, err)
 	}
 
@@ -295,7 +283,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {
 	return workflow.UpsertTypedSearchAttributes(ctx,
 		rewards.KeyCustomerID.ValueSet(state.CustomerID),
-		rewards.KeyCustomerEmail.ValueSet(state.Email),
 		rewards.KeyCustomerName.ValueSet(state.Name),
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),

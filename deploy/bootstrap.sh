@@ -22,7 +22,6 @@ log() { printf '  %s\n' "$*"; }
 # Keep in sync with internal/rewards/searchattr.go.
 declare -A SEARCH_ATTRS=(
   [CustomerId]=Keyword
-  [CustomerEmail]=Keyword
   [CustomerName]=Text
   [RewardsLevel]=Keyword
   [RewardsPoints]=Int

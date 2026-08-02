@@ -25,7 +25,7 @@ func TestCustomerIDForName(t *testing.T) {
 		{"  Ada  Lovelace  ", "ada-lovelace"},
 		{"ADA LOVELACE", "ada-lovelace"},
 		{"O'Brien-Smith, Jr.", "o-brien-smith-jr"},
-		{"ada@example.com", "ada-example-com"},
+		{"ada+lovelace@work", "ada-lovelace-work"},
 		{"C3PO", "c3po"},
 		// Nothing to build an ID out of. The handler turns this into a 400
 		// rather than inventing one.
@@ -44,7 +44,7 @@ func TestCustomerIDForName(t *testing.T) {
 // Whatever comes out has to be usable as a workflow ID and a path segment.
 func TestCustomerIDForName_ShapeSurvivesAnyName(t *testing.T) {
 	for _, name := range []string{
-		"Ada Lovelace", "  Ada  Lovelace  ", "O'Brien-Smith, Jr.", "ada@example.com",
+		"Ada Lovelace", "  Ada  Lovelace  ", "O'Brien-Smith, Jr.", "ada+lovelace@work",
 		"C3PO", "-- dashes --", "半角/全角", strings.Repeat("Wolfeschlegelstein ", 4),
 	} {
 		id := rewards.CustomerIDForName(name)
@@ -77,7 +77,7 @@ func TestCustomerIDForName_IsStable(t *testing.T) {
 // does -- the workflow refuses a payload that does not match its workflow ID.
 func TestCustomerIDForName_PassesEnrollmentValidation(t *testing.T) {
 	id := rewards.CustomerIDForName("Ada Lovelace")
-	state := &rewards.CustomerState{CustomerID: id, Name: "Ada Lovelace", Email: "ada@example.com"}
+	state := &rewards.CustomerState{CustomerID: id, Name: "Ada Lovelace"}
 	if err := rewards.ValidateEnrollment(rewards.WorkflowID(id), state); err != nil {
 		t.Errorf("ValidateEnrollment(%q) = %v, want nil", id, err)
 	}

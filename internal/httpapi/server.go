@@ -62,8 +62,8 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 // enroll starts a customer's workflow, or reactivates a soft-deactivated one.
 //
 // The ID is the caller's only when they send one. A signup from the UI does
-// not: it sends a name and an email, and the server derives the ID from the
-// name (rewards.CustomerIDForName).
+// not: it sends a name, and the server derives the ID from it
+// (rewards.CustomerIDForName).
 //
 // Re-enrollment keeps the existing balance: the workflow ID is still occupied,
 // so we Update rather than Start, and Deactivated flips back to false with
@@ -76,11 +76,15 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	req.CustomerID = strings.TrimSpace(req.CustomerID)
-	if strings.TrimSpace(req.Email) == "" {
-		return badRequest("email is required")
-	}
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
+	}
+	// Required whether or not the ID is derived from it. A caller who sends
+	// their own customerId would otherwise start a nameless customer, which the
+	// workflow refuses anyway -- as a failed execution rather than this 400.
+	req.Name = strings.TrimSpace(req.Name)
+	if req.Name == "" {
+		return badRequest("name is required")
 	}
 	if req.CustomerID == "" {
 		// Derived, not minted: the same name derives the same ID every time, so
@@ -102,7 +106,6 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
-		Email:      req.Email,
 	})
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
@@ -128,16 +131,13 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 			"customer is already enrolled and active"}
 	}
 
-	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
-		Name:  req.Name,
-		Email: req.Email,
-	})
+	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID)
 	if err != nil {
 		return err
 	}
 	// The customer went active between the check above and the Update -- a
-	// concurrent enroll won. The handler reports that rather than applying our
-	// name and email over theirs, so this is still the duplicate 409.
+	// concurrent enroll won. The handler reports that rather than restarting a
+	// membership that never ended, so this is still the duplicate 409.
 	if !res.Changed {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
@@ -235,7 +235,6 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		items = append(items, CustomerListItem{
 			CustomerID: id,
 			Name:       v.Name,
-			Email:      v.Email,
 			Points:     v.Points,
 			Level:      v.Level,
 			EnrolledAt: v.EnrolledAt,
@@ -360,7 +359,6 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	out.Name = st.Name
-	out.Email = st.Email
 	out.Points = st.Points
 	out.Level = st.Level
 	out.NextTierAt = st.NextTierAt
@@ -507,7 +505,7 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 // workflow's own word and nothing else.
 //
 // Deliberately not answerable from visibility, however tempting: enroll
-// *reactivates* on a false, rewriting a live customer's name and email, so this
+// *reactivates* on a false, rewriting a live customer's name, so this
 // is the question here whose wrong answer is destructive and the last one to
 // settle from a store that lags writes. An error the caller cannot act on is
 // both the honest answer and the safe one.
@@ -575,7 +573,7 @@ func (s *Server) sendUpdate(
 }
 
 func (s *Server) sendReactivate(
-	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+	ctx context.Context, wfID string,
 ) (rewards.ReactivateResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
@@ -583,7 +581,6 @@ func (s *Server) sendReactivate(
 	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   wfID,
 		UpdateName:   rewards.UpdateReactivate,
-		Args:         []any{req},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -618,11 +615,11 @@ func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.Deact
 // reactivateWithRolloverRetry mirrors updateWithRolloverRetry: a re-enroll that
 // races continue-as-new must retry against the successor rather than 404.
 func (s *Server) reactivateWithRolloverRetry(
-	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+	ctx context.Context, wfID string,
 ) (rewards.ReactivateResult, error) {
 	const attempts = 2
 	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := s.sendReactivate(ctx, wfID, req)
+		res, err := s.sendReactivate(ctx, wfID)
 		if err == nil {
 			return res, nil
 		}
@@ -702,7 +699,6 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 type searchAttrValues struct {
 	CustomerID string
 	Name       string
-	Email      string
 	Points     int
 	Level      string
 	EnrolledAt time.Time
@@ -736,7 +732,6 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 
 	decodeStr(rewards.KeyCustomerID.GetName(), &out.CustomerID)
 	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
-	decodeStr(rewards.KeyCustomerEmail.GetName(), &out.Email)
 	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
 	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
 	decodeInt(rewards.KeyGeneration.GetName(), &out.Generation)

@@ -43,12 +43,6 @@ type DeactivateResult struct {
 	Changed bool `json:"changed"`
 }
 
-// ReactivateRequest is the reactivate Update argument (re-enrollment).
-type ReactivateRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
-}
-
 // ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
 // re-enrollment from a no-op against a customer who was already active. The API
 // tells a restore (200) from a duplicate enrollment (409) by it.
@@ -61,7 +55,6 @@ type ReactivateResult struct {
 type CustomerStatus struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
-	Email      string    `json:"email"`
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
@@ -87,7 +80,6 @@ func StatusOf(state *CustomerState) CustomerStatus {
 	return CustomerStatus{
 		CustomerID:         state.CustomerID,
 		Name:               state.Name,
-		Email:              state.Email,
 		Points:             state.Points,
 		Level:              Level(state.Points),
 		NextTierAt:         nextAt,

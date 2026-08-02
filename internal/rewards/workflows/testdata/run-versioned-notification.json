@@ -19,7 +19,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJuYW1lIjoiVmVyc2lvbmVkIE5vdGlmeSIsImVtYWlsIjoidjFub3RpZnlAZXhhbXBsZS5jb20iLCJwb2ludHMiOjAsImVucm9sbGVkQXQiOiIwMDAxLTAxLTAxVDAwOjAwOjAwWiIsImxpZmV0aW1lRWFybkV2ZW50cyI6MCwiZ2VuZXJhdGlvbiI6MH0="
+              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJuYW1lIjoiVmVyc2lvbmVkIE5vdGlmeSIsInBvaW50cyI6MCwiZW5yb2xsZWRBdCI6IjAwMDEtMDEtMDFUMDA6MDA6MDBaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjowLCJnZW5lcmF0aW9uIjowfQ=="
             }
           ]
         },
@@ -97,13 +97,6 @@
         "workflowTaskCompletedEventId": "4",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InYxbm90aWZ5QGV4YW1wbGUuY29tIg=="
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -288,13 +281,6 @@
         "workflowTaskCompletedEventId": "10",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InYxbm90aWZ5QGV4YW1wbGUuY29tIg=="
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -451,13 +437,6 @@
         "workflowTaskCompletedEventId": "16",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InYxbm90aWZ5QGV4YW1wbGUuY29tIg=="
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -614,13 +593,6 @@
         "workflowTaskCompletedEventId": "22",
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InYxbm90aWZ5QGV4YW1wbGUuY29tIg=="
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
@@ -712,7 +684,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJlbWFpbCI6InYxbm90aWZ5QGV4YW1wbGUuY29tIiwiZXZlbnQiOiJwcm9tb3RlZCIsImxldmVsIjoiZ29sZCIsImlkZW1wb3RlbmN5S2V5IjoidjFub3RpZnk6Z29sZCJ9"
+              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJldmVudCI6InByb21vdGVkIiwibGV2ZWwiOiJnb2xkIiwiaWRlbXBvdGVuY3lLZXkiOiJ2MW5vdGlmeTpnb2xkIn0="
             }
           ]
         },
@@ -822,7 +794,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJuYW1lIjoiVmVyc2lvbmVkIE5vdGlmeSIsImVtYWlsIjoidjFub3RpZnlAZXhhbXBsZS5jb20iLCJwb2ludHMiOjYwMCwiZW5yb2xsZWRBdCI6IjIwMjYtMDgtMDFUMDA6Mjg6NTcuMjEwMTg2NjM0WiIsImxpZmV0aW1lRWFybkV2ZW50cyI6MywiZ2VuZXJhdGlvbiI6MSwibm90aWZpZWRMZXZlbHMiOlsiZ29sZCJdfQ=="
+              "data": "eyJjdXN0b21lcklkIjoidjFub3RpZnkiLCJuYW1lIjoiVmVyc2lvbmVkIE5vdGlmeSIsInBvaW50cyI6NjAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wOC0wMVQwMDoyODo1Ny4yMTAxODY2MzRaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjozLCJnZW5lcmF0aW9uIjoxLCJub3RpZmllZExldmVscyI6WyJnb2xkIl19"
             }
           ]
         },
@@ -832,13 +804,6 @@
         "header": {},
         "searchAttributes": {
           "indexedFields": {
-            "CustomerEmail": {
-              "metadata": {
-                "encoding": "anNvbi9wbGFpbg==",
-                "type": "S2V5d29yZA=="
-              },
-              "data": "InYxbm90aWZ5QGV4YW1wbGUuY29tIg=="
-            },
             "CustomerId": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",

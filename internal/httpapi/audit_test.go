@@ -20,8 +20,11 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// The golden files in testdata/ are verbatim `temporal workflow show -o json`
-// output from the local stack, one file per run:
+// The golden files in testdata/ are `temporal workflow show -o json` output from
+// the local stack, one file per run. Verbatim but for one edit: the customer
+// contact details those runs carried have been stripped from the recorded
+// payloads and search attributes, since nothing reads them any more. One file
+// per run:
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of

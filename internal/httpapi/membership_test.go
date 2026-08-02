@@ -127,7 +127,7 @@ func TestListCustomers_StatusComesFromRewardsActive(t *testing.T) {
 // new customer.
 func TestEnroll_FreeIDStarts(t *testing.T) {
 	stub := &stubTemporal{}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
 
 	if code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", code, body)
@@ -142,7 +142,7 @@ func TestEnroll_FreeIDStarts(t *testing.T) {
 // empty one there strands the customer the request just created.
 func TestEnroll_WithoutAnIDDerivesOneFromTheName(t *testing.T) {
 	stub := &stubTemporal{}
-	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
 
 	if code != http.StatusCreated {
 		t.Fatalf("status = %d, want 201: %s", code, body)
@@ -172,7 +172,7 @@ func TestEnroll_SecondSignupUnderOneNameIsTheDuplicatePath(t *testing.T) {
 		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
 		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Active: true},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
 
 	if code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", code, body)
@@ -190,7 +190,7 @@ func TestEnroll_WithoutAnIDReactivatesTheDeparted(t *testing.T) {
 		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Points: 600, Active: false},
 		reactivate:  &rewards.ReactivateResult{Changed: true},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
 
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", code, body)
@@ -204,7 +204,7 @@ func TestEnroll_WithoutAnIDReactivatesTheDeparted(t *testing.T) {
 // under some invented ID the caller has no way to predict.
 func TestEnroll_UnslugableNameIsA400(t *testing.T) {
 	stub := &stubTemporal{}
-	code, body := postEnroll(t, newTestServer(stub), `{"name":"!!!","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"!!!"}`)
 
 	if code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400: %s", code, body)
@@ -219,13 +219,13 @@ func TestEnroll_UnslugableNameIsA400(t *testing.T) {
 
 // The ID is taken and the customer is active. That is a duplicate signup, and it
 // must not reach the reactivate Update -- which would overwrite a live
-// customer's name and email with the second signup's.
+// customer's name with the second signup's.
 func TestEnroll_ActiveDuplicateIs409AndSendsNoUpdate(t *testing.T) {
 	stub := &stubTemporal{
 		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
 		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Active: true},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Mallory","email":"mallory@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Mallory"}`)
 
 	if code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", code, body)
@@ -246,7 +246,7 @@ func TestEnroll_DeactivatedIDReactivates(t *testing.T) {
 		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Points: 600, Active: false},
 		reactivate:  &rewards.ReactivateResult{Changed: true},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
 
 	if code != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", code, body)
@@ -268,7 +268,7 @@ func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
 		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Active: false},
 		reactivate:  &rewards.ReactivateResult{Changed: false},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
 
 	if code != http.StatusConflict {
 		t.Fatalf("status = %d, want 409: %s", code, body)
@@ -284,7 +284,7 @@ func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
 //
 // The assertion that matters is the second one. Enroll reactivates on a "not
 // active", so anything that answers this from a laggy read can rewrite a live
-// customer's name and email; failing cannot. Visibility plainly saying "active"
+// customer's name; failing cannot. Visibility plainly saying "active"
 // is the strongest case for guessing, which is why it is the one stubbed.
 func TestEnroll_DuplicateNeedsAWorkerAndSendsNoUpdateWithoutOne(t *testing.T) {
 	stub := &stubTemporal{
@@ -296,7 +296,7 @@ func TestEnroll_DuplicateNeedsAWorkerAndSendsNoUpdateWithoutOne(t *testing.T) {
 			SearchAttributes: searchAttrs(t, ptr(true)),
 		},
 	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
+	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
 
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", code, body)
@@ -369,4 +369,33 @@ func (h *stubHandle) Get(_ context.Context, out any) error {
 		return err
 	}
 	return dc.FromPayloads(p, out)
+}
+
+// A name is required whether or not the ID is derived from it. Sending a
+// customerId is the path that would otherwise slip through -- the derivation is
+// skipped, so nothing else looks at the name, and the customer is started
+// nameless. The workflow refuses that too, but as a failed execution rather
+// than an answer the caller can act on.
+func TestEnroll_BlankNameIsA400EvenWithACustomerID(t *testing.T) {
+	for _, body := range []string{
+		`{"customerId":"ada","name":""}`,
+		`{"customerId":"ada","name":"   "}`,
+		`{"customerId":"ada"}`,
+		`{"name":"   "}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			stub := &stubTemporal{}
+			code, got := postEnroll(t, newTestServer(stub), body)
+
+			if code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400: %s", code, got)
+			}
+			if !strings.Contains(got, CodeInvalidRequest) {
+				t.Errorf("code should be %q, got %s", CodeInvalidRequest, got)
+			}
+			if stub.startIDs != nil {
+				t.Errorf("started a nameless customer anyway: %v", stub.startIDs)
+			}
+		})
+	}
 }

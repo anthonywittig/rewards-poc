@@ -7,7 +7,6 @@ import "go.temporal.io/sdk/temporal"
 // failure at the first upsert. Keep the two lists in sync.
 var (
 	KeyCustomerID    = temporal.NewSearchAttributeKeyKeyword("CustomerId")
-	KeyCustomerEmail = temporal.NewSearchAttributeKeyKeyword("CustomerEmail")
 	KeyCustomerName  = temporal.NewSearchAttributeKeyString("CustomerName")
 	KeyRewardsLevel  = temporal.NewSearchAttributeKeyKeyword("RewardsLevel")
 	KeyRewardsPoints = temporal.NewSearchAttributeKeyInt64("RewardsPoints")
@@ -19,5 +18,4 @@ var (
 // Note on CustomerName: registered as Text, and the typed constructor for Text
 // is NewSearchAttributeKeyString -- the SDK's "String" is the server's "Text".
 // Keyword is exact-match, Text is tokenized, which is why names use Text
-// (word-prefix search via STARTS_WITH) and IDs/emails use Keyword (exact
-// lookup).
+// (word-prefix search via STARTS_WITH) and IDs use Keyword (exact lookup).
