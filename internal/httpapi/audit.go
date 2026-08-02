@@ -228,7 +228,11 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
-			p, paired := pending[a.GetAcceptedEventId()]
+			// Always paired: an Update accepted in run N completes in run N --
+			// updates never survive a run boundary, which is the whole reason the
+			// API retries across continue-as-new -- and this run's events were
+			// read in full, in order, so the accepted event has been seen.
+			p := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
 			// Membership changes. Both are idempotent, so both write history for
@@ -239,7 +243,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			// unlike a failed addPoints: both handlers stage their change and
 			// commit only once the upsert is issued, so a failed Update applied
 			// nothing and there is no half-state to disclose.
-			if paired && (p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate) {
+			if p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
@@ -273,10 +277,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				continue
 			}
 
-			// A future Update handler must not render as a point-add. An
-			// unpaired completion (name unknown) is still shown: dropping a row
-			// that history clearly contains would be the worse failure.
-			if paired && p.name != "" && p.name != rewards.UpdateAddPoints {
+			// A future Update handler must not render as a point-add.
+			if p.name != rewards.UpdateAddPoints {
 				continue
 			}
 
@@ -291,11 +293,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				Amount:     p.amount,
 				Reason:     p.reason,
 				RequestID:  p.updateID,
-			}
-			if !paired {
-				entry.At = e.GetEventTime().AsTime()
-				entry.EventID = e.GetEventId()
-				entry.RequestID = a.GetMeta().GetUpdateId()
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
