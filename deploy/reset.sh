@@ -2,7 +2,7 @@
 # Wipe every customer workflow in the namespace, running ones included.
 #
 # A dev affordance for when executions recorded by yesterday's workflow code
-# cannot be replayed by today's (docs/FINDINGS.md#versioning-is-the-real-risk).
+# cannot be replayed by today's.
 #
 #   make reset
 #

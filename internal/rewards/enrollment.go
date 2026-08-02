@@ -8,9 +8,8 @@ import (
 )
 
 // ValidateEnrollment checks a starting payload against the workflow ID it was
-// started under. The workflow is the only integrity boundary in this design
-// (FINDINGS.md#the-workflow-is-the-integrity-boundary), so this is where a bad
-// enrollment is refused.
+// started under. The workflow is the only integrity boundary in this design, so
+// this is where a bad enrollment is refused.
 //
 // Every error is non-retryable: a payload that does not match its own workflow
 // ID will not match on the next attempt either, and retrying would turn a

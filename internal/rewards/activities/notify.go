@@ -33,7 +33,6 @@ type Activities struct {
 }
 
 // NotifyCustomer is the only Activity in the system.
-// FINDINGS.md#tier-promotion-notifications.
 //
 // IdempotencyKey is passed through and ignored by the stub. Activities are
 // at-least-once -- a worker crash between this returning and its completion

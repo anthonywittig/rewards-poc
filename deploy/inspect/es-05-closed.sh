@@ -4,9 +4,9 @@
 # Postgres went. That is the projection relationship made concrete.
 #
 # Note this shows *rolled-over generations* being reaped, not a departed
-# customer. Deactivation is soft (docs/FINDINGS.md#soft-deactivation): the
-# execution stays Running with RewardsActive=false, so it is neither closed nor
-# reapable. Only an ops-level cancel or terminate closes a customer's run.
+# customer. Deactivation is soft: the execution stays Running with
+# RewardsActive=false, so it is neither closed nor reapable. Only an ops-level
+# cancel or terminate closes a customer's run.
 #
 # Usage (after a few adds, so continue-as-new has happened):
 #   make inspect-es Q=closed ID=inspect   # ContinuedAsNew docs + the Running one

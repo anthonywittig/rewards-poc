@@ -166,7 +166,7 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 	}
 
 	// The request half of the row comes from the accepted event, the outcome
-	// half from the completed one. FINDINGS.md#events-the-crawl-reads.
+	// half from the completed one.
 	add := run.entries[1]
 	if add.Amount != 1000 || add.Reason == "" {
 		t.Errorf("request side not decoded: amount=%d reason=%q", add.Amount, add.Reason)
@@ -337,7 +337,6 @@ func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
 // The recorded half of the validator/handler split. A handler rejection writes an
 // Accepted and a Completed-with-failure, so it becomes a row; a validator
 // rejection writes nothing at all and can never appear here.
-// FINDINGS.md#the-validatorhandler-split.
 func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	run := auditRun("cap-run", loadEvents(t, "run-rejection.json"))
 
@@ -364,10 +363,9 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	}
 }
 
-// The notification rows FINDINGS.md#tier-promotion-notifications says the crawl
-// picks up "for free". The Activity events are real, captured from a workflow
-// that scheduled NotifyCustomer with a rewards.NotifyRequest, and spliced into a
-// real enrollment run.
+// The notification rows the crawl picks up "for free". The Activity events are
+// real, captured from a workflow that scheduled NotifyCustomer with a
+// rewards.NotifyRequest, and spliced into a real enrollment run.
 func TestAuditRun_NotificationRows(t *testing.T) {
 	events := append(loadEvents(t, "run-enrollment.json"), loadEvents(t, "events-notification.json")...)
 	run := auditRun("run-0", events)
@@ -608,11 +606,10 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	}
 }
 
-// The departure notification uses the same Activity as a promotion
-// (FINDINGS.md#tier-promotion-notifications) and must not render as one. Real
-// events, captured from a customer who earned gold and then left; without the
-// filter the timeline shows "Promoted to Gold — notification sent" immediately
-// below that customer's own deactivated row.
+// The departure notification uses the same Activity as a promotion and must not
+// render as one. Real events, captured from a customer who earned gold and then
+// left; without the filter the timeline shows "Promoted to Gold — notification
+// sent" immediately below that customer's own deactivated row.
 func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
 	departure := loadEvents(t, "events-departure-notification.json")
 
