@@ -16,8 +16,8 @@ WEB_PORT = 5173
 TEMPORAL_UI_PORT = 8080
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools reap \
-        worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
-        inspect inspect-pg inspect-es write-trace audit web web-logs web-check web-stop seed reset
+        worker worker-stop api test workflowcheck enroll status add deactivate reactivate \
+        inspect inspect-pg inspect-es write-trace audit web web-check seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -43,11 +43,11 @@ up: ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 # Last, and deliberately not waited on. A first start installs a few hundred
 # npm packages over a bind mount, which is minutes on Docker Desktop, and
 # nothing else here needs the UI -- blocking on it would hold up seeding and
-# make an npm problem look like a broken stack. `make web-logs` shows progress;
-# `make ps` shows when it is serving.
+# make an npm problem look like a broken stack. `make logs SVC=web` shows
+# progress; `make ps` shows when it is serving.
 	$(COMPOSE) up -d web
 	@echo
-	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make web-logs)"
+	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make logs SVC=web)"
 	@echo "Temporal UI:  http://localhost:$(TEMPORAL_UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
 
@@ -71,21 +71,11 @@ ps: ## Show stack status
 tools: ## Shell in the temporal container (temporal CLI on PATH)
 	$(COMPOSE) exec temporal bash
 
-# Interactive shell, or a canned query: make psql Q=history-blob ID=inspect
-psql: ## psql into Temporal persistence (Q=… for canned inspect queries)
-ifeq ($(Q),)
+psql: ## psql into Temporal persistence (canned queries: make inspect)
 	$(COMPOSE) exec postgres psql -U temporal -d temporal
-else
-	@$(MAKE) --no-print-directory inspect-pg Q=$(Q) ID=$(ID)
-endif
 
-# Index summary, or a canned query: make es Q=mapping
-es: ## Elasticsearch summary (Q=… for canned inspect queries)
-ifeq ($(Q),)
+es: ## Elasticsearch index summary (canned queries: make inspect)
 	@$(TCTL) curl -s "http://elasticsearch:9200/_cat/indices/temporal_visibility*?v&h=index,docs.count,store.size,docs.deleted"
-else
-	@$(MAKE) --no-print-directory inspect-es Q=$(Q) ID=$(ID)
-endif
 
 reap: ## Delete closed executions now (make reap WF=customer-x)
 	@$(TCTL) env WF="$(WF)" bash /reap.sh
@@ -175,9 +165,6 @@ workflowcheck: ## Static determinism check on workflow code
 worker: ## Rebuild and restart the worker with the current code
 	$(COMPOSE) up -d --build worker
 
-worker-logs: ## Tail the worker's logs (Ctrl-C to stop tailing)
-	$(COMPOSE) logs -f worker
-
 # `compose stop` is an explicit stop, so restart: unless-stopped leaves it down
 # until `make worker` brings it back. Handy for watching the API's 503
 # worker_unavailable path.
@@ -186,12 +173,6 @@ worker-stop: ## Stop the worker (leaves the rest of the stack up)
 
 api: ## Rebuild and restart the HTTP API with the current code
 	$(COMPOSE) up -d --build --wait api
-
-api-logs: ## Tail the API's logs (Ctrl-C to stop tailing)
-	$(COMPOSE) logs -f api
-
-api-stop: ## Stop the API (leaves the rest of the stack up)
-	$(COMPOSE) stop api
 
 # The Vite dev server is a Compose service too, with web/ bind-mounted, so an
 # edit still hot-reloads without restarting anything. It installs dependencies on
@@ -204,17 +185,11 @@ api-stop: ## Stop the API (leaves the rest of the stack up)
 web: ## Start (or restart) the Vite UI in the stack
 	$(COMPOSE) up -d web
 
-web-logs: ## Tail the Vite dev server's logs (Ctrl-C to stop tailing)
-	$(COMPOSE) logs -f web
-
 # The typecheck the container used to run on every start. Vite's dev server does
 # not typecheck, so this is the only thing that does -- run it before believing
 # the UI compiles.
 web-check: ## Typecheck and production-build the UI (tsc -b && vite build)
 	$(COMPOSE) exec -T web npm run build
-
-web-stop: ## Stop the UI (leaves the rest of the stack up)
-	$(COMPOSE) stop web
 
 # The CLI targets below drive the whole workflow without an API or UI.
 # ID=<customer id> selects the customer.

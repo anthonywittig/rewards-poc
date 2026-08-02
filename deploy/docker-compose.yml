@@ -129,7 +129,7 @@ services:
 
   # Started by `make up` after bootstrap, so it never polls a namespace that
   # doesn't exist yet. `make worker` rebuilds and restarts it after a code
-  # change; `make worker-logs` tails it.
+  # change; `make logs SVC=worker` tails it.
   worker:
     build:
       # The repo root: the binary needs cmd/ and internal/, which are above this
@@ -151,7 +151,7 @@ services:
     restart: unless-stopped
 
   # Same shape as the worker, one image apart. `make api` rebuilds and restarts
-  # it; `make api-logs` tails it.
+  # it; `make logs SVC=api` tails it.
   api:
     build:
       context: ..
