@@ -3,12 +3,20 @@
 //
 // Everything here runs under the workflow's determinism constraints. The rules
 // it applies live in the parent internal/rewards package as plain functions, so
-// this package is orchestration: what to await, what to schedule, when to roll.
+// this package is orchestration: what to await, when to roll.
 //
-// It deliberately does not import internal/rewards/activities. The Go SDK has no
-// workflow sandbox, so importing the Activity package imports its dependencies,
-// and calling one directly from here is a determinism bug the compiler would
-// accept. Activities are named by the rewards.ActivityNotifyCustomer constant.
+// There are deliberately no Activities. Nothing in the rewards program needs a
+// side effect -- points, tier, membership and the audit trail are all workflow
+// state and Event History, which is rather the point of the POC. A real system
+// would notify customers on promotion; that is an Activity, and it belongs in a
+// sibling internal/rewards/activities package the workflow schedules *by name*,
+// never by import -- the Go SDK has no workflow sandbox, so a package boundary
+// is the only structural guard keeping provider SDKs out of workflow code.
+//
+// Entity workflows outlive deploys, so in production any edit that changes the
+// commands a run emits must be gated with workflow.GetVersion or it wedges
+// every execution already in flight. This POC skips that machinery and resets
+// executions instead; the replay test is what would catch such an edit.
 package workflows
 
 import (
@@ -20,22 +28,9 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// Versioning markers for workflow.GetVersion.
-//
-// Entity workflows outlive deploys, so a change that alters the commands a run
-// emits has to be gated or it breaks every execution already in flight. These
-// names are recorded in Event History and can never be reused or renamed.
-const (
-	// changeTierNotifications gates the notification Activity. Runs started
-	// before it keep the old behaviour for the rest of their lives, and pick
-	// notifications up at their next continue-as-new.
-	changeTierNotifications  = "tier-notifications"
-	versionTierNotifications = 1
-)
-
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
-// The main loop is: wait for work, then notify → continue-as-new.
+// Each run accepts a handful of point-adds, then continues as new.
 // Product leave is soft (Deactivated flag); the workflow keeps running.
 func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) error {
 	logger := workflow.GetLogger(ctx)
@@ -48,11 +43,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 	earnsThisRun := 0
 
-	// Armed by addPoints when the customer sits at an unannounced tier.
-	needsNotify := false
-	// Armed by deactivate so the departure notice is sent outside the Update.
-	needsDeparture := false
-
 	if state.EnrolledAt.IsZero() {
 		state.EnrolledAt = workflow.Now(ctx)
 	}
@@ -60,25 +50,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	if err := upsertSearchAttributes(ctx, &state); err != nil {
 		return fmt.Errorf("upsert search attributes: %w", err)
 	}
-
-	// Adding the notification Activity was a *breaking* change to every run
-	// already in flight: the new code emits a ScheduleActivityTask command where
-	// the recorded history has no matching event, so replay fails and the
-	// workflow task retries forever. Runs whose history predates this marker
-	// resolve to DefaultVersion and keep behaving as they did.
-	//
-	// One population the gate cannot save: executions created by the *ungated*
-	// build. Their history contains the Activity and no marker, so they resolve
-	// to DefaultVersion too, and replay then omits an Activity the history
-	// demands. GetVersion cannot tell "predates the change" from "ran the change
-	// before it was gated". Find them with TemporalChangeVersion IS NULL plus a
-	// StartTime lower bound, and reset them. Pinned by
-	// TestReplay_UngatedPhase6HistoriesCannotBeRescued.
-	//
-	// The lesson is upstream: gate a command-changing edit in the same commit
-	// that introduces it.
-	notifyEnabled := workflow.GetVersion(ctx, changeTierNotifications,
-		workflow.DefaultVersion, versionTierNotifications) >= versionTierNotifications
 
 	if err := workflow.SetQueryHandler(ctx, rewards.QueryGetStatus, func() (rewards.CustomerStatus, error) {
 		return rewards.StatusOf(&state), nil
@@ -107,16 +78,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
-
-			// Gated: a run whose history predates the version marker must not arm
-			// this, or the loop emits a ScheduleActivityTask the history has no
-			// event for. See notifyEnabled above.
-			if _, ok := rewards.PromotionFor(&state); ok && notifyEnabled {
-				needsNotify = true
-				logger.Info("tier promotion pending",
-					"customerId", state.CustomerID, "level", rewards.Level(state.Points))
-			}
-
 			earnsThisRun++
 
 			eventID := fmt.Sprintf("%s:%d", state.CustomerID, state.LifetimeEarnEvents)
@@ -180,10 +141,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
-			// Gated for the same reason as the promotion above: a pre-marker run
-			// deactivated after the deploy must not emit a command its history
-			// cannot account for.
-			needsDeparture = notifyEnabled
 
 			logger.Info("customer deactivated",
 				"customerId", state.CustomerID,
@@ -237,47 +194,28 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
 	// earn count.
-	for {
-		if err := workflow.Await(ctx, func() bool {
-			return needsNotify || needsDeparture || earnsThisRun >= rewards.EarnsPerRun
-		}); err != nil {
-			return err
-		}
-
-		if needsNotify {
-			needsNotify = false
-			deliverPromotion(ctx, &state)
-			continue
-		}
-
-		if needsDeparture {
-			needsDeparture = false
-			if err := sendNotify(ctx, rewards.DepartureNotice(&state)); err != nil {
-				logger.Error("departure notification failed after retries",
-					"customerId", state.CustomerID, "error", err)
-			}
-			continue
-		}
-
-		if err := workflow.Await(ctx, func() bool {
-			return workflow.AllHandlersFinished(ctx)
-		}); err != nil {
-			return err
-		}
-		if needsNotify || needsDeparture {
-			continue
-		}
-
-		state.Generation++
-
-		logger.Info("continuing as new",
-			"customerId", state.CustomerID,
-			"generation", state.Generation,
-			"earnsThisRun", earnsThisRun,
-			"points", state.Points)
-
-		return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
+	if err := workflow.Await(ctx, func() bool {
+		return earnsThisRun >= rewards.EarnsPerRun
+	}); err != nil {
+		return err
 	}
+
+	// Let any in-flight handler finish before the run closes underneath it.
+	if err := workflow.Await(ctx, func() bool {
+		return workflow.AllHandlersFinished(ctx)
+	}); err != nil {
+		return err
+	}
+
+	state.Generation++
+
+	logger.Info("continuing as new",
+		"customerId", state.CustomerID,
+		"generation", state.Generation,
+		"earnsThisRun", earnsThisRun,
+		"points", state.Points)
+
+	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 
 func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {

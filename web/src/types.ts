@@ -103,7 +103,6 @@ export type AuditEntryKind =
   | 'enrolled'
   | 'points_added'
   | 'points_rejected'
-  | 'notification_sent'
   | 'generation_rolled'
   | 'deactivated'
   | 'reactivated'
@@ -120,7 +119,6 @@ export interface AuditEntry {
   level?: string
   failure?: string
   requestId?: string
-  notifiedLevel?: string
 }
 
 export interface AuditResponse {

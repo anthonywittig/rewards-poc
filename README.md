@@ -9,8 +9,8 @@ Updates, status is a Query, the customer list is a visibility query, and the aud
 reconstructed by crawling Event History. The API holds a Temporal client and **nothing else** —
 no database, no cache, no ORM.
 
-**Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
-they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
+**Complete.** The workflow runs, continues-as-new every 3 point-adds, and is drivable from the
+`temporal` CLI, over HTTP, or through the React UI.
 
 ## Quick start
 
@@ -24,13 +24,10 @@ There is no env file to copy: every setting is written out literally in `deploy/
 Change a port or an image version by editing it there.
 
 ```sh
-# 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
-#    namespace and search-attribute bootstrap, then the workflow worker and the
-#    HTTP API, then eighteen demo customers, six per tier, including the
-#    interesting edge cases, and the React UI. Takes a couple of minutes the
-#    first time, since it compiles the Go services into their images. The UI
-#    starts last and is not waited on -- its first start installs npm packages,
-#    which takes a few minutes more. `make web-logs` shows how far along it is.
+# The whole stack: Postgres, Elasticsearch, Temporal + its UI, the worker, the
+# HTTP API, the demo customers, and the React UI. Takes a couple of minutes the
+# first time (it compiles the Go services into their images); the UI starts
+# last and is not waited on -- `make web-logs` shows its progress.
 make up
 ```
 
@@ -88,7 +85,6 @@ derives a different ID, which is a different customer.
 | `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |
 | `make reap [WF=customer-x]` | delete closed runs now, to force audit-log truncation |
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
-| `make verify-config` | re-check the platform assumptions the design depends on |
 
 ## The HTTP API
 
@@ -141,10 +137,8 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 The 503 is the one you'll meet most, because the worker is down more often than anything else in
 development.
 
-The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
-deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
-the one that survives into production. The `web` service proxies to the API over the compose
-network, so neither has to publish a port for the other to reach it.
+The UI reaches the API through Vite's proxy rather than a cross-origin base URL — the Go API
+deliberately sends no CORS headers.
 
 ## Things worth seeing
 
@@ -202,12 +196,13 @@ go test ./internal/rewards/workflows/ -run TestReplay
 ```
 
 A customer's workflow outlives deploys, so today's code gets replayed against histories recorded
-weeks ago and the commands must match event for event. `internal/rewards/workflows/testdata/pre-notification-*.json`
-are real histories from before the notification Activity existed; replaying them is a rehearsal
-of the deploy that added it, and the first run failed — adding the Activity would have wedged
-every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
-the sharper lesson is that it arrived one commit too late to help executions created by the
-ungated build: **gate a command-changing edit in the same commit that introduces it.**
+weeks ago and the commands must match event for event.
+`internal/rewards/workflows/testdata/run-enrollment.json` is a real recorded history; an edit
+that changes what the workflow emits — adding an Activity, reordering commands — fails this test
+before it wedges every customer with an open run in production. The production-grade fix for such
+an edit is `workflow.GetVersion`, which this POC deliberately omits: executions here can simply
+be reset, and the gate's markers and replay fixtures were most of what made the workflow hard to
+read.
 
 **The determinism check runs before the replay test can save you.**
 
@@ -218,35 +213,18 @@ make workflowcheck
 The Go SDK has no workflow sandbox. `time.Now()` in workflow code compiles, passes `go vet`, and
 passes the unit tests — then wedges a customer on replay, weeks later, in production.
 `workflowcheck` walks the call graph from every function taking a `workflow.Context` and flags
-anything reaching a non-deterministic call, transitively: put a `time.Now()` in `deliverPromotion`
-and it reports `deliverPromotion` *and* `CustomerRewardsWorkflow`, with the chain between them.
+anything reaching a non-deterministic call, transitively: a `time.Now()` anywhere the workflow
+can reach is reported with the chain that reaches it.
 Replay tests catch this too, but only for the paths a recorded history happens to cover.
 
-**One Activity, deliberately.** `NotifyCustomer` is the only thing here that touches the outside
-world; everything else is workflow state needing no side effects, which is rather the argument.
-It fires when a customer sits at a tier they haven't been told about — a property, not an event,
-so a failed delivery is picked up by the next add — and the handler doesn't await it. Delivery
-runs in the workflow's main loop as **notify → depart → continue-as-new**, which is what keeps a
-promotion from rolling away unsent.
-
-**Workflows and Activities are separate packages, and that boundary is load-bearing.** The Go SDK
-has no workflow sandbox: nothing at runtime stops workflow code from calling a database handle
-directly and silently breaking determinism, so a package boundary is the only structural guard
-there is. `internal/rewards/workflows` therefore does not import `internal/rewards/activities` —
-it schedules by the `rewards.ActivityNotifyCustomer` name instead, and an Activity's dependencies
-stay reachable only from the `Activities` struct the worker builds. Both import the parent
-`internal/rewards`, which holds the types and the rules as plain functions and imports neither.
-
-Activities are registered as that struct rather than as bare functions:
-
-```go
-w.RegisterActivity(&activities.Activities{Notifier: activities.LogNotifier{}})
-```
-
-`RegisterActivity` on a struct registers every exported method under the method's own name, so
-`NotifyCustomer` is still registered as `"NotifyCustomer"` — which the audit crawl matches on, and
-`TestActivityNameMatchesRegistration` pins. Injecting a real notification provider is a different
-value in that one line and no change anywhere else.
+**No Activities, deliberately.** Nothing in the rewards program touches the outside world:
+points, tier, membership and the audit trail are all workflow state and Event History, which is
+rather the argument of the POC — the workflow is a pure state machine and Temporal is its store.
+A real system would notify customers on promotion, and that is what an Activity is for: it would
+live in a sibling `internal/rewards/activities` package the workflow schedules **by name**, never
+by import. The Go SDK has no workflow sandbox — nothing at runtime stops workflow code from
+calling a provider SDK directly and silently breaking determinism — so that package boundary is
+the only structural guard there is.
 
 ## Behaviour to expect
 
@@ -289,20 +267,15 @@ Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with th
 rebuild before concluding anything about workflow behaviour.
 
 **`BadSearchAttributes: search attribute CustomerId is not defined` in the worker log, right
-after a fresh `make up`?** The server caches search attribute definitions, so for about a minute
-after `bootstrap.sh` registers them every `UpsertSearchAttributes` fails the workflow task —
-enrollment succeeds, then every add points fails with a 500. `dev.yaml` sets
+after a fresh `make up`?** The server caches search attribute definitions for about a minute
+after `bootstrap.sh` registers them. `dev.yaml` sets
 `system.forceSearchAttributesCacheRefreshOnRead` to read through the cache, which is why you
-should not see it; if you do, check that the dynamic config is mounted (`make verify-config`).
+should not see it; if you do, check that the dynamic config is mounted.
 
 **A 503 `worker_unavailable` usually means nothing is polling the task queue** — check
 `make ps` and run `make worker` if it isn't up. (The same code also covers a slow or unreachable
 Temporal, because it is the contract's only 503 — so if the worker is running, look at the rest
 of `make ps` before restarting it.)
-Underneath, a Query with no worker fails three different ways depending on how long the worker
-has been gone — two taking ~9–10 s, one a bare transport error at ~2.5 s — while an Update
-doesn't fail at all: it blocks, observed still waiting after two minutes. The API bounds both
-so they become one predictable 503.
 
 **Changed the workflow code and existing runs now misbehave?** Constants like `EarnsPerRun` are
 baked into recorded history. In dev, `make reset` and start over.
@@ -317,19 +290,14 @@ internal/rewards/             the domain: types and rules, no Temporal orchestra
   state.go                    CustomerState, tier thresholds, derived Level()
   contract.go                 the Update/Query contract every caller speaks
   enrollment.go               what makes a starting payload valid
-  promotion.go                which promotion a customer is owed, decided from state
   searchattr.go               typed search attribute keys
-  notify.go                   the notification contract the audit crawl decodes
   level_test.go               tier derivation, no test environment needed
   tiers_test.go               the tier ladder's ordering invariant
   workflows/                  the workflow layer
     workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
-    notify.go                 notification delivery, run from the main loop
     workflow_test.go          unit tests (no Docker required)
-    replay_test.go            deploy rehearsal against recorded histories
-    testdata/                 real histories, including pre-Phase-6 ones
-  activities/                 the Activity layer
-    notify.go                 NotifyCustomer -- the only side effect in the system
+    replay_test.go            deploy rehearsal against a recorded history
+    testdata/                 a real recorded history
 internal/httpapi/
   server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
@@ -345,7 +313,7 @@ deploy/
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
   reset.sh                    delete every customer workflow (make reset)
-  inspect/verify-config.sh    platform assumption checks
+  inspect/                    canned Postgres/ES queries (docs/DATASTORES.md)
 Makefile
 ```
 

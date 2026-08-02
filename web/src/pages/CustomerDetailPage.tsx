@@ -37,23 +37,33 @@ export function CustomerDetailPage() {
   const [rejoinBusy, setRejoinBusy] = useState(false)
   const [rejoinError, setRejoinError] = useState<unknown>(null)
 
+  // Bumped by the action handlers to reload after a successful write. The rows
+  // on screen stay put while the reload runs; only an id change blanks them.
+  const [reloadTick, setReloadTick] = useState(0)
+  const refresh = () => setReloadTick((t) => t + 1)
+
+  // A new customer id is a new page: drop the previous customer's data and
+  // form state before the load below repopulates it.
+  useEffect(() => {
+    setCustomer(null)
+    setAudit(null)
+    setPointsOk(null)
+    setPointsError(null)
+    setConfirmLeave(false)
+  }, [id])
+
   useEffect(() => {
     if (!id) return
     let cancelled = false
 
-    async function load(requestedId: string) {
+    async function load() {
       setLoading(true)
       setError(null)
       setAuditError(null)
-      setCustomer(null)
-      setAudit(null)
-      setPointsOk(null)
-      setPointsError(null)
-      setConfirmLeave(false)
       try {
         const [c, a] = await Promise.all([
-          getCustomer(requestedId),
-          getAudit(requestedId).catch((err) => {
+          getCustomer(id),
+          getAudit(id).catch((err) => {
             if (!cancelled) setAuditError(err)
             return null
           }),
@@ -70,68 +80,33 @@ export function CustomerDetailPage() {
       }
     }
 
-    void load(id)
+    void load()
     return () => {
       cancelled = true
     }
-  }, [id])
-
-  async function refresh() {
-    if (!id) return
-    const requestedId = id
-    setLoading(true)
-    setError(null)
-    setAuditError(null)
-    try {
-      const [c, a] = await Promise.all([
-        getCustomer(requestedId),
-        getAudit(requestedId).catch((err) => {
-          if (requestedId === id) setAuditError(err)
-          return null
-        }),
-      ])
-      if (requestedId !== id) return
-      setCustomer(c)
-      setAudit(a)
-    } catch (err) {
-      if (requestedId !== id) return
-      setError(err)
-      setCustomer(null)
-    } finally {
-      if (requestedId === id) setLoading(false)
-    }
-  }
+  }, [id, reloadTick])
 
   async function onAddPoints(e: React.FormEvent) {
     e.preventDefault()
     if (!customer || customer.status !== 'active') return
-    const requestedId = customer.customerId
     setPointsBusy(true)
     setPointsError(null)
     setPointsOk(null)
     try {
-      const res = await addPoints(requestedId, {
+      const res = await addPoints(customer.customerId, {
         amount: Number(amount),
         reason: reason.trim(),
         requestId: newRequestId(),
       })
-      if (requestedId !== id) return
       setPointsOk(res)
-      await refresh()
+      refresh()
     } catch (err) {
-      if (requestedId !== id) return
       setPointsError(err)
-      // Handler rejections leave an audit row; validator ones do not.
-      if (err instanceof ApiError && err.code === 'rejected') {
-        try {
-          const a = await getAudit(requestedId)
-          if (requestedId === id) setAudit(a)
-        } catch {
-          /* ignore */
-        }
-      }
+      // Handler rejections leave an audit row worth showing; validator ones do
+      // not, so skip the pointless reload.
+      if (err instanceof ApiError && err.code === 'rejected') refresh()
     } finally {
-      if (requestedId === id) setPointsBusy(false)
+      setPointsBusy(false)
     }
   }
 
@@ -144,39 +119,33 @@ export function CustomerDetailPage() {
   // a name that start would create a nameless customer.
   async function onReactivate() {
     if (!customer) return
-    const requestedId = customer.customerId
     setRejoinBusy(true)
     setRejoinError(null)
     try {
       await enrollCustomer({
-        customerId: requestedId,
+        customerId: customer.customerId,
         name: customer.name,
       })
-      if (requestedId !== id) return
-      await refresh()
+      refresh()
     } catch (err) {
-      if (requestedId !== id) return
       setRejoinError(err)
     } finally {
-      if (requestedId === id) setRejoinBusy(false)
+      setRejoinBusy(false)
     }
   }
 
   async function onDeactivate() {
     if (!customer) return
-    const requestedId = customer.customerId
     setLeaveBusy(true)
     setLeaveError(null)
     try {
-      await deactivateCustomer(requestedId)
-      if (requestedId !== id) return
+      await deactivateCustomer(customer.customerId)
       setConfirmLeave(false)
-      await refresh()
+      refresh()
     } catch (err) {
-      if (requestedId !== id) return
       setLeaveError(err)
     } finally {
-      if (requestedId === id) setLeaveBusy(false)
+      setLeaveBusy(false)
     }
   }
 

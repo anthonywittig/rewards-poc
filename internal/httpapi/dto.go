@@ -142,7 +142,6 @@ const (
 	AuditEnrolled         AuditEntryKind = "enrolled"
 	AuditPointsAdded      AuditEntryKind = "points_added"
 	AuditPointsRejected   AuditEntryKind = "points_rejected"
-	AuditNotificationSent AuditEntryKind = "notification_sent"
 	AuditGenerationRolled AuditEntryKind = "generation_rolled"
 	AuditDeactivated      AuditEntryKind = "deactivated"
 	AuditReactivated      AuditEntryKind = "reactivated"
@@ -156,7 +155,6 @@ const (
 //	enrolled           At, Generation, RunID
 //	points_added       Amount, Reason, Balance, Level, RequestID
 //	points_rejected    Amount, Reason, Failure, RequestID
-//	notification_sent  NotifiedLevel
 //	generation_rolled  Generation (the one being entered)
 //	deactivated        At, RunID
 //
@@ -176,8 +174,6 @@ type AuditEntry struct {
 	Level     string `json:"level,omitempty"`
 	Failure   string `json:"failure,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
-
-	NotifiedLevel string `json:"notifiedLevel,omitempty"`
 }
 
 // AuditResponse is the body of GET /api/customers/{id}/audit.

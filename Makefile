@@ -15,7 +15,7 @@ API_PORT = 8081
 WEB_PORT = 5173
 TEMPORAL_UI_PORT = 8080
 
-.PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
+.PHONY: help up down destroy bootstrap logs ps psql es tools reap \
         worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
         inspect inspect-pg inspect-es write-trace audit web web-logs web-check web-stop seed reset
 
@@ -87,9 +87,6 @@ else
 	@$(MAKE) --no-print-directory inspect-es Q=$(Q) ID=$(ID)
 endif
 
-verify-config: ## Check the platform behaviour the plan depends on
-	@$(TCTL) bash /inspect/verify-config.sh
-
 reap: ## Delete closed executions now (make reap WF=customer-x)
 	@$(TCTL) env WF="$(WF)" bash /reap.sh
 
@@ -112,10 +109,8 @@ inspect: ## List canned Postgres/ES inspect queries
 	@echo
 	@echo "Elasticsearch (make inspect-es Q=… ID=$(ID)):"
 	@echo "  mapping           index mapping with custom SAs"
-	@echo "  customer          docs for one WorkflowId"
+	@echo "  customer          docs for one WorkflowId (also: before/after reap)"
 	@echo "  gold-running      list-page filter + ES-side sort"
-	@echo "  indices           index size / searchable count"
-	@echo "  closed            one customer's docs, before/after reap"
 	@echo
 	@echo "End-to-end: make write-trace ID=$(ID) AMOUNT=10"
 	@echo "Docs:       docs/DATASTORES.md"
@@ -138,8 +133,6 @@ inspect-es: ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
 	  mapping) f=es-01-mapping.sh ;; \
 	  customer) f=es-02-customer.sh ;; \
 	  gold-running) f=es-03-gold-running.sh ;; \
-	  indices) f=es-04-indices.sh ;; \
-	  closed) f=es-05-closed.sh ;; \
 	  *) echo "Unknown Q='$(Q)'. Run: make inspect" >&2; exit 1 ;; \
 	 esac; \
 	 echo "# deploy/inspect/$$f  (WF=customer-$(ID))"; \
@@ -148,7 +141,7 @@ inspect-es: ## Run an ES inspect query (make inspect-es Q=mapping ID=inspect)
 write-trace: ## Trace one addPoints through Postgres + ES (make write-trace ID=inspect)
 	@ID=$(ID) AMOUNT=$(or $(AMOUNT),10) bash deploy/inspect/write-trace.sh
 
-# --- Workflow (Phase 1) -----------------------------------------------------
+# --- Tests -------------------------------------------------------------------
 
 test: ## Run the Go unit tests
 	go test ./...
@@ -223,12 +216,12 @@ web-check: ## Typecheck and production-build the UI (tsc -b && vite build)
 web-stop: ## Stop the UI (leaves the rest of the stack up)
 	$(COMPOSE) stop web
 
-# The CLI targets below are the Phase 1 acceptance path: the whole workflow is
-# drivable without an API or UI. ID=<customer id> selects the customer.
+# The CLI targets below drive the whole workflow without an API or UI.
+# ID=<customer id> selects the customer.
 #
 # Addressed as temporal:7233, not localhost: the frontend binds the container's
-# own interface, so loopback is refused even from inside its own container --
-# the same quirk that made the Phase 0 healthcheck fail.
+# own interface, so loopback is refused even from inside its own container.
+#
 # The namespace comes from the container's own environment (see the temporal
 # service), which is where the CLI reads TEMPORAL_NAMESPACE from anyway.
 ID ?= c-001

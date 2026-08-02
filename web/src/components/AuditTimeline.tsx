@@ -73,8 +73,6 @@ function renderBody(e: AuditResponse['entries'][number]): React.ReactNode {
           ) : null}
         </>
       )
-    case 'notification_sent':
-      return <>Promoted to {tierLabel(e.notifiedLevel ?? '')} — notification sent</>
     case 'deactivated':
       return <>Deactivated — points kept</>
     case 'reactivated':

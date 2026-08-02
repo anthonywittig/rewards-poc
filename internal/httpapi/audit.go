@@ -183,7 +183,6 @@ type pendingUpdate struct {
 func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 	out := runAudit{runID: runID}
 	pending := map[int64]pendingUpdate{}
-	activities := map[int64]rewards.NotifyRequest{}
 	dc := converter.GetDefaultDataConverter()
 
 	for _, e := range events {
@@ -312,43 +311,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				out.earnEvents++
 			}
 			out.entries = append(out.entries, entry)
-
-		case enumspb.EVENT_TYPE_ACTIVITY_TASK_SCHEDULED:
-			a := e.GetActivityTaskScheduledEventAttributes()
-			if a.GetActivityType().GetName() != rewards.ActivityNotifyCustomer {
-				continue
-			}
-			var req rewards.NotifyRequest
-			decodeArg(dc, a.GetInput(), &req)
-			activities[e.GetEventId()] = req
-
-		case enumspb.EVENT_TYPE_ACTIVITY_TASK_COMPLETED:
-			// Emitted on completion rather than on scheduling, so "sent" means
-			// sent: a notification that exhausted its retries leaves a Scheduled
-			// event and a Failed one.
-			a := e.GetActivityTaskCompletedEventAttributes()
-			req, ok := activities[a.GetScheduledEventId()]
-			if !ok {
-				continue // some other Activity, or one we never saw scheduled
-			}
-			delete(activities, a.GetScheduledEventId())
-
-			// Promotions only. The same Activity delivers the departure notice,
-			// but notification_sent carries a level and nothing else, so a
-			// departure row renders as "Promoted to Gold — notification sent"
-			// directly beneath that customer's own deactivated row. Dropping it
-			// loses nothing: the deactivated row already says they left.
-			if req.Event != rewards.NotifyEventPromoted {
-				continue
-			}
-			out.entries = append(out.entries, AuditEntry{
-				Kind:          AuditNotificationSent,
-				At:            e.GetEventTime().AsTime(),
-				Generation:    out.startState.Generation,
-				RunID:         runID,
-				EventID:       e.GetEventId(),
-				NotifiedLevel: req.Level,
-			})
 		}
 	}
 	return out
