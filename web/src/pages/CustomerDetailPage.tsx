@@ -209,42 +209,50 @@ export function CustomerDetailPage() {
       <ErrorBanner error={error} />
 
       <div className="detail-grid">
-        <section className="detail-hero">
-          <TierBadge level={customer.level} />
-          <h1 className="name">{customer.name}</h1>
-          <p className="email">{customer.email}</p>
+        <div className="detail-main">
+          <section className="detail-hero">
+            <TierBadge level={customer.level} />
+            <h1 className="name">{customer.name}</h1>
+            <p className="email">{customer.email}</p>
 
-          <div className="points-block">
-            <div className="points">
-              {customer.points.toLocaleString()}
-              <span>points</span>
+            <div className="points-block">
+              <div className="points">
+                {customer.points.toLocaleString()}
+                <span>points</span>
+              </div>
+              <ProgressBar
+                points={customer.points}
+                nextTierAt={customer.nextTierAt}
+                level={customer.level}
+                tiers={customer.tiers}
+              />
             </div>
-            <ProgressBar
-              points={customer.points}
-              nextTierAt={customer.nextTierAt}
-              level={customer.level}
-              tiers={customer.tiers}
-            />
-          </div>
 
-          <div className="meta-row">
-            <span>
-              Status{' '}
-              <strong className={`status-pill status-${customer.status}`}>
-                {customer.status}
-              </strong>
-            </span>
-            <span>
-              Enrolled <strong>{formatDate(customer.enrolledAt)}</strong>
-            </span>
-            <span>
-              Generation <strong>{customer.generation}</strong>
-            </span>
-            <span>
-              Lifetime earns <strong>{customer.lifetimeEarnEvents}</strong>
-            </span>
-          </div>
-        </section>
+            <div className="meta-row">
+              <span>
+                Status{' '}
+                <strong className={`status-pill status-${customer.status}`}>
+                  {customer.status}
+                </strong>
+              </span>
+              <span>
+                Enrolled <strong>{formatDate(customer.enrolledAt)}</strong>
+              </span>
+              <span>
+                Generation <strong>{customer.generation}</strong>
+              </span>
+              <span>
+                Lifetime earns <strong>{customer.lifetimeEarnEvents}</strong>
+              </span>
+            </div>
+          </section>
+
+          <section className="panel">
+            <h2>Audit timeline</h2>
+            <ErrorBanner error={auditError} />
+            {audit ? <AuditTimeline audit={audit} /> : null}
+          </section>
+        </div>
 
         <div className="side-panel">
           {active ? (
@@ -355,12 +363,6 @@ export function CustomerDetailPage() {
           ) : null}
         </div>
       </div>
-
-      <section className="panel" style={{ marginTop: '1.25rem' }}>
-        <h2>Audit timeline</h2>
-        <ErrorBanner error={auditError} />
-        {audit ? <AuditTimeline audit={audit} /> : null}
-      </section>
     </>
   )
 }

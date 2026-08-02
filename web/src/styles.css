@@ -499,6 +499,13 @@ tbody tr:last-child td {
   }
 }
 
+.detail-main {
+  display: grid;
+  gap: 1.25rem;
+  align-content: start;
+  min-width: 0;
+}
+
 .detail-hero {
   padding: 1.35rem 1.4rem 1.5rem;
   border: 1px solid var(--line);
