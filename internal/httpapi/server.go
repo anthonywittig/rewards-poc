@@ -154,8 +154,8 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	// the caller's filter in parentheses (see scopedQuery) turns Temporal's
 	// clear "ORDER BY clause is not supported" into a bare syntax error.
 	if hasOrderBy(userQuery) {
-		return badRequest("ORDER BY is not supported by Temporal's visibility store " +
-			"(FINDINGS.md#order-by-is-not-supported); filter to narrow the result set and sort client-side")
+		return badRequest("ORDER BY is not supported by Temporal's visibility store; " +
+			"filter to narrow the result set and sort client-side")
 	}
 
 	query := scopedQuery(userQuery)
@@ -362,7 +362,7 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 // Querying immediately after a point-add that triggered continue-as-new returns
 // "Workflow task is not scheduled yet.": the successor run exists but has
 // nothing to dispatch the query to. Transient, and reachable by ordinary use at
-// three adds per run. FINDINGS.md#queries-race-continue-as-new-too.
+// three adds per run.
 //
 // Only *unclassified* errors retry: a NotFound will not improve, and a
 // worker-unavailable is already a clean 503 whose latency should not be doubled.
@@ -425,7 +425,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 //
 // Not defensive coding for a rare event: continue-as-new fires every 3 adds, so
 // without a transparent retry the demo looks broken roughly every third click.
-// FINDINGS.md#the-rollover-race.
 //
 // Soft-inactive customers stay Running, so a closed-run NotFound means rollover
 // (retry) or a force-closed execution (refuse). Product deactivation rejects
@@ -434,7 +433,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // Retrying is safe because the update did not run -- the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
 // UpdateID, which buys nothing across a run boundary.
-// FINDINGS.md#update-dedup-does-not-survive-continue-as-new.
 func (s *Server) updateWithRolloverRetry(
 	ctx context.Context, wfID string, req AddPointsRequest,
 ) (rewards.AddPointsResult, error) {
@@ -523,7 +521,6 @@ const listTimeout = 10 * time.Second
 // The third is a bare transport error that would become a 500. Bounding at 2s
 // means our own deadline usually wins, collapsing all three into one predictable
 // 503; a healthy query answers in ~30ms.
-// FINDINGS.md#read-and-write-timeouts.
 const queryTimeout = 2 * time.Second
 
 // updateTimeout bounds how long an Update may wait for a worker.
@@ -531,7 +528,7 @@ const queryTimeout = 2 * time.Second
 // Load-bearing, not belt-and-braces: a Query with no poller fails fast, but an
 // Update with WaitForStage: Completed simply *blocks* -- observed still waiting
 // after two minutes. Without this bound `POST /points` hangs for as long as the
-// client holds the connection. FINDINGS.md#read-and-write-timeouts.
+// client holds the connection.
 const updateTimeout = 15 * time.Second
 
 func (s *Server) sendUpdate(

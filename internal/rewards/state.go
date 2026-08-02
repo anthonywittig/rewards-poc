@@ -1,7 +1,7 @@
 // Package rewards is the domain layer for the customer rewards Entity Workflow:
 // the state it carries, the Update/Query contract every caller speaks, and the
 // rules -- tiers, enrollment validity, which promotion is owed -- expressed as
-// plain functions over that state. See docs/FINDINGS.md#workflow-design.
+// plain functions over that state.
 //
 // It deliberately contains no workflow or Activity code:
 //
@@ -39,7 +39,6 @@ const WorkflowIDPrefix = "customer-"
 func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID }
 
 // Tier thresholds. Tiers are derived from these, never stored.
-// FINDINGS.md#tiers-are-derived-never-stored.
 const (
 	GoldThreshold     = 500
 	PlatinumThreshold = 1000
@@ -96,7 +95,7 @@ func Ladder() []Tier {
 // Validation limits. MaxPointsPerTxn is enforced in the Update *validator*, so
 // breaching it leaves no trace in Event History; PointsCap is enforced in the
 // *handler*, so breaching it is recorded. That split is the point of the
-// exercise, not an accident -- see FINDINGS.md#the-validatorhandler-split.
+// exercise, not an accident.
 const (
 	MaxPointsPerTxn = 1000
 	PointsCap       = 100000
@@ -109,19 +108,16 @@ const (
 // promotion before it rolls, and the handler keeps accepting adds for the
 // duration of that Activity -- measured at 4 adds when a tier crossing lands in
 // the rolling run, 3 when none does.
-// FINDINGS.md#earnsperrun-is-a-floor-not-an-exact-count.
 //
 // CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history records a roll
 // after 3 adds will not produce that command at that point on replay under a
 // different value, and the replayer refuses a command that does not match the
 // recorded event. In dev, terminate existing workflows after changing it.
-// FINDINGS.md#versioning-is-the-real-risk.
 const EarnsPerRun = 3
 
 // CustomerState is the workflow argument. Everything here has to survive
 // continue-as-new, which is why the counters live in state rather than being
 // recomputed from history: history is reaped, state is not.
-// FINDINGS.md#the-workflow-is-the-integrity-boundary.
 type CustomerState struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
@@ -135,8 +131,7 @@ type CustomerState struct {
 	// Set on the very first run and carried forward untouched thereafter.
 	EnrolledAt time.Time `json:"enrolledAt"`
 	// Count of successful adds, ever. Not derivable from Points once history is
-	// reaped, and FINDINGS.md#truncation-detection needs it to quantify audit-log
-	// truncation.
+	// reaped, and needed to quantify audit-log truncation.
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
 

@@ -16,7 +16,6 @@ import (
 // The audit timeline, reconstructed by crawling Event History rather than read
 // from a store: the customer's point-adds are not saved anywhere, they are
 // derived from the events Temporal recorded in order to run the workflow at all.
-// FINDINGS.md#the-history-crawl.
 
 // auditTimeout bounds the whole crawl, which is the one endpoint whose cost
 // grows with a customer's age -- one GetWorkflowHistory round trip per
@@ -85,7 +84,7 @@ func walkRuns(ctx context.Context, fetch historyFetcher, runID string) ([]runAud
 		if err != nil {
 			// A run we were *told about* by its successor, whose history is gone.
 			// That is reaping, and it is the expected end of a long-lived
-			// customer's crawl rather than a failure. FINDINGS.md#truncation-detection.
+			// customer's crawl rather than a failure.
 			//
 			// Only once we are past the first run, though: history missing for
 			// the run Describe just handed us is not truncation, it is the
@@ -127,7 +126,6 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 		// count as of the *start* of that run, so the newest run's starting
 		// count plus the adds inside it is the current total -- which is what
 		// lets a truncated log say "3 of 21".
-		// FINDINGS.md#truncation-detection.
 		newest := runs[0]
 		out.LifetimeEarnEvents = newest.startState.LifetimeEarnEvents + newest.earnEvents
 	}
@@ -168,9 +166,9 @@ type runAudit struct {
 }
 
 // pendingUpdate is an accepted Update waiting for its outcome. Acceptance and
-// completion are separate events (FINDINGS.md#events-the-crawl-reads) and only
-// together make a row: the request carries the amount and reason, the outcome
-// carries the new balance or the rejection.
+// completion are separate events and only together make a row: the request
+// carries the amount and reason, the outcome carries the new balance or the
+// rejection.
 type pendingUpdate struct {
 	name     string
 	updateID string
@@ -283,7 +281,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 
 			// Anchored to the *accepted* event, not this one: it is when the
 			// customer made the request, and it exists even for an update whose
-			// outcome never landed. FINDINGS.md#events-the-crawl-reads.
+			// outcome never landed.
 			entry := AuditEntry{
 				At:         p.at,
 				Generation: out.startState.Generation,
@@ -303,7 +301,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				// Handler rejections only. A validator rejection writes nothing
 				// to history, so it can never appear here -- which is why this
 				// timeline is not a record of every attempt.
-				// FINDINGS.md#the-validatorhandler-split.
 				entry.Kind = AuditPointsRejected
 				entry.Failure = f.GetMessage()
 			} else {
@@ -341,7 +338,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			// departure row renders as "Promoted to Gold — notification sent"
 			// directly beneath that customer's own deactivated row. Dropping it
 			// loses nothing: the deactivated row already says they left.
-			// FINDINGS.md#the-cost-of-a-frozen-contract.
 			if req.Event != rewards.NotifyEventPromoted {
 				continue
 			}
@@ -361,7 +357,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 // decodeArg decodes the first payload into dst, reporting whether it worked.
 // Best-effort: a row with a missing amount still tells the reader that an add
 // happened. The DataConverter is the client's default, which is why the API and
-// worker share a module. FINDINGS.md#events-the-crawl-reads.
+// worker share a module.
 func decodeArg(dc converter.DataConverter, ps *commonpb.Payloads, dst any) bool {
 	if len(ps.GetPayloads()) == 0 {
 		return false

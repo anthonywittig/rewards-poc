@@ -18,8 +18,8 @@ import (
 // owns the Temporal concerns and delegates only the delivery itself.
 //
 // The request carries the customer ID and no contact details: a real provider
-// looks those up itself, which keeps them out of Event History.
-// FINDINGS.md#no-authentication-and-no-payload-encryption.
+// looks those up itself, which is what keeps them out of Event History, where
+// payloads are readable in plaintext in the Temporal UI.
 type Notifier interface {
 	Notify(ctx context.Context, req rewards.NotifyRequest) error
 }
@@ -37,7 +37,6 @@ type Activities struct {
 }
 
 // NotifyCustomer is the only Activity in the system.
-// FINDINGS.md#tier-promotion-notifications.
 //
 // IdempotencyKey is passed through and ignored by the stub. Activities are
 // at-least-once -- a worker crash between this returning and its completion

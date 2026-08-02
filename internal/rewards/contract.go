@@ -79,7 +79,7 @@ type CustomerStatus struct {
 }
 
 // StatusOf projects state into the Query result, deriving the tier fields rather
-// than reading them from state (FINDINGS.md#tiers-are-derived-never-stored).
+// than reading them from state.
 func StatusOf(state *CustomerState) CustomerStatus {
 	nextAt, _ := NextTierAt(state.Points)
 	return CustomerStatus{

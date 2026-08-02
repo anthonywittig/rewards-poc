@@ -1,5 +1,5 @@
 // Package workflows holds the customer rewards Entity Workflow and its Update
-// and Query handlers. See docs/FINDINGS.md#workflow-design.
+// and Query handlers.
 //
 // Everything here runs under the workflow's determinism constraints. The rules
 // it applies live in the parent internal/rewards package as plain functions, so
@@ -22,7 +22,6 @@ import (
 )
 
 // Versioning markers for workflow.GetVersion.
-// FINDINGS.md#versioning-is-the-real-risk.
 //
 // Entity workflows outlive deploys, so a change that alters the commands a run
 // emits has to be gated or it breaks every execution already in flight. These
@@ -235,7 +234,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		"deactivated", state.Deactivated)
 
 	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
-	// earn count. FINDINGS.md#continue-as-new.
+	// earn count.
 	for {
 		if err := workflow.Await(ctx, func() bool {
 			return needsNotify || needsDeparture || earnsThisRun >= rewards.EarnsPerRun

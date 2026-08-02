@@ -11,7 +11,6 @@ set -euo pipefail
 TEMPORAL_ADDRESS="${TEMPORAL_ADDRESS:-$(hostname -i):7233}"
 NAMESPACE="${TEMPORAL_NAMESPACE:-rewards}"
 # 1h is Temporal's enforced minimum, not a preference.
-# See docs/FINDINGS.md#retention-has-a-one-hour-floor.
 RETENTION="${TEMPORAL_RETENTION:-1h}"
 ES_URL="${ES_URL:-http://elasticsearch:9200}"
 ES_INDEX="${ES_INDEX:-temporal_visibility_v1_dev}"
@@ -20,8 +19,7 @@ ES_REFRESH_INTERVAL="${ES_REFRESH_INTERVAL:-200ms}"
 log() { printf '  %s\n' "$*"; }
 
 # Search attributes for the customer list page and the Temporal UI.
-# Keep in sync with internal/rewards/searchattr.go and the table in
-# docs/FINDINGS.md#search-attributes-and-visibility.
+# Keep in sync with internal/rewards/searchattr.go.
 declare -A SEARCH_ATTRS=(
   [CustomerId]=Keyword
   [CustomerName]=Text

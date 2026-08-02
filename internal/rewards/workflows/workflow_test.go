@@ -67,7 +67,6 @@ func newState() rewards.CustomerState {
 // updateResult captures how an Update actually resolved. rejected means the
 // validator refused and nothing was written to history; completed-with-error
 // means the handler ran and the failure *is* recorded.
-// FINDINGS.md#the-validatorhandler-split.
 type updateResult struct {
 	rejected  error
 	completed error
@@ -206,7 +205,7 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	s.Equal(2, status.LifetimeEarnEvents)
 }
 
-// --- Validator rejections (FINDINGS.md#the-validatorhandler-split) ---------
+// --- Validator rejections --------------------------------------------------
 
 // Each of these is refused before the handler runs, so nothing is written to
 // Event History at all. The unit test can only observe the rejection itself;
@@ -257,7 +256,7 @@ func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 	s.Equal(rewards.MaxPointsPerTxn, ok.value.Balance)
 }
 
-// --- Handler-side business rejection (FINDINGS.md#the-validatorhandler-split) ---
+// --- Handler-side business rejection ---------------------------------------
 
 // The points cap is enforced in the handler, so unlike the validator cases this
 // attempt is accepted, runs, and its failure is recorded in history -- which is
@@ -291,7 +290,7 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	s.Equal(8, status.LifetimeEarnEvents)
 }
 
-// --- getStatus query (FINDINGS.md#handlers) --------------------------------
+// --- getStatus query -------------------------------------------------------
 
 func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
@@ -453,7 +452,7 @@ func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
 	}
 }
 
-// --- Continue-as-new (FINDINGS.md#continue-as-new) -------------------------
+// --- Continue-as-new -------------------------------------------------------
 
 // The roll fires on exactly the Nth add, not before.
 func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
@@ -490,7 +489,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 
 // What survives the rollover. This is the part the audit log depends on:
 // history is reaped, the carried payload is not, so anything not in here is
-// gone for good. FINDINGS.md#truncation-detection.
+// gone for good.
 func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	enrolled := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
 	state := newState()
@@ -548,7 +547,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 		"the successor run must start its own count, not inherit a primed one")
 }
 
-// --- Soft deactivation (FINDINGS.md#soft-deactivation) ---------------------
+// --- Soft deactivation -----------------------------------------------------
 
 // Soft-deactivate keeps the workflow running with the balance intact;
 // reactivate clears the flag and restores the same points.
@@ -727,7 +726,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_SendsDepartureNotice() {
 	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted))
 }
 
-// --- Tier promotion notifications (FINDINGS.md#tier-promotion-notifications) ---
+// --- Tier promotion notifications ------------------------------------------
 
 // notifyCalls records what the mocked Activity was actually asked to send.
 type notifyCalls struct {
@@ -849,7 +848,6 @@ func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
 // re-sent. Points only go up, so the state below is constructed rather than
 // reachable by legal operations today -- the guard exists because Activities are
 // at-least-once, and for the day a spend or expiry path lands.
-// FINDINGS.md#tier-promotion-notifications.
 func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 	calls := s.mockNotify(0)
 
@@ -868,8 +866,7 @@ func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
 }
 
 // Departure reuses the same Activity, which is why there is no separate cleanup
-// Activity in the design. FINDINGS.md#tier-promotion-notifications. Product leave
-// is soft-deactivate.
+// Activity in the design. Product leave is soft-deactivate.
 func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	calls := s.mockNotify(0)
 
