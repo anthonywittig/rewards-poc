@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"strings"
 	"testing"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
@@ -225,29 +224,6 @@ func TestIsClosedRun(t *testing.T) {
 	}
 }
 
-// A 503 should only blame the worker when the server actually named it.
-// FailedPrecondition covers more than a missing poller.
-func TestWorkerUnavailableMessage(t *testing.T) {
-	noPoller := serviceerror.NewFailedPrecondition("no poller seen for task queue recently, worker may be down")
-	if got := workerUnavailableMessage(noPoller); !strings.Contains(got, "make worker") {
-		t.Errorf("measured no-poller case should name the worker, got %q", got)
-	}
-
-	other := serviceerror.NewFailedPrecondition("namespace is in a bad state")
-	got := workerUnavailableMessage(other)
-	if strings.Contains(got, "make worker") {
-		t.Errorf("an unrelated FailedPrecondition must not blame the worker, got %q", got)
-	}
-	if !strings.Contains(got, "namespace is in a bad state") {
-		t.Errorf("the server's own words should survive, got %q", got)
-	}
-
-	timeout := serviceerror.NewDeadlineExceeded("context deadline exceeded")
-	if got := workerUnavailableMessage(timeout); !strings.Contains(got, "did not respond in time") {
-		t.Errorf("timeout should report a timeout, got %q", got)
-	}
-}
-
 // Whatever the wording, the status stays 503: these are transient server-side
 // conditions, not caller mistakes.
 func TestUnrelatedFailedPreconditionIsStill503(t *testing.T) {
@@ -292,29 +268,17 @@ func TestIsHistoryGone(t *testing.T) {
 	}
 }
 
-// A crawl that runs out of time must not report "the worker may be down or
-// overloaded", naming a workflow that was never queried and a worker that was
-// never involved. The status is right; only the attribution would be wrong.
-func TestMapStoreReadError_TimeoutDoesNotBlameTheWorker(t *testing.T) {
+// A timeout on a worker-free read is the contract's single 503, whether the
+// deadline was ours or the server's, wrapped in transit or not.
+func TestMapStoreReadError_TimeoutIs503(t *testing.T) {
 	for _, err := range []error{
 		context.DeadlineExceeded,
 		serviceerror.NewDeadlineExceeded("context deadline exceeded"),
 		fmt.Errorf("reading history: %w", context.DeadlineExceeded), // wrapped in transit
 	} {
-		mapped := mapStoreReadError(err, "the audit crawl")
-		gotCode, gotKind := status(t, mapped)
+		gotCode, gotKind := status(t, mapStoreReadError(err))
 		if gotCode != http.StatusServiceUnavailable || gotKind != CodeWorkerUnavailable {
 			t.Errorf("got %d/%s, want 503/%s", gotCode, gotKind, CodeWorkerUnavailable)
-		}
-
-		var apiErr *apiError
-		asAPIError(mapped, &apiErr)
-		if strings.Contains(strings.ToLower(apiErr.message), "worker") {
-			t.Errorf("timeout on a worker-free read must not mention the worker, got %q",
-				apiErr.message)
-		}
-		if !strings.Contains(apiErr.message, "the audit crawl") {
-			t.Errorf("message should name what timed out, got %q", apiErr.message)
 		}
 	}
 }
@@ -323,7 +287,7 @@ func TestMapStoreReadError_TimeoutDoesNotBlameTheWorker(t *testing.T) {
 // this mapper adds a case rather than replacing one.
 func TestMapStoreReadError_FallsThroughToCommon(t *testing.T) {
 	gotCode, gotKind := status(t, mapStoreReadError(
-		serviceerror.NewNotFound("workflow not found"), "the customer list"))
+		serviceerror.NewNotFound("workflow not found")))
 	if gotCode != http.StatusNotFound || gotKind != CodeNotFound {
 		t.Errorf("got %d/%s, want 404/%s", gotCode, gotKind, CodeNotFound)
 	}

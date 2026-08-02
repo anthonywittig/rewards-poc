@@ -126,16 +126,3 @@ func isHistoryGone(err error) bool {
 	}
 	return strings.Contains(strings.ToLower(invalid.Error()), "retention period")
 }
-
-// mentionsNoPoller reports whether a message names the specific condition the
-// worker-unavailable 503 claims. Used to decide how *confidently* to word that
-// response, never to decide the status code.
-func mentionsNoPoller(msg string) bool {
-	l := strings.ToLower(msg)
-	for _, sub := range []string{"no poller", "no workers", "worker may be down"} {
-		if strings.Contains(l, sub) {
-			return true
-		}
-	}
-	return false
-}

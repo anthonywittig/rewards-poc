@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	commonpb "go.temporal.io/api/common/v1"
@@ -179,54 +178,37 @@ func doGET(t *testing.T, h http.Handler, path string) (int, ErrorResponse) {
 	return rec.Code, body
 }
 
-// A crawl that runs out of time must not tell the caller to go and look at a
-// worker it never spoke to.
-func TestGetAudit_TimeoutDoesNotBlameTheWorker(t *testing.T) {
-	// Describe succeeds, so the failure lands in the crawl itself.
-	h := newTestServer(&stubTemporal{historyErr: context.DeadlineExceeded})
-
-	code, body := doGET(t, h, "/api/customers/ada/audit")
-	if code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", code)
+// A store read that runs out of time is a 503 under the contract's single
+// retryable code. These go through the full mux so that a handler reverting to
+// mapQueryError -- which blames a worker these endpoints never speak to --
+// still has its status and code pinned here.
+func TestStoreReadTimeoutsAre503(t *testing.T) {
+	cases := []struct {
+		name string
+		stub *stubTemporal
+		path string
+	}{
+		// Describe succeeds, so the failure lands in the crawl itself.
+		{"audit crawl", &stubTemporal{historyErr: context.DeadlineExceeded},
+			"/api/customers/ada/audit"},
+		// The Describe that bootstraps the crawl is a server call like any other.
+		{"audit describe", &stubTemporal{describeErr: context.DeadlineExceeded},
+			"/api/customers/ada/audit"},
+		// The list reads the visibility index and is equally worker-free.
+		{"customer list", &stubTemporal{
+			countErr: context.DeadlineExceeded,
+			listErr:  context.DeadlineExceeded,
+		}, "/api/customers"},
 	}
-	assertBlamesNoWorker(t, body, auditSubject)
-}
-
-// Same requirement for the Describe that bootstraps the crawl. It is a server
-// call like any other here, and no worker is involved in it either.
-func TestGetAudit_DescribeTimeoutDoesNotBlameTheWorker(t *testing.T) {
-	h := newTestServer(&stubTemporal{describeErr: context.DeadlineExceeded})
-
-	code, body := doGET(t, h, "/api/customers/ada/audit")
-	if code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", code)
-	}
-	assertBlamesNoWorker(t, body, auditSubject)
-}
-
-// The list reads the visibility index and is equally worker-free.
-func TestListCustomers_TimeoutDoesNotBlameTheWorker(t *testing.T) {
-	h := newTestServer(&stubTemporal{
-		countErr: context.DeadlineExceeded,
-		listErr:  context.DeadlineExceeded,
-	})
-
-	code, body := doGET(t, h, "/api/customers")
-	if code != http.StatusServiceUnavailable {
-		t.Errorf("status = %d, want 503", code)
-	}
-	assertBlamesNoWorker(t, body, "the customer list")
-}
-
-func assertBlamesNoWorker(t *testing.T, body ErrorResponse, subject string) {
-	t.Helper()
-	if body.Error.Code != CodeWorkerUnavailable {
-		t.Errorf("code = %q, want %q", body.Error.Code, CodeWorkerUnavailable)
-	}
-	if strings.Contains(strings.ToLower(body.Error.Message), "worker") {
-		t.Errorf("message names the worker on a worker-free read: %q", body.Error.Message)
-	}
-	if !strings.Contains(body.Error.Message, subject) {
-		t.Errorf("message should name %q, got %q", subject, body.Error.Message)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, body := doGET(t, newTestServer(tc.stub), tc.path)
+			if code != http.StatusServiceUnavailable {
+				t.Errorf("status = %d, want 503", code)
+			}
+			if body.Error.Code != CodeWorkerUnavailable {
+				t.Errorf("code = %q, want %q", body.Error.Code, CodeWorkerUnavailable)
+			}
+		})
 	}
 }

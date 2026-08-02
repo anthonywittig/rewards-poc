@@ -207,7 +207,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		}
 		// Not mapQueryError: this read never involves a worker, so a timeout
 		// here must not send anyone to go and restart one.
-		return mapStoreReadError(err, "the customer list")
+		return mapStoreReadError(err)
 	}
 
 	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
