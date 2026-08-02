@@ -12,10 +12,6 @@ no database, no cache, no ORM.
 **Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
 they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
 
-What building this established about Temporal is in [docs/FINDINGS.md](docs/FINDINGS.md) —
-measured behaviour, including everything the design guessed wrong first. The one worth reading
-first is [versioning](docs/FINDINGS.md#versioning-is-the-real-risk).
-
 ## Quick start
 
 Prerequisites: **Docker** with Compose v2 (~1.7 GB of images, ~1 GB of RAM), and nothing else —
@@ -133,8 +129,7 @@ A rejected query comes back as a 400 carrying Temporal's own diagnostics. `ORDER
 exception, caught before the query is sent so you get an explanation instead of a bare syntax
 error. Because there's no ordering there's no meaningful pagination either: the list returns at
 most five rows, reports how many matched, and pushes you to filter — which is what the
-visibility store is good at. See [search attributes](docs/FINDINGS.md#search-attributes-and-visibility) and
-[the API](docs/FINDINGS.md#no-pagination-and-a-frozen-contract).
+visibility store is good at.
 
 Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
@@ -154,8 +149,7 @@ development.
 The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
 deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
 the one that survives into production. The `web` service proxies to the API over the compose
-network, so a second stack's UI reaches its own API without either one publishing a port. See
-[FINDINGS.md](docs/FINDINGS.md#the-go-api-sends-no-cors-headers).
+network, so a second stack's UI reaches its own API without either one publishing a port.
 
 ## Things worth seeing
 
@@ -175,7 +169,7 @@ history stays under a dozen events against the ~47 the same seven adds accumulat
 rolling. Three is a demo number chosen to be watchable, not a defensible rule — the real limits
 are 50k events and 50 MB per run, and production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()` instead. Changing the constant breaks
-running workflows. [FINDINGS.md](docs/FINDINGS.md#continue-as-new).
+running workflows.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add history; `make
 audit ID=c-001` walks back through the run chain and reads the events Temporal recorded because
@@ -189,8 +183,7 @@ make reap WF=customer-capped    # deletes the closed generations, keeps the runn
 make audit ID=capped            # truncated=True shown=1 lifetime=100 runsWalked=1
 ```
 
-Demonstrating the limitation is worth more than hiding it —
-[FINDINGS.md](docs/FINDINGS.md#truncation-detection).
+Demonstrating the limitation is worth more than hiding it.
 
 **The validator/handler split.** Both of these fail identically from the caller's side, but only
 one leaves a trace:
@@ -205,8 +198,7 @@ breaches the 100,000 cap. Count history events either side in the Temporal UI: a
 rejection adds none, so a client stuck retrying `amount: -1` cannot grow history by a single
 event, while a rejection that depends on the customer's accumulated state is permanently
 recorded. Facts about the *request* belong in the validator, facts about the *customer* in
-the handler —
-[FINDINGS.md](docs/FINDINGS.md#the-validatorhandler-split).
+the handler.
 
 **The replay test is the one that matters.**
 
@@ -221,7 +213,6 @@ of the deploy that added it, and the first run failed — adding the Activity wo
 every customer with an open run. Nothing else caught it. The fix is `workflow.GetVersion`, and
 the sharper lesson is that it arrived one commit too late to help executions created by the
 ungated build: **gate a command-changing edit in the same commit that introduces it.**
-[FINDINGS.md](docs/FINDINGS.md#versioning-is-the-real-risk).
 
 **The determinism check runs before the replay test can save you.**
 
@@ -241,7 +232,7 @@ world; everything else is workflow state needing no side effects, which is rathe
 It fires when a customer sits at a tier they haven't been told about — a property, not an event,
 so a failed delivery is picked up by the next add — and the handler doesn't await it. Delivery
 runs in the workflow's main loop as **notify → depart → continue-as-new**, which is what keeps a
-promotion from rolling away unsent. [FINDINGS.md](docs/FINDINGS.md#tier-promotion-notifications).
+promotion from rolling away unsent.
 
 **Workflows and Activities are separate packages, and that boundary is load-bearing.** The Go SDK
 has no workflow sandbox: nothing at runtime stops workflow code from calling a database handle
@@ -269,7 +260,7 @@ value in that one line and no change anywhere else.
 - **Leaving is soft.** Deactivation is an Update that sets a flag, not a cancellation — the
   execution stays Running, so re-enrolling restores the balance, tier and history intact.
   Membership therefore lives in the `RewardsActive` search attribute rather than in
-  `ExecutionStatus`. [FINDINGS.md](docs/FINDINGS.md#soft-deactivation).
+  `ExecutionStatus`.
 - **Cancellation is not part of the model.** Nothing cancels a customer's workflow and the code
   does not handle it. `temporal workflow cancel` closes the execution without upserting
   `RewardsActive`, leaving a customer the list still calls active and the detail page calls
@@ -308,7 +299,6 @@ after `bootstrap.sh` registers them every `UpsertSearchAttributes` fails the wor
 enrollment succeeds, then every add points fails with a 500. `dev.yaml` sets
 `system.forceSearchAttributesCacheRefreshOnRead` to read through the cache, which is why you
 should not see it; if you do, check that the dynamic config is mounted (`make verify-config`).
-See [FINDINGS](docs/FINDINGS.md#registering-a-search-attribute-does-not-make-it-usable).
 
 **A 503 `worker_unavailable` usually means nothing is polling the task queue** — check
 `make ps` and run `make worker` if it isn't up. (The same code also covers a slow or unreachable
@@ -367,8 +357,5 @@ Makefile
 
 ## Docs
 
-- [docs/FINDINGS.md](docs/FINDINGS.md) — what this established about Temporal: the workflow
-  design and its constraints, search attributes, error classification, the history crawl,
-  versioning, and the platform edges each of them ran into
 - [docs/DATASTORES.md](docs/DATASTORES.md) — how Temporal uses Postgres (persistence) and
   Elasticsearch (visibility), including an end-to-end write trace

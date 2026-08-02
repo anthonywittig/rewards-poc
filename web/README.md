@@ -1,6 +1,6 @@
 # Rewards web UI
 
-React app over the rewards API. See [docs/FINDINGS.md](../docs/FINDINGS.md).
+React app over the rewards API.
 
 ```sh
 # from repo root — `make up` brings up the whole stack, this included

@@ -7,17 +7,15 @@
 #
 # Retention itself is not tunable here: it has a 1h floor, so truncation is
 # demonstrated with `make reap` instead.
-# See docs/FINDINGS.md#retention-has-a-one-hour-floor.
 
 # Deletion of a closed execution's data is jittered, landing somewhere in
 # [retention, retention + jitter]. Pinned small so it is easy to reason about.
 history.retentionTimerJitterDuration:
   - value: 1m
 
-# The Temporal side of the visibility lag (docs/FINDINGS.md#visibility-lag);
-# the default is 1s. The other half is Elasticsearch's own
-# index.refresh_interval, which Temporal's index template leaves unset --
-# bootstrap.sh sets it explicitly.
+# The Temporal side of the visibility lag; the default is 1s. The other half is
+# Elasticsearch's own index.refresh_interval, which Temporal's index template
+# leaves unset -- bootstrap.sh sets it explicitly.
 worker.ESProcessorFlushInterval:
   - value: 100ms
 

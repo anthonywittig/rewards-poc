@@ -4,7 +4,7 @@
 # Note the sort on RewardsPoints: raw Elasticsearch happily accepts it.
 # Temporal's ListWorkflow visibility query language rejects ORDER BY entirely
 # (custom *and* built-in attributes) — confirmed on server 1.29.7. Sorting for
-# the UI therefore has to happen client-side (see FINDINGS.md#search-attributes-and-visibility).
+# the UI therefore has to happen client-side.
 #
 # Run via: make inspect-es Q=gold-running
 

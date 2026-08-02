@@ -64,7 +64,6 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 // The 409 depends on the client being configured with
 // WorkflowExecutionErrorWhenAlreadyStarted -- without it the SDK returns the
 // existing run and a nil error, and there is nothing here to map.
-// FINDINGS.md#soft-deactivation.
 func mapStartError(err error) error {
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &already) {
@@ -81,9 +80,8 @@ func mapQueryError(err error) error {
 
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status.
 //
-// Both halves of the validator/handler split
-// (FINDINGS.md#the-validatorhandler-split) surface here as a 422; what matters
-// is separating a business rejection from an infrastructure failure.
+// Both halves of the validator/handler split surface here as a 422; what
+// matters is separating a business rejection from an infrastructure failure.
 //
 // Deactivated is the exception: a business answer, but a 409 with its own code
 // so clients can offer re-enrollment rather than treating it like a bad amount.
@@ -107,8 +105,7 @@ func mapUpdateError(err error) error {
 // neither endpoint touches.
 //
 // The code stays CodeWorkerUnavailable, which reads oddly here, because the
-// error contract is frozen (FINDINGS.md#no-pagination-and-a-frozen-contract) and
-// this is the only 503 in it. Clients treat it as "backend not ready, retry".
+// error contract is frozen and this is the only 503 in it. Clients treat it as "backend not ready, retry".
 func mapStoreReadError(err error, subject string) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
@@ -126,7 +123,6 @@ func classifyCommon(err error) error {
 	}
 
 	// No worker polling is the single most common development-time failure.
-	// FINDINGS.md#read-and-write-timeouts.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
 			workerUnavailableMessage(err)}

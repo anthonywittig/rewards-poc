@@ -15,7 +15,7 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Replay tests. FINDINGS.md#versioning-is-the-real-risk.
+// Replay tests.
 //
 // A customer's workflow *will* outlive a deploy. A worker picking up a task for
 // a run started weeks ago replays that run's recorded history through today's
@@ -158,8 +158,7 @@ func TestReplay_NeedsTheRecordedWorkflowID(t *testing.T) {
 // change, at the cost of those recorded in the window between two commits.
 //
 // The remedy is operational, and the affected executions are findable because
-// GetVersion upserts TemporalChangeVersion
-// (FINDINGS.md#getversion-writes-two-events):
+// GetVersion upserts TemporalChangeVersion:
 //
 //	WorkflowType = 'CustomerRewardsWorkflow'
 //	  AND ExecutionStatus = 'Running'
@@ -189,7 +188,7 @@ func TestReplay_UngatedPhase6HistoriesCannotBeRescued(t *testing.T) {
 
 	if err := replay(t, h); err == nil {
 		t.Fatal("these histories now replay -- a way to rescue them has been found; " +
-			"update this test and FINDINGS.md#versioning-is-the-real-risk")
+			"update this test")
 	}
 }
 

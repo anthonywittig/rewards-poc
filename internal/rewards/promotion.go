@@ -59,7 +59,6 @@ func PromotionFor(state *CustomerState) (NotifyRequest, bool) {
 
 // DepartureNotice is the same Activity reused for "this customer left", which is
 // why there is no separate cleanup Activity.
-// FINDINGS.md#tier-promotion-notifications.
 func DepartureNotice(state *CustomerState) NotifyRequest {
 	return NotifyRequest{
 		CustomerID:     state.CustomerID,

@@ -5,9 +5,9 @@
 //	make seed     # to re-run it on its own
 //	make reset    # the only true clean slate
 //
-// Read-then-create, never modify: deactivation is soft
-// (FINDINGS.md#soft-deactivation), so re-enrolling an existing customer
-// reactivates them with their points intact rather than resetting them.
+// Read-then-create, never modify: deactivation is soft, so re-enrolling an
+// existing customer reactivates them with their points intact rather than
+// resetting them.
 package main
 
 import (
@@ -154,8 +154,7 @@ func ensure(base string, c customer) (string, error) {
 }
 
 // check compares an existing customer with what the dataset asks for. It
-// deliberately does not repair a mismatch: points only go up
-// (FINDINGS.md#points-only-go-up).
+// deliberately does not repair a mismatch: points only go up.
 func check(c customer, cur customerState) (string, error) {
 	want := 0
 	for _, a := range c.adds {

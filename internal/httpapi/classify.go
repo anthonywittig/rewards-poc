@@ -27,7 +27,7 @@ import (
 // fail at all where a Query fails fast.
 
 // isWorkerUnavailable reports whether the failure is "nothing is polling the task
-// queue". FINDINGS.md#read-and-write-timeouts.
+// queue".
 func isWorkerUnavailable(err error) bool {
 	// FailedPrecondition covers more than a missing poller. The whole type is
 	// 503-is-retryable, but only workerUnavailableMessage decides whether to
@@ -56,9 +56,9 @@ func isTimeout(err error) bool {
 }
 
 // isBusinessRejection reports whether the workflow itself refused the request,
-// as opposed to the request failing to reach it. Both halves of
-// FINDINGS.md#the-validatorhandler-split land here and both become 422; what
-// matters is that neither is confused with an outage.
+// as opposed to the request failing to reach it. Both halves of the
+// validator/handler split land here and both become 422; what matters is that
+// neither is confused with an outage.
 func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) {

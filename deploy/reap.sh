@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Force-delete closed Workflow Executions, immediately.
 #
-# Retention has a 1h floor, so this is how audit-log truncation
-# (docs/FINDINGS.md#truncation-detection) gets demonstrated on demand.
+# Retention has a 1h floor, so this is how audit-log truncation gets
+# demonstrated on demand.
 #
 #   make reap                      # every closed execution in the namespace
 #   make reap WF=customer-abc123   # only that customer's closed runs
