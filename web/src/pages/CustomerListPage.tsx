@@ -4,12 +4,6 @@ import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
 import { buildListQuery, formatDate, tierLabel } from '../format'
-import {
-  clearPending,
-  matchesVisibilityQuery,
-  mergeWithPending,
-  readPending,
-} from '../pending'
 import type { CustomerListItem, CustomerListResponse } from '../types'
 
 type SortKey = 'points' | 'name' | 'enrolledAt' | null
@@ -40,7 +34,6 @@ export function CustomerListPage() {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [failed, setFailed] = useState<Failed | null>(null)
-  const [pending, setPending] = useState(() => readPending())
 
   const query = useMemo(
     () => buildListQuery({ tier, status, name }),
@@ -69,11 +62,6 @@ export function CustomerListPage() {
         if (cancelled) return
         setLoaded({ query, res })
         setFailed(null)
-        const ids = new Set(res.items.map((i) => i.customerId))
-        for (const p of readPending()) {
-          if (ids.has(p.customerId)) clearPending(p.customerId)
-        }
-        setPending(readPending())
       } catch (err) {
         if (cancelled) return
         setFailed({ query, err })
@@ -81,47 +69,32 @@ export function CustomerListPage() {
     }
 
     void run()
-
-    // Only re-check while an optimistic row is still waiting to be indexed.
-    // Re-checking on every query change doubles every search and makes the
-    // table settle twice, half a second apart.
-    const t = readPending().length
-      ? window.setTimeout(() => {
-          if (!cancelled) void run()
-        }, 500)
-      : undefined
-
     return () => {
       cancelled = true
-      if (t !== undefined) window.clearTimeout(t)
     }
   }, [query])
 
   // The rows and chrome stay on the last response while the next one loads:
   // unmounting the notices shifts the table ~90px on every pause in typing, and
-  // clearing the rows blanks the table on searches that change nothing.
+  // clearing the rows blanks the table on searches that change nothing. A
+  // just-created customer may be missing here for a beat — that is the
+  // visibility lag itself, worth seeing rather than papering over.
   const shown = data ?? (loading ? loaded?.res ?? null : null)
 
   const items = useMemo(() => {
-    // Keep optimistic rows visible even when the list request failed.
-    const serverItems = data
-      ? data.items
-      : // Held-over rows go through the same predicate as the optimistic ones, so
-        // a row still cannot render under a query it does not match.
-        (shown?.items ?? []).filter((c) => matchesVisibilityQuery(c, query))
-    let rows = mergeWithPending(serverItems, pending, query)
+    let rows = shown?.items ?? []
     if (shown?.complete && sortKey) {
       rows = [...rows].sort((a, b) => compare(a, b, sortKey, sortDir))
     }
     return rows
-  }, [data, shown, pending, sortKey, sortDir, query])
+  }, [shown, sortKey, sortDir])
 
   // Whether to say "nothing matched". True when the rows are empty *because the
-  // response was*, not because a new query filtered the held-over rows out — so
-  // the notice stays on screen across a refetch rather than being swapped for a
-  // loading row and back on every pause in typing. `aria-busy` below is the
-  // loading signal; the row does not have to move to carry one.
-  const showEmpty = items.length === 0 && (shown ? shown.items.length === 0 : !loading)
+  // response was* — the notice stays on screen across a refetch rather than
+  // being swapped for a loading row and back on every pause in typing.
+  // `aria-busy` below is the loading signal; the row does not have to move to
+  // carry one.
+  const showEmpty = shown ? shown.items.length === 0 : !loading
 
   // Blank rows so the body holds its height instead of collapsing to a single
   // “Loading…” row. The empty-state row holds the body on its own, so this only

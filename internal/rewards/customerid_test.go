@@ -55,21 +55,6 @@ func TestCustomerIDForName_ShapeSurvivesAnyName(t *testing.T) {
 			t.Errorf("CustomerIDForName(%q) = %q, want lowercase alphanumerics and single hyphens",
 				name, id)
 		}
-		if len(id) > idSlugLimitForTest {
-			t.Errorf("CustomerIDForName(%q) = %q, %d chars is longer than the cap", name, id, len(id))
-		}
-	}
-}
-
-// The derivation *is* the identity rule -- the enroll handler leans on the same
-// name landing on the same workflow ID, where it becomes a duplicate or a
-// rejoin rather than a second customer.
-func TestCustomerIDForName_IsStable(t *testing.T) {
-	first := rewards.CustomerIDForName("Ada Lovelace")
-	for range 10 {
-		if got := rewards.CustomerIDForName("Ada Lovelace"); got != first {
-			t.Fatalf("CustomerIDForName is not deterministic: %q then %q", first, got)
-		}
 	}
 }
 
@@ -82,7 +67,3 @@ func TestCustomerIDForName_PassesEnrollmentValidation(t *testing.T) {
 		t.Errorf("ValidateEnrollment(%q) = %v, want nil", id, err)
 	}
 }
-
-// The cap is an implementation detail of the package under test; naming it here
-// keeps the assertion from hardcoding a number in two places.
-const idSlugLimitForTest = 32

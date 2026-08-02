@@ -26,11 +26,6 @@ import (
 // itself as Truncated, which in this contract means "history was deleted".
 const auditTimeout = 30 * time.Second
 
-// auditSubject names this endpoint in a timeout message. It exists because the
-// default wording blames the worker, and the crawl never speaks to one --
-// see mapStoreReadError.
-const auditSubject = "the audit crawl"
-
 // getAudit walks the customer's run chain newest-first and renders it newest-first.
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
@@ -48,7 +43,9 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	// the latest run instead of reporting the specific run as gone.
 	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
 	if err != nil {
-		return mapStoreReadError(err, auditSubject)
+		// mapStoreReadError, not mapQueryError: no worker is involved in the
+		// crawl, so a timeout must not blame one.
+		return mapStoreReadError(err)
 	}
 
 	resp, err := s.crawl(ctx, wfID, id, desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
@@ -65,7 +62,7 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (AuditResponse, error) {
 	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID), runID)
 	if err != nil {
-		return AuditResponse{}, mapStoreReadError(err, auditSubject)
+		return AuditResponse{}, mapStoreReadError(err)
 	}
 	return assemble(customerID, runs, truncated), nil
 }
@@ -232,7 +229,11 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
-			p, paired := pending[a.GetAcceptedEventId()]
+			// Always paired: an Update accepted in run N completes in run N --
+			// updates never survive a run boundary, which is the whole reason the
+			// API retries across continue-as-new -- and this run's events were
+			// read in full, in order, so the accepted event has been seen.
+			p := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
 			// Membership changes. Both are idempotent, so both write history for
@@ -243,7 +244,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			// unlike a failed addPoints: both handlers stage their change and
 			// commit only once the upsert is issued, so a failed Update applied
 			// nothing and there is no half-state to disclose.
-			if paired && (p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate) {
+			if p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
@@ -277,10 +278,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				continue
 			}
 
-			// A future Update handler must not render as a point-add. An
-			// unpaired completion (name unknown) is still shown: dropping a row
-			// that history clearly contains would be the worse failure.
-			if paired && p.name != "" && p.name != rewards.UpdateAddPoints {
+			// A future Update handler must not render as a point-add.
+			if p.name != rewards.UpdateAddPoints {
 				continue
 			}
 
@@ -295,11 +294,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				Amount:     p.amount,
 				Reason:     p.reason,
 				RequestID:  p.updateID,
-			}
-			if !paired {
-				entry.At = e.GetEventTime().AsTime()
-				entry.EventID = e.GetEventId()
-				entry.RequestID = a.GetMeta().GetUpdateId()
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {

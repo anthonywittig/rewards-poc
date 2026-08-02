@@ -27,7 +27,7 @@ Change a port or an image version by editing it there.
 # The whole stack: Postgres, Elasticsearch, Temporal + its UI, the worker, the
 # HTTP API, the demo customers, and the React UI. Takes a couple of minutes the
 # first time (it compiles the Go services into their images); the UI starts
-# last and is not waited on -- `make web-logs` shows its progress.
+# last and is not waited on -- `make logs SVC=web` shows its progress.
 make up
 ```
 
@@ -41,7 +41,7 @@ That's everything up. Where it all is:
 | Temporal gRPC | `localhost:7233`, namespace `rewards` |
 
 Nothing here has a terminal of its own — the worker, the API and the Vite dev server are all
-Compose services, so `make worker-logs` / `make api-logs` / `make web-logs` tail them, and
+Compose services, so `make logs SVC=worker` (or `api`, or `web`) tails them, and
 `make worker` / `make api` rebuild and restart them after a code change. The UI needs no restart:
 `web/` is bind-mounted, so edits hot-reload. The seed is a Compose one-shot off the same image as
 the worker and API.
@@ -76,9 +76,9 @@ derives a different ID, which is a different customer.
 |---|---|
 | `make up` / `down` / `destroy` | start + bootstrap + seed / stop / stop and delete volumes |
 | `make ps` / `logs SVC=temporal` | stack status / tail one service |
-| `make worker` / `worker-logs` / `worker-stop` | rebuild + restart / tail / stop the worker service |
-| `make api` / `api-logs` / `api-stop` | the same three for the HTTP API on `:8081` |
-| `make web` / `web-logs` / `web-stop` | restart / tail / stop the UI on `:5173` |
+| `make worker` / `worker-stop` | rebuild + restart / stop the worker service |
+| `make api` | rebuild + restart the HTTP API on `:8081` |
+| `make web` | start or restart the UI on `:5173` |
 | `make web-check` | typecheck and production-build the UI (the dev server doesn't) |
 | `make test` | Go unit tests, no Docker needed |
 | `make workflowcheck` | static determinism check on workflow code, no Docker needed |
@@ -257,10 +257,10 @@ The worker and the API both run in the stack, built from `deploy/Dockerfile`, so
 does nothing until the image is rebuilt:
 
 ```sh
-make worker        # rebuild from the current code and restart the container
-make worker-logs   # tail it -- the startup line names the task queue and namespace
-make api           # the same for the API
-make api-logs
+make worker            # rebuild from the current code and restart the container
+make logs SVC=worker   # tail it -- the startup line names the task queue and namespace
+make api               # the same for the API
+make logs SVC=api
 ```
 
 Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with the wrong logic, so

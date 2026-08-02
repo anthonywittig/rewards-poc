@@ -1,5 +1,5 @@
 import { Link } from 'react-router-dom'
-import { apiBase, temporalUiPortLabel, temporalUiUrl } from '../api'
+import { temporalUiUrl } from '../api'
 
 export function Shell({ children }: { children: React.ReactNode }) {
   return (
@@ -14,11 +14,10 @@ export function Shell({ children }: { children: React.ReactNode }) {
           </p>
         </div>
         <div className="topbar-meta">
-          API <code>{apiBase()}</code>
           <div>
             Temporal UI{' '}
             <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
-              {temporalUiPortLabel()}
+              {temporalUiUrl()}
             </a>
           </div>
         </div>

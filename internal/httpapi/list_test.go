@@ -74,11 +74,6 @@ func TestHasOrderBy(t *testing.T) {
 		{"RewardsLevel = 'gold' Order By RewardsPoints", true},
 		{"RewardsLevel = 'gold'", false},
 		{"", false},
-		// A customer actually called "order by" is searchable, not rejected.
-		{"CustomerName = 'order by'", false},
-		{"CustomerName = 'order by' AND RewardsLevel = 'gold'", false},
-		// ...but a real clause alongside a quoted one is still caught.
-		{"CustomerName = 'order by' ORDER BY RewardsPoints", true},
 	} {
 		if got := hasOrderBy(tc.query); got != tc.want {
 			t.Errorf("hasOrderBy(%q) = %v, want %v", tc.query, got, tc.want)
@@ -89,7 +84,7 @@ func TestHasOrderBy(t *testing.T) {
 // A rejected query is the caller's fault and carries Temporal's diagnostics; a
 // rejection with no caller query is ours, and must not be blamed on them.
 func TestMapListError(t *testing.T) {
-	invalid := newInvalidArgument("invalid search attribute: NoSuchAttribute")
+	invalid := serviceerror.NewInvalidArgument("invalid search attribute: NoSuchAttribute")
 
 	mapped := mapListError(invalid, "NoSuchAttribute = 'x'")
 	gotCode, gotKind := status(t, mapped)
@@ -97,7 +92,7 @@ func TestMapListError(t *testing.T) {
 		t.Fatalf("got %d/%s, want 400/%s", gotCode, gotKind, CodeInvalidRequest)
 	}
 	var apiErr *apiError
-	asAPIError(mapped, &apiErr)
+	errors.As(mapped, &apiErr)
 	if !strings.Contains(apiErr.message, "NoSuchAttribute") {
 		t.Errorf("server diagnostics should reach the caller, got %q", apiErr.message)
 	}
@@ -109,11 +104,7 @@ func TestMapListError(t *testing.T) {
 	}
 
 	// Anything not a rejected query is left for the common classifier.
-	if mapListError(newUnavailable("connection refused"), "q") != nil {
+	if mapListError(serviceerror.NewUnavailable("connection refused"), "q") != nil {
 		t.Error("non-InvalidArgument must fall through to the common classifier")
 	}
 }
-
-func newInvalidArgument(msg string) error  { return serviceerror.NewInvalidArgument(msg) }
-func newUnavailable(msg string) error      { return serviceerror.NewUnavailable(msg) }
-func asAPIError(err error, dst **apiError) { errors.As(err, dst) }

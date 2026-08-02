@@ -80,8 +80,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			state.LifetimeEarnEvents++
 			earnsThisRun++
 
-			eventID := fmt.Sprintf("%s:%d", state.CustomerID, state.LifetimeEarnEvents)
-
 			if err := upsertSearchAttributes(ctx, &state); err != nil {
 				logger.Error("search attribute upsert failed after point add",
 					"customerId", state.CustomerID, "error", err)
@@ -92,13 +90,11 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"amount", req.Amount,
 				"reason", req.Reason,
 				"balance", state.Points,
-				"level", rewards.Level(state.Points),
-				"eventId", eventID)
+				"level", rewards.Level(state.Points))
 
 			return rewards.AddPointsResult{
 				Balance: state.Points,
 				Level:   rewards.Level(state.Points),
-				EventID: eventID,
 			}, nil
 		},
 		workflow.UpdateHandlerOptions{

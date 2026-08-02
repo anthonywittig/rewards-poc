@@ -1,8 +1,7 @@
 import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
-import { enrollCustomer, getCustomer } from '../api'
+import { enrollCustomer } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
-import { customerToListItem, rememberPending } from '../pending'
 
 export function CreateCustomerPage() {
   const navigate = useNavigate()
@@ -19,22 +18,6 @@ export function CreateCustomerPage() {
       const enrolled = await enrollCustomer({
         name: name.trim(),
       })
-      // Detail is strongly consistent; list is not. Stash for optimistic list merge.
-      try {
-        const detail = await getCustomer(enrolled.customerId)
-        rememberPending(customerToListItem(detail))
-      } catch {
-        rememberPending({
-          customerId: enrolled.customerId,
-          name: name.trim(),
-          points: 0,
-          level: 'basic',
-          enrolledAt: new Date().toISOString(),
-          generation: 0,
-          status: 'active',
-          runId: enrolled.runId,
-        })
-      }
       // Redirect to detail — never the list — so visibility lag cannot blank the UI.
       navigate(`/customers/${enrolled.customerId}`)
     } catch (err) {

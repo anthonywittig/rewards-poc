@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -10,7 +9,6 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
 	"go.temporal.io/api/serviceerror"
-	"go.temporal.io/sdk/client"
 )
 
 // Stable machine-readable error codes. Clients should switch on these rather
@@ -98,18 +96,15 @@ func mapUpdateError(err error) error {
 // mapStoreReadError classifies failures for the two endpoints that read *stored*
 // data rather than asking a running workflow: the customer list, which reads the
 // visibility index, and the audit crawl, which reads Event History. Neither
-// involves a worker at any point.
-//
-// subject names the operation that ran out of time, e.g. "the customer list".
-// Without it both inherit the Query path's wording, which blames a worker
-// neither endpoint touches.
+// involves a worker at any point, so a timeout here must not send anyone off to
+// restart one.
 //
 // The code stays CodeWorkerUnavailable, which reads oddly here, because the
 // error contract is frozen and this is the only 503 in it. Clients treat it as "backend not ready, retry".
-func mapStoreReadError(err error, subject string) error {
+func mapStoreReadError(err error) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
-			subject + " did not finish in time; temporal is slow or unreachable"}
+			"the read did not finish in time; temporal is slow or unreachable"}
 	}
 	return classifyCommon(err)
 }
@@ -122,10 +117,13 @@ func classifyCommon(err error) error {
 			"customer not found, or their history has been deleted"}
 	}
 
-	// No worker polling is the single most common development-time failure.
+	// No worker polling is the single most common development-time failure, so
+	// the 503 leads with the fix. FailedPrecondition and a timed-out call cover
+	// more conditions than a missing poller, but pointing at the worker first is
+	// right far more often than it is wrong in development.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
-			workerUnavailableMessage(err)}
+			"no worker is polling the rewards task queue; is `make worker` running?"}
 	}
 
 	var unavailable *serviceerror.Unavailable
@@ -135,19 +133,4 @@ func classifyCommon(err error) error {
 	}
 
 	return err // becomes a logged 500
-}
-
-// workerUnavailableMessage picks how confidently to word a 503. The status is
-// the same either way; the message names the worker only when the server did.
-// FailedPrecondition covers more than a missing poller.
-func workerUnavailableMessage(err error) string {
-	if mentionsNoPoller(err.Error()) {
-		return "no worker is polling the rewards task queue; is `make worker` running?"
-	}
-	var deadline *serviceerror.DeadlineExceeded
-	var updTimeout *client.WorkflowUpdateServiceTimeoutOrCanceledError
-	if errors.As(err, &deadline) || errors.As(err, &updTimeout) || errors.Is(err, context.DeadlineExceeded) {
-		return "the rewards workflow did not respond in time; the worker may be down or overloaded"
-	}
-	return "temporal cannot serve this request right now: " + err.Error()
 }

@@ -131,7 +131,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 			"customer is already enrolled and active"}
 	}
 
-	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID)
+	res, err := s.reactivate(r.Context(), wfID)
 	if err != nil {
 		return err
 	}
@@ -207,7 +207,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		}
 		// Not mapQueryError: this read never involves a worker, so a timeout
 		// here must not send anyone to go and restart one.
-		return mapStoreReadError(err, "the customer list")
+		return mapStoreReadError(err)
 	}
 
 	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
@@ -254,22 +254,12 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// hasOrderBy reports whether the query contains an ORDER BY clause, ignoring
-// anything inside single-quoted literals -- so a customer actually named
-// "order by" is searchable rather than mysteriously rejected.
+// hasOrderBy reports whether the query contains an ORDER BY clause. A plain
+// substring test, so it would also fire on a quoted literal ("CustomerName =
+// 'order by'") -- accepted: this pre-check exists only to keep the error
+// message friendly, and is not worth a parser.
 func hasOrderBy(q string) bool {
-	var b strings.Builder
-	inQuote := false
-	for _, r := range q {
-		if r == '\'' {
-			inQuote = !inQuote
-			continue
-		}
-		if !inQuote {
-			b.WriteRune(r)
-		}
-	}
-	return strings.Contains(strings.ToLower(b.String()), "order by")
+	return strings.Contains(strings.ToLower(q), "order by")
 }
 
 // scopedQuery constrains the list to our workflow type, and to one execution
@@ -424,7 +414,7 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	res, err := s.updateWithRolloverRetry(r.Context(), rewards.WorkflowID(id), req)
+	res, err := s.addPointsWithRolloverRetry(r.Context(), rewards.WorkflowID(id), req)
 	if err != nil {
 		return err
 	}
@@ -432,35 +422,41 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	writeJSON(w, s.log, http.StatusOK, AddPointsResponse{
 		Balance: res.Balance,
 		Level:   res.Level,
-		EventID: res.EventID,
 	})
 	return nil
 }
 
-// withRolloverRetry sends an Update via send, and sends it again if the run it
-// addressed closed because of continue-as-new.
+// addPointsWithRolloverRetry sends the addPoints Update, and sends it again if
+// the run it addressed closed because of continue-as-new.
 //
 // Not defensive coding for a rare event: continue-as-new fires every 3 adds, so
 // without a transparent retry the demo looks broken roughly every third click.
+// Only addPoints carries the retry -- rollover is driven by point-adds, so it
+// is the one verb that routinely races itself; a membership Update losing its
+// run needs concurrent adds in the same instant, which this single-user demo
+// never produces.
 //
-// Soft-inactive customers stay Running, so a closed-run NotFound means rollover
-// (retry) or a force-closed execution, which whenClosed resolves: addPoints and
-// reactivate refuse, deactivate is idempotent and calls it done. Product
-// deactivation rejects inside the Update handler as ErrTypeDeactivated instead.
+// Soft-inactive customers stay Running, so a closed-run NotFound with no
+// successor means a force-closed execution, and adding points to it is refused.
+// Product deactivation rejects inside the Update handler as ErrTypeDeactivated
+// instead.
 //
 // Retrying is safe because the update did not run -- the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
 // UpdateID, which buys nothing across a run boundary.
-func withRolloverRetry[T any](
-	ctx context.Context, s *Server, wfID, updateName string,
-	send func(context.Context) (T, error),
-	whenClosed func() (T, error),
-) (T, error) {
-	var zero T
+func (s *Server) addPointsWithRolloverRetry(
+	ctx context.Context, wfID string, req AddPointsRequest,
+) (rewards.AddPointsResult, error) {
+	var zero rewards.AddPointsResult
 	const attempts = 2
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := send(ctx)
+		res, err := sendUpdate[rewards.AddPointsResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+			WorkflowID: wfID,
+			UpdateName: rewards.UpdateAddPoints,
+			UpdateID:   req.RequestID, // empty means the SDK generates one
+			Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
+		})
 		if err == nil {
 			return res, nil
 		}
@@ -474,41 +470,23 @@ func withRolloverRetry[T any](
 			return zero, mapQueryError(describeErr)
 		}
 		if !running {
-			return whenClosed()
+			return zero, &apiError{
+				http.StatusConflict, CodeDeactivated,
+				"customer workflow is closed; re-enroll them before adding points",
+			}
 		}
 
 		s.log.Info("update lost its run to continue-as-new, retrying against the successor",
-			"workflowId", wfID, "update", updateName, "attempt", attempt)
+			"workflowId", wfID, "attempt", attempt)
 	}
 
 	// Two rollovers inside one request. An honest 409 beats a retry loop that
 	// could chase a busy customer indefinitely.
-	s.log.Warn("update lost its run twice in a row", "workflowId", wfID, "update", updateName)
+	s.log.Warn("update lost its run twice in a row", "workflowId", wfID)
 	return zero, &apiError{
 		http.StatusConflict, CodeRolloverRace,
 		"the customer's workflow rolled over while applying this request; please retry",
 	}
-}
-
-// updateWithRolloverRetry is the addPoints verb over withRolloverRetry.
-func (s *Server) updateWithRolloverRetry(
-	ctx context.Context, wfID string, req AddPointsRequest,
-) (rewards.AddPointsResult, error) {
-	return withRolloverRetry(ctx, s, wfID, rewards.UpdateAddPoints,
-		func(ctx context.Context) (rewards.AddPointsResult, error) {
-			return sendUpdate[rewards.AddPointsResult](ctx, s.temporal, client.UpdateWorkflowOptions{
-				WorkflowID: wfID,
-				UpdateName: rewards.UpdateAddPoints,
-				UpdateID:   req.RequestID, // empty means the SDK generates one
-				Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
-			})
-		},
-		func() (rewards.AddPointsResult, error) {
-			return rewards.AddPointsResult{}, &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer workflow is closed; re-enroll them before adding points",
-			}
-		})
 }
 
 // hasRunningExecution reports whether the workflow ID currently has an open
@@ -588,56 +566,66 @@ func sendUpdate[T any](
 	return res, err
 }
 
-// reactivateWithRolloverRetry is the reactivate verb over withRolloverRetry: a
-// re-enroll that races continue-as-new must retry against the successor rather
-// than 404.
-func (s *Server) reactivateWithRolloverRetry(
-	ctx context.Context, wfID string,
-) (rewards.ReactivateResult, error) {
-	return withRolloverRetry(ctx, s, wfID, rewards.UpdateReactivate,
-		func(ctx context.Context) (rewards.ReactivateResult, error) {
-			return sendUpdate[rewards.ReactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
-				WorkflowID: wfID,
-				UpdateName: rewards.UpdateReactivate,
-			})
-		},
-		func() (rewards.ReactivateResult, error) {
-			return rewards.ReactivateResult{}, &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer workflow is closed; enroll them again to start fresh",
-			}
-		})
-}
-
-// deactivateWithRolloverRetry is the deactivate verb over withRolloverRetry.
-func (s *Server) deactivateWithRolloverRetry(ctx context.Context, wfID string) error {
-	_, err := withRolloverRetry(ctx, s, wfID, rewards.UpdateDeactivate,
-		func(ctx context.Context) (rewards.DeactivateResult, error) {
-			return sendUpdate[rewards.DeactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
-				WorkflowID: wfID,
-				UpdateName: rewards.UpdateDeactivate,
-			})
-		},
-		func() (rewards.DeactivateResult, error) {
-			// Already force-closed — DELETE is idempotent.
-			return rewards.DeactivateResult{}, nil
-		})
-	return err
+// reactivate sends the reactivate Update. No rollover retry: enroll only calls
+// this after ExecuteWorkflow reported a running execution, so a closed-run
+// NotFound means the workflow closed in the instant since -- there is nothing
+// left to update, and the honest answer is "enroll again".
+func (s *Server) reactivate(ctx context.Context, wfID string) (rewards.ReactivateResult, error) {
+	res, err := sendUpdate[rewards.ReactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+		WorkflowID: wfID,
+		UpdateName: rewards.UpdateReactivate,
+	})
+	switch {
+	case err == nil:
+		return res, nil
+	case isClosedRun(err):
+		return rewards.ReactivateResult{}, &apiError{
+			http.StatusConflict, CodeDeactivated,
+			"customer workflow is closed; enroll them again to start fresh",
+		}
+	default:
+		return rewards.ReactivateResult{}, mapUpdateError(err)
+	}
 }
 
 // deactivate soft-leaves the customer via Update. The workflow stays Running
 // with Deactivated set so re-enrollment can restore the prior balance.
 //
 // Idempotent: repeating DELETE against an already-deactivated customer completes
-// with Changed=false (no extra audit row).
+// with Changed=false (no extra audit row). A closed-run NotFound takes one
+// Describe to resolve: a customer who never enrolled is the Describe's own 404,
+// and a force-closed execution is already as gone as deactivation gets, so
+// DELETE has nothing left to do.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
 		return badRequest("customer id is required")
 	}
+	wfID := rewards.WorkflowID(id)
 
-	if err := s.deactivateWithRolloverRetry(r.Context(), rewards.WorkflowID(id)); err != nil {
-		return err
+	_, err := sendUpdate[rewards.DeactivateResult](r.Context(), s.temporal, client.UpdateWorkflowOptions{
+		WorkflowID: wfID,
+		UpdateName: rewards.UpdateDeactivate,
+	})
+	if err != nil && isClosedRun(err) {
+		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
+		switch {
+		case describeErr != nil:
+			return mapQueryError(describeErr)
+		case running:
+			// The targeted run closed with a successor already going: a rollover
+			// consumed it, which takes concurrent point-adds this single-user
+			// demo never produces. Reported honestly rather than retried.
+			return &apiError{
+				http.StatusConflict, CodeRolloverRace,
+				"the customer's workflow rolled over while applying this request; please retry",
+			}
+		default:
+			err = nil // force-closed: already deactivated, DELETE is idempotent
+		}
+	}
+	if err != nil {
+		return mapUpdateError(err)
 	}
 
 	w.WriteHeader(http.StatusNoContent)

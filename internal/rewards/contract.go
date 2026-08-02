@@ -34,7 +34,6 @@ type AddPointsRequest struct {
 type AddPointsResult struct {
 	Balance int    `json:"balance"`
 	Level   string `json:"level"`
-	EventID string `json:"eventId"`
 }
 
 // DeactivateResult is what deactivate returns so the audit crawl can tell a

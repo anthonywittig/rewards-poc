@@ -47,8 +47,7 @@ make inspect-es Q=customer ID=inspect
 make write-trace ID=inspect AMOUNT=10
 ```
 
-`make psql` / `make es` without `Q=` remain interactive / summary shortcuts.
-With `Q=` they delegate to the same canned queries (`make psql Q=history-blob`).
+`make psql` / `make es` are the interactive / summary shortcuts.
 
 Scripts under `deploy/inspect/` are intentionally small enough to read in full.
 The temporal container has `bash`, `curl`, and `grep` but **no `jq` / `python3`**,
