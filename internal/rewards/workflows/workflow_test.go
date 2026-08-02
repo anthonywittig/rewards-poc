@@ -1,19 +1,14 @@
 package workflows_test
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"reflect"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
-	"github.com/anthonywittig/rewards-poc/internal/rewards/activities"
 	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
@@ -32,26 +27,17 @@ type RewardsSuite struct {
 
 const testCustomerID = "c-001"
 
-// testActivities is the struct the test env registers, and the receiver every
-// OnActivity mock names its method on. One shared instance is safe because the
-// mocks replace the method body outright; the SDK only needs the method value to
-// resolve the Activity's registered name.
-var testActivities = &activities.Activities{}
-
 func (s *RewardsSuite) SetupTest() { s.env = s.newEnv() }
 
-// newEnv builds a test environment the workflow will actually run in. Two things
-// every test needs: the workflow validates its payload's customerId against the
-// workflow ID it was started under, so the env's "default-test-workflow-id" has
-// to be replaced; and it schedules an Activity on departure, so an env with none
-// registered fails those paths with "no activity is registered for taskqueue".
+// newEnv builds a test environment the workflow will actually run in. The
+// workflow validates its payload's customerId against the workflow ID it was
+// started under, so the env's "default-test-workflow-id" has to be replaced.
 func (s *RewardsSuite) newEnv() *testsuite.TestWorkflowEnvironment {
 	env := s.NewTestWorkflowEnvironment()
 	env.SetStartWorkflowOptions(client.StartWorkflowOptions{
 		ID:        rewards.WorkflowID(testCustomerID),
 		TaskQueue: rewards.TaskQueue,
 	})
-	env.RegisterActivity(testActivities)
 	return env
 }
 
@@ -558,8 +544,6 @@ func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
 // Soft-deactivate keeps the workflow running with the balance intact;
 // reactivate clears the flag and restores the same points.
 func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
-	s.mockNotify(0)
-
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
 	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
@@ -583,8 +567,6 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 // strength of Changed, and the audit timeline draws a row only when it is true.
 // Reporting Changed=true for a no-op would show a customer leaving twice.
 func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
-	s.mockNotify(0)
-
 	first := s.deactivateAt(time.Minute, "leave-1")
 	second := s.deactivateAt(2*time.Minute, "leave-2")
 	s.stopAt(3 * time.Minute)
@@ -602,8 +584,6 @@ func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
 // ended -- the enroll endpoint depends on Changed=false to turn this into the
 // 409 it owes the caller.
 func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
-	s.mockNotify(0)
-
 	rejoin := s.reactivateAt(time.Minute, "rejoin")
 	status := s.queryStatusAt(2 * time.Minute)
 	s.stopAt(3 * time.Minute)
@@ -622,8 +602,6 @@ func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 // reaches this workflow when the name it arrived under already slugs to this
 // customer's ID.
 func (s *RewardsSuite) Test_Reactivate_RestoresMembershipAndKeepsEverythingElse() {
-	s.mockNotify(0)
-
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	rejoin := s.reactivateAt(3*time.Minute, "rejoin")
@@ -645,8 +623,6 @@ func (s *RewardsSuite) Test_Reactivate_RestoresMembershipAndKeepsEverythingElse(
 // be a display-only claim: the handler's deactivated guard reads the same flag
 // reactivate clears, so a clear that did not take shows up here as a 409.
 func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
-	s.mockNotify(0)
-
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	s.reactivateAt(3*time.Minute, "rejoin")
@@ -660,44 +636,8 @@ func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
 	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
 }
 
-// Leaving does not re-announce a tier on the way back. NotifiedLevels is carried
-// through the round trip, so a customer who was congratulated for gold before
-// leaving is not congratulated for it again on re-enrollment.
-func (s *RewardsSuite) Test_Reactivate_DoesNotRenotifyACarriedLevel() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	s.reactivateAt(3*time.Minute, "rejoin")
-	s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(5 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"gold was announced before the customer left; rejoining is not a new promotion")
-}
-
-// The departure notice is armed by the transition, not by the request, so an
-// idempotent repeat does not send a second one. The customer left once.
-func (s *RewardsSuite) Test_SoftDeactivate_RepeatSendsOneDepartureNotice() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave-1")
-	s.deactivateAt(3*time.Minute, "leave-2")
-	s.stopAt(4 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted),
-		"a repeat DELETE must not notify the customer a second time")
-}
-
 // addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.
 func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
-	s.mockNotify(0)
-
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	blocked := s.addPoints(3*time.Minute, "u2", rewards.AddPointsRequest{Amount: 50, Reason: "purchase"})
@@ -709,349 +649,4 @@ func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
 	var app *temporal.ApplicationError
 	s.Require().True(errors.As(blocked.completed, &app))
 	s.Equal(rewards.ErrTypeDeactivated, app.Type())
-}
-
-// Soft deactivate still sends the departure notification.
-func (s *RewardsSuite) Test_SoftDeactivate_SendsDepartureNotice() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted))
-}
-
-// --- Tier promotion notifications ------------------------------------------
-
-// notifyCalls records what the mocked Activity was actually asked to send.
-type notifyCalls struct {
-	mu   sync.Mutex
-	reqs []rewards.NotifyRequest
-}
-
-func (c *notifyCalls) add(req rewards.NotifyRequest) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.reqs = append(c.reqs, req)
-}
-
-func (c *notifyCalls) all() []rewards.NotifyRequest {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return append([]rewards.NotifyRequest(nil), c.reqs...)
-}
-
-func (c *notifyCalls) levels(event string) []string {
-	var out []string
-	for _, r := range c.all() {
-		if r.Event == event {
-			out = append(out, r.Level)
-		}
-	}
-	return out
-}
-
-// mockNotify installs the Activity mock with one delay for every delivery.
-// A delay keeps a delivery genuinely in flight, which is what makes the
-// continue-as-new race reachable rather than theoretical.
-func (s *RewardsSuite) mockNotify(delay time.Duration) *notifyCalls {
-	return s.mockNotifyPer(func(rewards.NotifyRequest) time.Duration { return delay })
-}
-
-// mockNotifyPer varies the delay by request, which some tests need: a guard that
-// waits for delivery A is only exercised if delivery B can finish first.
-func (s *RewardsSuite) mockNotifyPer(delay func(rewards.NotifyRequest) time.Duration) *notifyCalls {
-	calls := &notifyCalls{}
-	s.env.OnActivity(testActivities.NotifyCustomer, mock.Anything, mock.Anything).
-		Return(func(_ context.Context, req rewards.NotifyRequest) error {
-			if d := delay(req); d > 0 {
-				time.Sleep(d)
-			}
-			calls.add(req)
-			return nil
-		}).Maybe()
-	return calls
-}
-
-// A promotion landing on the *third* add is the ordinary case at EarnsPerRun = 3,
-// and it is precisely when the run wants to continue as new. The main loop drains
-// needsNotify before rolling, so the promotion is sent in this run and
-// NotifiedLevels rides into the successor.
-func (s *RewardsSuite) Test_Notify_PromotionOnTheRollingAddIsNotDropped() {
-	calls := s.mockNotify(50 * time.Millisecond)
-
-	// 200 + 200 + 200 = 600: basic until the third add, gold on it.
-	for i := 0; i < rewards.EarnsPerRun; i++ {
-		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
-			rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
-	}
-	// No cancel: the roll is what ends this run.
-	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
-
-	s.Require().True(s.env.IsWorkflowCompleted())
-	s.Require().Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"expected the promotion to survive the roll, got %v", calls.all())
-
-	// ...and the successor must know it was sent, or the next run re-notifies.
-	next := s.continuedState()
-	s.Equal([]string{rewards.LevelGold}, next.NotifiedLevels)
-}
-
-// A promotion that is not racing the roll takes the ordinary path.
-func (s *RewardsSuite) Test_Notify_PromotionMidRunIsSent() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.stopAt(2 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted))
-}
-
-// Both boundaries crossed inside one run produce two notifications, in order.
-// The main loop sends one promotion per wake; a second add that advances the
-// tier re-arms needsNotify so platinum is not lost behind gold.
-func (s *RewardsSuite) Test_Notify_BothTiersInOneRun() {
-	calls := s.mockNotify(20 * time.Millisecond)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold, rewards.LevelPlatinum},
-		calls.levels(rewards.NotifyEventPromoted))
-}
-
-// An add that stays inside a tier notifies nobody. The obvious case, and the one
-// that would make the demo unbearable if it were wrong.
-func (s *RewardsSuite) Test_Notify_NoPromotionWithinATier() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Empty(calls.levels(rewards.NotifyEventPromoted))
-}
-
-// The at-least-once dedup guard: a level already in NotifiedLevels is not
-// re-sent. Points only go up, so the state below is constructed rather than
-// reachable by legal operations today -- the guard exists because Activities are
-// at-least-once, and for the day a spend or expiry path lands.
-func (s *RewardsSuite) Test_Notify_DoesNotRenotifyACarriedLevel() {
-	calls := s.mockNotify(0)
-
-	state := newState()
-	state.Points = 400
-	state.LifetimeEarnEvents = 4
-	state.NotifiedLevels = []string{rewards.LevelGold}
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 200, Reason: "purchase"})
-	s.stopAt(2 * time.Minute)
-
-	_ = s.runUntilStopped(state)
-
-	s.Empty(calls.levels(rewards.NotifyEventPromoted),
-		"gold was already notified; crossing it again must not re-send")
-}
-
-// Departure reuses the same Activity, which is why there is no separate cleanup
-// Activity in the design. Product leave is soft-deactivate.
-func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	sent := calls.all()
-	s.Require().Len(sent, 2, "expected a promotion and a departure, got %v", sent)
-
-	departed := sent[1]
-	s.Equal(rewards.NotifyEventDeparted, departed.Event)
-	s.Equal(rewards.LevelGold, departed.Level, "the departure carries their final tier")
-	s.Equal("c-001:departed", departed.IdempotencyKey)
-}
-
-// A promotion armed in the same instant as soft-deactivate must still be sent
-// before the departure notice. The main loop drains needsNotify before
-// needsDeparture; without that, departure can win and the promotion is dropped.
-func (s *RewardsSuite) Test_Notify_DepartureDrainsAQueuedPromotion() {
-	// Asymmetric delays: a slow promotion with an instant departure is the
-	// shape that actually needs the drain. If both are slow, the departure
-	// round trip can mask a missing drain.
-	calls := s.mockNotifyPer(func(r rewards.NotifyRequest) time.Duration {
-		if r.Event == rewards.NotifyEventPromoted {
-			return 200 * time.Millisecond
-		}
-		return 0
-	})
-
-	// The promotion and soft-deactivate land in the same instant; stopAt later
-	// is test-env teardown only.
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.deactivateAt(time.Minute, "leave")
-	s.stopAt(2 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"a promotion earned in the same instant as soft-deactivate must still be sent")
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventDeparted),
-		"and the departure notice still goes out after it")
-}
-
-// NotifiedLevels rides the continue-as-new payload, so the successor run does
-// not re-congratulate a customer for a tier they were told about last run.
-func (s *RewardsSuite) Test_Notify_NotifiedLevelsSurviveTheRoll() {
-	s.mockNotify(0)
-
-	state := newState()
-	state.Points = 400
-	state.LifetimeEarnEvents = 4
-
-	for i := 0; i < rewards.EarnsPerRun; i++ {
-		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
-			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	}
-	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
-
-	s.Require().True(s.env.IsWorkflowCompleted())
-	next := s.continuedState()
-	s.Equal([]string{rewards.LevelGold}, next.NotifiedLevels,
-		"crossed gold at 500; the successor must know it was announced")
-	s.Equal(700, next.Points)
-}
-
-// The audit crawl decides what is a notification row by matching the Activity's
-// registered name against ActivityNotifyCustomer (internal/httpapi/audit.go),
-// and the workflow schedules it by that same string rather than by function
-// reference (workflows/notify.go). If the constant and the name the SDK
-// registers ever diverge, notification rows simply stop appearing -- no error,
-// just a quietly poorer timeline -- and the workflow schedules an Activity no
-// worker answers for.
-//
-// RegisterActivity(&Activities{}) registers every exported method under the
-// method's own name, so that is what this checks: that a method with exactly
-// this name exists on the struct the worker registers. Renaming the method, or
-// unexporting it, fails here.
-func TestActivityNameMatchesRegistration(t *testing.T) {
-	typ := reflect.TypeOf(testActivities)
-	if _, ok := typ.MethodByName(rewards.ActivityNotifyCustomer); !ok {
-		var have []string
-		for i := 0; i < typ.NumMethod(); i++ {
-			have = append(have, typ.Method(i).Name)
-		}
-		t.Errorf("ActivityNotifyCustomer = %q but %s has no such exported method; "+
-			"the SDK would register %v",
-			rewards.ActivityNotifyCustomer, typ, have)
-	}
-}
-
-// mockNotifyFailing fails the first failures deliveries and succeeds after, so a
-// send can exhaust its retry budget and a later attempt can still land.
-func (s *RewardsSuite) mockNotifyFailing(failures int) *notifyCalls {
-	calls := &notifyCalls{}
-	var n int
-	s.env.OnActivity(testActivities.NotifyCustomer, mock.Anything, mock.Anything).
-		Return(func(_ context.Context, req rewards.NotifyRequest) error {
-			n++
-			if n <= failures {
-				return fmt.Errorf("notification provider unreachable (attempt %d)", n)
-			}
-			calls.add(req)
-			return nil
-		}).Maybe()
-	return calls
-}
-
-// A delivery that exhausts its retries must not be dropped for good.
-//
-// The Activity's own retry policy is bounded on purpose -- an unbounded one
-// would block continue-as-new for as long as the provider stayed down -- so the
-// outer retry comes from PromotionFor asking whether the customer's tier has
-// been announced, which any later add picks up.
-func (s *RewardsSuite) Test_Notify_FailedDeliveryIsRetriedByALaterAdd() {
-	// notifyMaxAttempts failures exhausts exactly one send.
-	calls := s.mockNotifyFailing(3)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	// Stays gold: no boundary is crossed by this one, which is the whole point.
-	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"a dropped promotion must be picked up by the next add, not lost for good")
-}
-
-// ...and the flip side: re-arming needsNotify on every add must not mean
-// announcing the tier on every add. NotifiedLevels is what stops the second
-// delivery once the first has succeeded.
-func (s *RewardsSuite) Test_Notify_AnnouncesEachTierOnce() {
-	calls := s.mockNotifyFailing(0)
-
-	// Three adds, all inside gold after the first.
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "purchase"})
-	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.addPoints(3*time.Minute, "u3", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(4 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelGold}, calls.levels(rewards.NotifyEventPromoted),
-		"gold is announced once, however many adds land inside it")
-}
-
-// A single add can clear two thresholds at once: MaxPointsPerTxn is 1000 and
-// platinum starts at 1000, so one add from zero lands a customer straight in
-// platinum without ever being observed at gold.
-//
-// One notification, naming where they are. "Welcome to Gold" arriving beside
-// "Welcome to Platinum" reads as a bug to the person receiving it. Pinned so
-// that deciding otherwise is a deliberate act.
-func (s *RewardsSuite) Test_Notify_SingleAddPastTwoTiersAnnouncesOnlyTheNewOne() {
-	calls := s.mockNotify(0)
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{
-		Amount: rewards.PlatinumThreshold, Reason: "one big purchase"})
-	s.stopAt(2 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
-		"a customer who never sat at gold should not be congratulated for it")
-}
-
-// The boundary of that retry, stated exactly: a failed delivery is re-offered by
-// later adds *while the customer stays at that tier*. Advance a tier first and
-// the lower one is dropped for good, since PromotionFor only ever offers the
-// tier they are at now.
-//
-// Intended rather than a gap -- a belated "you reached gold" sent after they are
-// past it would be worse than silence -- but worth pinning, because the obvious
-// reading of "retried on the next add" is broader than what happens.
-func (s *RewardsSuite) Test_Notify_RetryDoesNotSurviveAdvancingATier() {
-	calls := s.mockNotifyFailing(3) // exhausts exactly the gold delivery
-
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 500, Reason: "a"})
-	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 500, Reason: "b"})
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Equal([]string{rewards.LevelPlatinum}, calls.levels(rewards.NotifyEventPromoted),
-		"the failed gold notice is dropped; platinum, where they actually are, is sent")
 }

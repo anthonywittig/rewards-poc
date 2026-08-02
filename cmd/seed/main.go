@@ -42,7 +42,7 @@ var seedSet = []customer{
 	{
 		id: "departed", name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
-		why: "deactivated: no add-points form, and a departure notification",
+		why: "deactivated: no add-points form, re-enroll restores the balance",
 	},
 	{id: "katherine", name: "Katherine Johnson", adds: []int{95}, why: "basic"},
 	{id: "alan", name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},

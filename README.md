@@ -9,8 +9,8 @@ Updates, status is a Query, the customer list is a visibility query, and the aud
 reconstructed by crawling Event History. The API holds a Temporal client and **nothing else** —
 no database, no cache, no ORM.
 
-**Complete.** The workflow runs, continues-as-new every 3 point-adds, notifies customers when
-they reach a tier, and is drivable from the `temporal` CLI, over HTTP, or through the React UI.
+**Complete.** The workflow runs, continues-as-new every 3 point-adds, and is drivable from the
+`temporal` CLI, over HTTP, or through the React UI.
 
 ## Quick start
 
@@ -201,7 +201,7 @@ go test ./internal/rewards/workflows/ -run TestReplay
 
 A customer's workflow outlives deploys, so today's code gets replayed against histories recorded
 weeks ago and the commands must match event for event.
-`internal/rewards/workflows/testdata/run-notification.json` is a real recorded history; an edit
+`internal/rewards/workflows/testdata/run-enrollment.json` is a real recorded history; an edit
 that changes what the workflow emits — adding an Activity, reordering commands — fails this test
 before it wedges every customer with an open run in production. The production-grade fix for such
 an edit is `workflow.GetVersion`, which this POC deliberately omits: executions here can simply
@@ -217,28 +217,18 @@ make workflowcheck
 The Go SDK has no workflow sandbox. `time.Now()` in workflow code compiles, passes `go vet`, and
 passes the unit tests — then wedges a customer on replay, weeks later, in production.
 `workflowcheck` walks the call graph from every function taking a `workflow.Context` and flags
-anything reaching a non-deterministic call, transitively: put a `time.Now()` in `deliverPromotion`
-and it reports `deliverPromotion` *and* `CustomerRewardsWorkflow`, with the chain between them.
+anything reaching a non-deterministic call, transitively: a `time.Now()` anywhere the workflow
+can reach is reported with the chain that reaches it.
 Replay tests catch this too, but only for the paths a recorded history happens to cover.
 
-**One Activity, deliberately.** `NotifyCustomer` is the only thing here that touches the outside
-world; everything else is workflow state needing no side effects, which is rather the argument.
-It fires when a customer sits at a tier they haven't been told about — a property, not an event,
-so a failed delivery is picked up by the next add — and the handler doesn't await it. Delivery
-runs in the workflow's main loop as **notify → depart → continue-as-new**, which is what keeps a
-promotion from rolling away unsent.
-
-**Workflows and Activities are separate packages, and that boundary is load-bearing.** The Go SDK
-has no workflow sandbox: nothing at runtime stops workflow code from calling a database handle
-directly and silently breaking determinism, so a package boundary is the only structural guard
-there is. `internal/rewards/workflows` therefore does not import `internal/rewards/activities` —
-it schedules by the `rewards.ActivityNotifyCustomer` name instead, and an Activity's dependencies
-stay reachable only from the `Activities` struct the worker builds. Both import the parent
-`internal/rewards`, which holds the types and the rules as plain functions and imports neither.
-
-Activities are registered as a struct (`w.RegisterActivity(&activities.Activities{...})`), so
-injecting a real notification provider is a different value in that one line and no change
-anywhere else.
+**No Activities, deliberately.** Nothing in the rewards program touches the outside world:
+points, tier, membership and the audit trail are all workflow state and Event History, which is
+rather the argument of the POC — the workflow is a pure state machine and Temporal is its store.
+A real system would notify customers on promotion, and that is what an Activity is for: it would
+live in a sibling `internal/rewards/activities` package the workflow schedules **by name**, never
+by import. The Go SDK has no workflow sandbox — nothing at runtime stops workflow code from
+calling a provider SDK directly and silently breaking determinism — so that package boundary is
+the only structural guard there is.
 
 ## Behaviour to expect
 
@@ -304,19 +294,14 @@ internal/rewards/             the domain: types and rules, no Temporal orchestra
   state.go                    CustomerState, tier thresholds, derived Level()
   contract.go                 the Update/Query contract every caller speaks
   enrollment.go               what makes a starting payload valid
-  promotion.go                which promotion a customer is owed, decided from state
   searchattr.go               typed search attribute keys
-  notify.go                   the notification contract the audit crawl decodes
   level_test.go               tier derivation, no test environment needed
   tiers_test.go               the tier ladder's ordering invariant
   workflows/                  the workflow layer
     workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
-    notify.go                 notification delivery, run from the main loop
     workflow_test.go          unit tests (no Docker required)
     replay_test.go            deploy rehearsal against a recorded history
     testdata/                 a real recorded history
-  activities/                 the Activity layer
-    notify.go                 NotifyCustomer -- the only side effect in the system
 internal/httpapi/
   server.go                   enroll/re-enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection

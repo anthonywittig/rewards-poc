@@ -31,7 +31,6 @@ import (
 //	run-deactivated.json   the last run: rolled into, 1 add, then (historically) cancelled;
 //	                       tests strip the cancel tail and splice events-deactivate.json
 //	run-rejection.json     a run containing a handler rejection at the cap
-//	events-notification.json  a real NotifyCustomer Activity pair (see below)
 //	events-deactivate.json    a soft-deactivate UpdateAccepted/Completed pair
 //
 // Recaptured with:
@@ -366,59 +365,6 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	}
 }
 
-// The notification rows the crawl picks up "for free". The Activity events are
-// real, captured from a workflow that scheduled NotifyCustomer with a
-// rewards.NotifyRequest, and spliced into a real enrollment run.
-func TestAuditRun_NotificationRows(t *testing.T) {
-	events := append(loadEvents(t, "run-enrollment.json"), loadEvents(t, "events-notification.json")...)
-	run := auditRun("run-0", events)
-
-	requireKinds(t, run.entries,
-		AuditEnrolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditNotificationSent)
-
-	note := run.entries[4]
-	if note.NotifiedLevel != rewards.LevelGold {
-		t.Errorf("notifiedLevel = %q, want %q", note.NotifiedLevel, rewards.LevelGold)
-	}
-	if note.At.IsZero() {
-		t.Error("notification row needs a timestamp")
-	}
-	// A notification is not an earn either.
-	if run.earnEvents != 3 {
-		t.Errorf("earnEvents = %d, want 3", run.earnEvents)
-	}
-}
-
-// Emitted on completion, not on scheduling: "sent" has to mean sent. An
-// Activity that was scheduled and never completed leaves no row.
-func TestAuditRun_UncompletedNotificationIsNotReported(t *testing.T) {
-	notify := loadEvents(t, "events-notification.json")
-	scheduledOnly := notify[:1]
-	if scheduledOnly[0].GetActivityTaskScheduledEventAttributes() == nil {
-		t.Fatal("expected the first captured event to be the scheduling")
-	}
-
-	run := auditRun("run-0", append(loadEvents(t, "run-enrollment.json"), scheduledOnly...))
-	for _, e := range run.entries {
-		if e.Kind == AuditNotificationSent {
-			t.Fatal("a scheduled-but-never-completed notification must not render as sent")
-		}
-	}
-}
-
-// Only NotifyCustomer becomes a notification row. The crawl sees everything a
-// workflow ever did, so an unrelated Activity added later must not start
-// announcing itself as a notification.
-func TestAuditRun_OtherActivitiesAreIgnored(t *testing.T) {
-	notify := loadEvents(t, "events-notification.json")
-	notify[0].GetActivityTaskScheduledEventAttributes().
-		GetActivityType().Name = "SomeOtherActivity"
-
-	run := auditRun("run-0", append(loadEvents(t, "run-enrollment.json"), notify...))
-	requireKinds(t, run.entries,
-		AuditEnrolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded)
-}
-
 // --- the walk ---------------------------------------------------------------
 
 // fakeChain serves a synthetic run chain, and reaps everything older than
@@ -606,39 +552,5 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 			t.Errorf("entry %d (%s) at %v goes back in time from %v", i, e.Kind, e.At, prev)
 		}
 		prev = e.At
-	}
-}
-
-// The departure notification uses the same Activity as a promotion and must not
-// render as one. Real events, captured from a customer who earned gold and then
-// left; without the filter the timeline shows "Promoted to Gold — notification
-// sent" immediately below that customer's own deactivated row.
-func TestAuditRun_DepartureNotificationIsNotAPromotionRow(t *testing.T) {
-	departure := loadEvents(t, "events-departure-notification.json")
-
-	// Sanity-check the fixture is what this test thinks it is, so it cannot
-	// quietly start passing because the payload changed.
-	sched := departure[0].GetActivityTaskScheduledEventAttributes()
-	if got := sched.GetActivityType().GetName(); got != rewards.ActivityNotifyCustomer {
-		t.Fatalf("fixture activity = %q, want %q", got, rewards.ActivityNotifyCustomer)
-	}
-
-	run := auditRun("run-0", append(softDeactivatedRun(t), departure...))
-	for _, e := range run.entries {
-		if e.Kind == AuditNotificationSent {
-			t.Errorf("a departure notice rendered as a promotion row (level %q)", e.NotifiedLevel)
-		}
-	}
-
-	// The departure itself is still on the timeline -- this drops a duplicate
-	// telling, not the fact.
-	var sawDeactivated bool
-	for _, e := range run.entries {
-		if e.Kind == AuditDeactivated {
-			sawDeactivated = true
-		}
-	}
-	if !sawDeactivated {
-		t.Error("the deactivated row must survive; it is what now carries the departure")
 	}
 }

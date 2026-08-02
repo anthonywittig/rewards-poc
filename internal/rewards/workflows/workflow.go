@@ -3,12 +3,15 @@
 //
 // Everything here runs under the workflow's determinism constraints. The rules
 // it applies live in the parent internal/rewards package as plain functions, so
-// this package is orchestration: what to await, what to schedule, when to roll.
+// this package is orchestration: what to await, when to roll.
 //
-// It deliberately does not import internal/rewards/activities. The Go SDK has no
-// workflow sandbox, so importing the Activity package imports its dependencies,
-// and calling one directly from here is a determinism bug the compiler would
-// accept. Activities are named by the rewards.ActivityNotifyCustomer constant.
+// There are deliberately no Activities. Nothing in the rewards program needs a
+// side effect -- points, tier, membership and the audit trail are all workflow
+// state and Event History, which is rather the point of the POC. A real system
+// would notify customers on promotion; that is an Activity, and it belongs in a
+// sibling internal/rewards/activities package the workflow schedules *by name*,
+// never by import -- the Go SDK has no workflow sandbox, so a package boundary
+// is the only structural guard keeping provider SDKs out of workflow code.
 //
 // Entity workflows outlive deploys, so in production any edit that changes the
 // commands a run emits must be gated with workflow.GetVersion or it wedges
@@ -27,7 +30,7 @@ import (
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
 //
-// The main loop is: wait for work, then notify → continue-as-new.
+// Each run accepts a handful of point-adds, then continues as new.
 // Product leave is soft (Deactivated flag); the workflow keeps running.
 func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) error {
 	logger := workflow.GetLogger(ctx)
@@ -39,11 +42,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	}
 
 	earnsThisRun := 0
-
-	// Armed by addPoints when the customer sits at an unannounced tier.
-	needsNotify := false
-	// Armed by deactivate so the departure notice is sent outside the Update.
-	needsDeparture := false
 
 	if state.EnrolledAt.IsZero() {
 		state.EnrolledAt = workflow.Now(ctx)
@@ -80,13 +78,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
-
-			if _, ok := rewards.PromotionFor(&state); ok {
-				needsNotify = true
-				logger.Info("tier promotion pending",
-					"customerId", state.CustomerID, "level", rewards.Level(state.Points))
-			}
-
 			earnsThisRun++
 
 			eventID := fmt.Sprintf("%s:%d", state.CustomerID, state.LifetimeEarnEvents)
@@ -150,7 +141,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
-			needsDeparture = true
 
 			logger.Info("customer deactivated",
 				"customerId", state.CustomerID,
@@ -204,47 +194,28 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
 	// earn count.
-	for {
-		if err := workflow.Await(ctx, func() bool {
-			return needsNotify || needsDeparture || earnsThisRun >= rewards.EarnsPerRun
-		}); err != nil {
-			return err
-		}
-
-		if needsNotify {
-			needsNotify = false
-			deliverPromotion(ctx, &state)
-			continue
-		}
-
-		if needsDeparture {
-			needsDeparture = false
-			if err := sendNotify(ctx, rewards.DepartureNotice(&state)); err != nil {
-				logger.Error("departure notification failed after retries",
-					"customerId", state.CustomerID, "error", err)
-			}
-			continue
-		}
-
-		if err := workflow.Await(ctx, func() bool {
-			return workflow.AllHandlersFinished(ctx)
-		}); err != nil {
-			return err
-		}
-		if needsNotify || needsDeparture {
-			continue
-		}
-
-		state.Generation++
-
-		logger.Info("continuing as new",
-			"customerId", state.CustomerID,
-			"generation", state.Generation,
-			"earnsThisRun", earnsThisRun,
-			"points", state.Points)
-
-		return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
+	if err := workflow.Await(ctx, func() bool {
+		return earnsThisRun >= rewards.EarnsPerRun
+	}); err != nil {
+		return err
 	}
+
+	// Let any in-flight handler finish before the run closes underneath it.
+	if err := workflow.Await(ctx, func() bool {
+		return workflow.AllHandlersFinished(ctx)
+	}); err != nil {
+		return err
+	}
+
+	state.Generation++
+
+	logger.Info("continuing as new",
+		"customerId", state.CustomerID,
+		"generation", state.Generation,
+		"earnsThisRun", earnsThisRun,
+		"points", state.Points)
+
+	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 
 func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {

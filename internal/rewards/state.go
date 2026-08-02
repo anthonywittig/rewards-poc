@@ -1,20 +1,10 @@
 // Package rewards is the domain layer for the customer rewards Entity Workflow:
 // the state it carries, the Update/Query contract every caller speaks, and the
-// rules -- tiers, enrollment validity, which promotion is owed -- expressed as
-// plain functions over that state.
+// rules -- tiers, enrollment validity -- expressed as plain functions over that
+// state.
 //
-// It deliberately contains no workflow or Activity code:
-//
-//	internal/rewards            this package: types and pure logic
-//	internal/rewards/workflows  CustomerRewardsWorkflow and its handlers
-//	internal/rewards/activities the Activities struct, and the only code here
-//	                            allowed to touch the outside world
-//
-// Both sub-packages import this one; neither imports the other. That last part
-// is load-bearing: the Go SDK has no workflow sandbox, so nothing at runtime
-// stops workflow code from calling a database handle directly and silently
-// breaking determinism. Workflow code names the Activity by the
-// ActivityNotifyCustomer string constant instead.
+// It deliberately contains no workflow code; that lives in
+// internal/rewards/workflows, which imports this package and nothing more.
 package rewards
 
 import (
@@ -65,12 +55,10 @@ type Tier struct {
 }
 
 // tiers is the ladder, and the only place a threshold is attached to a tier.
-// Level, NextTierAt and PromotionFor all walk it rather than each carrying their
-// own switch.
+// Level and NextTierAt both walk it rather than each carrying their own switch.
 //
-// LevelBasic is deliberately not a rung. It is the floor -- what you are when no
-// rule matches -- and giving it a zero-point rule would make "promoted to basic"
-// something the notifier had to special-case back out.
+// LevelBasic is deliberately not a rung. It is the floor -- what you are when
+// no rule matches.
 //
 // MUST stay sorted by MinPoints ascending; everything below relies on it.
 // TestTierLadderIsOrdered enforces that rather than trusting the comment.
@@ -81,9 +69,9 @@ var tiers = []Tier{
 
 // Ladder returns the rungs, ordered by MinPoints ascending.
 //
-// A copy: Level, NextTierAt and PromotionFor all read `tiers` trusting that
-// order without re-checking it, so a caller that sorted or appended to a shared
-// slice would corrupt tier derivation for the whole process.
+// A copy: Level and NextTierAt read `tiers` trusting that order without
+// re-checking it, so a caller that sorted or appended to a shared slice would
+// corrupt tier derivation for the whole process.
 //
 // LevelBasic is absent, because it is the floor rather than a rung (see tiers).
 // A client drawing the ladder therefore has to supply the "zero to the first
@@ -103,11 +91,6 @@ const (
 
 // EarnsPerRun is how many successful adds a run handles before continuing as
 // new. Artificially low so the rollover is easy to watch.
-//
-// A floor rather than an exact count: the main loop delivers any pending
-// promotion before it rolls, and the handler keeps accepting adds for the
-// duration of that Activity -- measured at 4 adds when a tier crossing lands in
-// the rolling run, 3 when none does.
 //
 // CHANGING THIS BREAKS RUNNING WORKFLOWS. A run whose history records a roll
 // after 3 adds will not produce that command at that point on replay under a
@@ -134,10 +117,6 @@ type CustomerState struct {
 	// reaped, and needed to quantify audit-log truncation.
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
-
-	// Levels already notified about, so an at-least-once Activity delivery does
-	// not re-notify after a replay.
-	NotifiedLevels []string `json:"notifiedLevels,omitempty"`
 
 	// Set when the customer leaves; cleared on re-enrollment. Deliberately not
 	// an Active bool: the zero value has to mean active, or continue-as-new

@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anthonywittig/rewards-poc/internal/rewards"
 	"github.com/anthonywittig/rewards-poc/internal/rewards/workflows"
 
 	historypb "go.temporal.io/api/history/v1"
@@ -57,28 +56,26 @@ func replay(t *testing.T, h *historypb.History) error {
 	})
 }
 
-// A real history recorded by this workflow: adds that cross a tier and the
-// notification Activity that follows. Today's code must reproduce its commands
-// exactly; an edit that changes what the workflow emits fails here before it
-// wedges an open run in production.
+// A real recorded history: enrollment, three adds, and the roll into the next
+// run. Today's code must reproduce its commands exactly; an edit that changes
+// what the workflow emits fails here before it wedges an open run in production.
 func TestReplay_RecordedHistory(t *testing.T) {
-	h := loadHistory(t, "run-notification.json")
+	h := loadHistory(t, "run-enrollment.json")
 
 	if err := replay(t, h); err != nil {
 		t.Fatalf("a history this workflow produced does not replay through it: %v", err)
 	}
 
 	// Sanity-check the fixture is the interesting one rather than a bare run:
-	// it must schedule the notification Activity, or the replay above proves
-	// much less than it looks.
-	var sawActivity bool
+	// it must actually roll over, or the replay above proves much less than it
+	// looks.
+	var sawRoll bool
 	for _, e := range h.GetEvents() {
-		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil &&
-			a.GetActivityType().GetName() == rewards.ActivityNotifyCustomer {
-			sawActivity = true
+		if e.GetWorkflowExecutionContinuedAsNewEventAttributes() != nil {
+			sawRoll = true
 		}
 	}
-	if !sawActivity {
-		t.Error("fixture schedules no NotifyCustomer activity; recapture it from a run that crosses a tier")
+	if !sawRoll {
+		t.Error("fixture never continues as new; recapture it from a run with EarnsPerRun adds")
 	}
 }
