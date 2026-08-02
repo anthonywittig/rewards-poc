@@ -20,8 +20,8 @@ one. **Go** 1.25.4 or newer (the Temporal Go SDK's floor, not ours — on an old
 `GOTOOLCHAIN=auto` fetches it) is only for `make test` and `make workflowcheck`, and **Node** 20+
 only if you want to run `npm` against `web/` yourself.
 
-Configuration defaults come from `.env.example`, so a fresh checkout needs no copy step. Copy it
-to `.env` only when you want local overrides.
+There is no env file to copy: every setting is written out literally in `deploy/docker-compose.yml`.
+Change a port or an image version by editing it there.
 
 ```sh
 # The whole stack: Postgres, Elasticsearch, Temporal + its UI, the worker, the
@@ -85,10 +85,6 @@ derives a different ID, which is a different customer.
 | `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |
 | `make reap [WF=customer-x]` | delete closed runs now, to force audit-log truncation |
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
-
-Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
-`.env.example` to `.env.beta` with a different `COMPOSE_PROJECT_NAME` and ports, then
-`make up ENV=.env.beta`.
 
 ## The HTTP API
 
@@ -311,14 +307,13 @@ internal/httpapi/
   testdata/                   real run histories, for the crawl's golden tests
 web/                          the React UI
 deploy/
-  docker-compose.yml          Postgres + Elasticsearch + Temporal + UI + worker + api
+  docker-compose.yml          the whole stack, and every setting it has
   Dockerfile                  the worker, api and seed images, built from the repo root
   dynamicconfig/dev.yaml      retention jitter, visibility flush interval
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
   reset.sh                    delete every customer workflow (make reset)
   inspect/                    canned Postgres/ES queries (docs/DATASTORES.md)
-.env.example                  ports, versions, tuning
 Makefile
 ```
 

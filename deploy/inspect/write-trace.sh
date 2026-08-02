@@ -2,32 +2,24 @@
 # follow one addPoints call through Postgres and Elasticsearch.
 # Invoked from the host by `make write-trace ID=inspect AMOUNT=10`.
 #
-# Expects compose project env already loaded by Make (COMPOSE, NAMESPACE, …)
-# and a worker polling the rewards task queue.
+# Expects a worker polling the rewards task queue. The namespace comes from the
+# temporal container's own environment, like every other CLI call here.
 
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "${ROOT}"
 
-if [[ -n "${ENV:-}" ]]; then
-  ENV_FILE="$ENV"
-elif [[ -f .env ]]; then
-  ENV_FILE=.env
-else
-  ENV_FILE=.env.example
-fi
 ID="${ID:-inspect}"
 AMOUNT="${AMOUNT:-10}"
 REASON="${REASON:-write-trace}"
 WF="customer-${ID}"
 
-COMPOSE=(docker compose --env-file "${ENV_FILE}" -f deploy/docker-compose.yml)
+COMPOSE=(docker compose -f deploy/docker-compose.yml)
 PSQL=("${COMPOSE[@]}" exec -T postgres psql -U temporal -d temporal -v "ON_ERROR_STOP=1")
 TCTL=("${COMPOSE[@]}" exec -T temporal)
 TCLI=("${COMPOSE[@]}" exec -T \
   -e TEMPORAL_ADDRESS=temporal:7233 \
-  -e "TEMPORAL_NAMESPACE=${NAMESPACE:?NAMESPACE must be set by Make}" \
   temporal temporal)
 
 step() { printf '\n\033[1m==> %s\033[0m\n' "$*"; }
