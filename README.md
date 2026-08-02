@@ -63,12 +63,13 @@ make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
 make deactivate ID=c-001                          # soft leave; the workflow keeps running
-make reactivate ID=c-001 NAME="Ada Lovelace"   # rejoin, balance intact
+make reactivate ID=c-001                          # rejoin, balance intact
 make audit  ID=c-001                              # the timeline, crawled out of Event History
 ```
 
-Re-enrollment takes the name it is given, so pass it unless you mean to change it — the
-target's default is a convenience for throwaway IDs, not a no-op.
+Re-enrollment takes no argument: it restores membership and touches nothing else. The name
+cannot change, because the customer ID is derived from it — a signup under a different name
+derives a different ID, which is a different customer.
 
 ## Commands
 

@@ -43,11 +43,6 @@ type DeactivateResult struct {
 	Changed bool `json:"changed"`
 }
 
-// ReactivateRequest is the reactivate Update argument (re-enrollment).
-type ReactivateRequest struct {
-	Name string `json:"name"`
-}
-
 // ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
 // re-enrollment from a no-op against a customer who was already active. The API
 // tells a restore (200) from a duplicate enrollment (409) by it.

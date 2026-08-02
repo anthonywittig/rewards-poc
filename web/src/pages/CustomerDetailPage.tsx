@@ -137,7 +137,11 @@ export function CustomerDetailPage() {
 
   // Re-enrollment is the same POST /api/customers a new signup uses: the server
   // sees the ID is taken and inactive, and reactivates instead of starting.
-  // Resending the name we already hold keeps this one click.
+  //
+  // The reactivate Update itself takes no argument, but the name still goes on
+  // the request: if this customer's workflow has been reaped the ID is free
+  // again, and the endpoint starts a fresh one rather than reactivating. Without
+  // a name that start would create a nameless customer.
   async function onReactivate() {
     if (!customer) return
     const requestedId = customer.customerId

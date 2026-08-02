@@ -127,10 +127,10 @@ func (s *RewardsSuite) deactivateAt(at time.Duration, id string) *updateResult {
 	return res
 }
 
-func (s *RewardsSuite) reactivateAt(at time.Duration, id string, req rewards.ReactivateRequest) *updateResult {
+func (s *RewardsSuite) reactivateAt(at time.Duration, id string) *updateResult {
 	res := &updateResult{}
 	s.env.RegisterDelayedCallback(func() {
-		s.env.UpdateWorkflow(rewards.UpdateReactivate, id, res.callback(s), req)
+		s.env.UpdateWorkflow(rewards.UpdateReactivate, id, res.callback(s))
 	}, at)
 	return res
 }
@@ -557,9 +557,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
 	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
-	s.reactivateAt(4*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace",
-	})
+	s.reactivateAt(4*time.Minute, "rejoin")
 	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
 	s.stopAt(6 * time.Minute)
 
@@ -594,15 +592,13 @@ func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
 }
 
 // Re-enrolling someone who never left is a duplicate signup, and the handler
-// reports rather than applies it. Applying would let a second signup silently
-// overwrite a live customer's name -- the enroll endpoint depends on
-// Changed=false to turn this into the 409 it owes the caller.
+// reports rather than applies it. Applying would restart a membership that never
+// ended -- the enroll endpoint depends on Changed=false to turn this into the
+// 409 it owes the caller.
 func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	s.mockNotify(0)
 
-	rejoin := s.reactivateAt(time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Mallory",
-	})
+	rejoin := s.reactivateAt(time.Minute, "rejoin")
 	status := s.queryStatusAt(2 * time.Minute)
 	s.stopAt(3 * time.Minute)
 
@@ -614,17 +610,17 @@ func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	s.True(status.Active)
 }
 
-// Re-enrollment takes the new name -- the customer signed up again, possibly
-// under different details -- while leaving everything that makes the balance
-// meaningful alone.
-func (s *RewardsSuite) Test_Reactivate_AdoptsANewNameAndKeepsCounters() {
+// Re-enrollment restores membership and touches nothing else. The Update takes
+// no argument at all, so there is no path by which rejoining can rewrite the
+// customer's name -- the ID is derived from that name, so a re-enrollment only
+// reaches this workflow when the name it arrived under already slugs to this
+// customer's ID.
+func (s *RewardsSuite) Test_Reactivate_RestoresMembershipAndKeepsEverythingElse() {
 	s.mockNotify(0)
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
-	rejoin := s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada King",
-	})
+	rejoin := s.reactivateAt(3*time.Minute, "rejoin")
 	status := s.queryStatusAt(4 * time.Minute)
 	s.stopAt(5 * time.Minute)
 
@@ -632,7 +628,8 @@ func (s *RewardsSuite) Test_Reactivate_AdoptsANewNameAndKeepsCounters() {
 
 	s.Require().NoError(rejoin.completed)
 	s.True(rejoin.rejoined.Changed)
-	s.Equal("Ada King", status.Name)
+	s.True(status.Active, "the customer is a member again")
+	s.Equal("Ada Lovelace", status.Name, "rejoining cannot rename the customer")
 	s.Equal(600, status.Points, "re-enrollment is not a reset")
 	s.Equal(1, status.LifetimeEarnEvents, "nor does it forget how the balance was earned")
 	s.Equal(rewards.LevelGold, status.Level)
@@ -646,9 +643,7 @@ func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
-	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace",
-	})
+	s.reactivateAt(3*time.Minute, "rejoin")
 	after := s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.stopAt(5 * time.Minute)
 
@@ -667,9 +662,7 @@ func (s *RewardsSuite) Test_Reactivate_DoesNotRenotifyACarriedLevel() {
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
-	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace",
-	})
+	s.reactivateAt(3*time.Minute, "rejoin")
 	s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.stopAt(5 * time.Minute)
 

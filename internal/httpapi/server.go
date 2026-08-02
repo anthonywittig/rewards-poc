@@ -124,15 +124,13 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 			"customer is already enrolled and active"}
 	}
 
-	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
-		Name: req.Name,
-	})
+	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID)
 	if err != nil {
 		return err
 	}
 	// The customer went active between the check above and the Update -- a
-	// concurrent enroll won. The handler reports that rather than applying our
-	// name over theirs, so this is still the duplicate 409.
+	// concurrent enroll won. The handler reports that rather than restarting a
+	// membership that never ended, so this is still the duplicate 409.
 	if !res.Changed {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
@@ -568,7 +566,7 @@ func (s *Server) sendUpdate(
 }
 
 func (s *Server) sendReactivate(
-	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+	ctx context.Context, wfID string,
 ) (rewards.ReactivateResult, error) {
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
@@ -576,7 +574,6 @@ func (s *Server) sendReactivate(
 	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
 		WorkflowID:   wfID,
 		UpdateName:   rewards.UpdateReactivate,
-		Args:         []any{req},
 		WaitForStage: client.WorkflowUpdateStageCompleted,
 	})
 	if err != nil {
@@ -611,11 +608,11 @@ func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.Deact
 // reactivateWithRolloverRetry mirrors updateWithRolloverRetry: a re-enroll that
 // races continue-as-new must retry against the successor rather than 404.
 func (s *Server) reactivateWithRolloverRetry(
-	ctx context.Context, wfID string, req rewards.ReactivateRequest,
+	ctx context.Context, wfID string,
 ) (rewards.ReactivateResult, error) {
 	const attempts = 2
 	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := s.sendReactivate(ctx, wfID, req)
+		res, err := s.sendReactivate(ctx, wfID)
 		if err == nil {
 			return res, nil
 		}

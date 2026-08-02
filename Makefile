@@ -264,11 +264,10 @@ deactivate: $(ENV) ## Soft-leave the program (make deactivate ID=c-001)
 	  --workflow-id customer-$(ID) \
 	  --name deactivate
 
-reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAME="Ada")
+reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
-	  --name reactivate \
-	  --input '{"name":"$(or $(NAME),Ada Lovelace)"}'
+	  --name reactivate
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed
