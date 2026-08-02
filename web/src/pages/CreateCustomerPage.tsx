@@ -2,7 +2,6 @@ import { useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { enrollCustomer, getCustomer } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
-import { slugifyId } from '../format'
 import { customerToListItem, rememberPending } from '../pending'
 
 export function CreateCustomerPage() {
@@ -12,19 +11,13 @@ export function CreateCustomerPage() {
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
 
-  // Derived, never typed: the ID always follows the name. slugifyId's
-  // timestamp fallback stays out of the preview so the field does not churn
-  // on every keystroke -- submit resolves it once, for real.
-  const customerId = name.trim() ? slugifyId(name) : ''
-
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      const id = customerId || slugifyId(name)
+      // No customerId: the server mints one and answers with it.
       const enrolled = await enrollCustomer({
-        customerId: id,
         name: name.trim(),
         email: email.trim(),
       })
@@ -63,8 +56,9 @@ export function CreateCustomerPage() {
         <div>
           <h1>Enroll customer</h1>
           <p>
-            Creates a long-lived workflow. After save you land on the detail page
-            (Query/Describe), not the list — the visibility index lags writes.
+            Creates a long-lived workflow under a server-assigned customer ID.
+            After save you land on the detail page (Query/Describe), not the
+            list — the visibility index lags writes.
           </p>
         </div>
       </div>
@@ -92,20 +86,6 @@ export function CreateCustomerPage() {
             onChange={(e) => setEmail(e.target.value)}
             autoComplete="email"
           />
-        </div>
-        <div className="field">
-          <label htmlFor="cid">Customer ID</label>
-          <input
-            id="cid"
-            readOnly
-            value={customerId}
-            placeholder="derived from name"
-            aria-describedby="cid-hint"
-            tabIndex={-1}
-          />
-          <span className="hint" id="cid-hint">
-            Derived from the name. Becomes workflow ID customer-&lt;id&gt;
-          </span>
         </div>
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>

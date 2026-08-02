@@ -137,6 +137,102 @@ func TestEnroll_FreeIDStarts(t *testing.T) {
 	}
 }
 
+// A signup sends no customerId at all: the server mints one, starts on it, and
+// answers with it. The response is the caller's only way to learn the ID, so an
+// empty one there strands the customer the request just created.
+func TestEnroll_WithoutAnIDMintsOne(t *testing.T) {
+	stub := &stubTemporal{}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+
+	if code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", code, body)
+	}
+
+	var res EnrollResponse
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.CustomerID == "" {
+		t.Fatalf("minted no customer ID: %s", body)
+	}
+	// Readable half from the name, random half after it -- the whole reason for
+	// minting a slug rather than a bare UUID.
+	if !strings.HasPrefix(res.CustomerID, "ada-lovelace-") {
+		t.Errorf("customerId = %q, want an ada-lovelace-* slug", res.CustomerID)
+	}
+	if want := rewards.WorkflowID(res.CustomerID); res.WorkflowID != want {
+		t.Errorf("workflowId = %q, want %q", res.WorkflowID, want)
+	}
+	if len(stub.startIDs) != 1 || stub.startIDs[0] != rewards.WorkflowID(res.CustomerID) {
+		t.Errorf("started %v, want one start on %q", stub.startIDs, rewards.WorkflowID(res.CustomerID))
+	}
+}
+
+// Two signups under one name are two customers. Nothing in the mint may derive
+// from the name alone, or the second Ada Lovelace collides with the first.
+func TestEnroll_MintedIDsDoNotRepeatForTheSameName(t *testing.T) {
+	seen := make(map[string]bool)
+	for range 8 {
+		_, body := postEnroll(t, newTestServer(&stubTemporal{}),
+			`{"name":"Ada Lovelace","email":"ada@example.com"}`)
+
+		var res EnrollResponse
+		if err := json.Unmarshal([]byte(body), &res); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if seen[res.CustomerID] {
+			t.Fatalf("minted %q twice", res.CustomerID)
+		}
+		seen[res.CustomerID] = true
+	}
+}
+
+// A minted ID names nobody, so a taken one is a collision, not a rejoin.
+// Reactivating on it would hand a departed customer's balance -- and their name
+// and email -- to whoever signed up next, so this path mints again instead and
+// must not reach the reactivate Update.
+func TestEnroll_MintedIDCollisionRetriesAndNeverReactivates(t *testing.T) {
+	stub := &stubTemporal{
+		startErr:      &serviceerror.WorkflowExecutionAlreadyStarted{},
+		startFailures: 1,
+		// Present so a wrong turn into the rejoin path would succeed rather
+		// than fail for some unrelated reason.
+		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Points: 600, Active: false},
+		reactivate:  &rewards.ReactivateResult{Changed: true},
+	}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+
+	if code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", code, body)
+	}
+	if stub.updates != nil {
+		t.Errorf("a minted-ID collision reached the workflow: %v", stub.updates)
+	}
+	if len(stub.startIDs) != 2 {
+		t.Fatalf("started %v, want a retry on a second ID", stub.startIDs)
+	}
+	if stub.startIDs[0] == stub.startIDs[1] {
+		t.Errorf("retried the same ID %q", stub.startIDs[0])
+	}
+}
+
+// Every mint colliding is not a 409: the caller named nobody, so there is
+// nothing they conflicted with and nothing they could change to retry.
+func TestEnroll_MintingGivesUpAsA500NotAConflict(t *testing.T) {
+	stub := &stubTemporal{startErr: &serviceerror.WorkflowExecutionAlreadyStarted{}}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+
+	if code != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500: %s", code, body)
+	}
+	if len(stub.startIDs) != mintAttempts {
+		t.Errorf("attempted %d mints, want %d", len(stub.startIDs), mintAttempts)
+	}
+	if stub.updates != nil {
+		t.Errorf("gave up by reactivating something: %v", stub.updates)
+	}
+}
+
 // The ID is taken and the customer is active. That is a duplicate signup, and it
 // must not reach the reactivate Update -- which would overwrite a live
 // customer's name and email with the second signup's.

@@ -93,12 +93,3 @@ export function nameTerms(input: string): string[] {
 export function escapeQueryLiteral(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")
 }
-
-export function slugifyId(name: string): string {
-  return name
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 40) || `c-${Date.now().toString(36)}`
-}

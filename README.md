@@ -104,6 +104,11 @@ on one stack is much cheaper if you only need isolated workflows.
 ## The HTTP API
 
 ```sh
+# The server mints the customer ID; the response carries it back as customerId.
+curl -XPOST localhost:8081/api/customers \
+  -d '{"name":"Ada Lovelace","email":"ada@example.com"}'
+
+# Sending one picks the ID yourself -- and is how a departed customer rejoins.
 curl -XPOST localhost:8081/api/customers \
   -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'
 
@@ -135,7 +140,7 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 
 | | Code | When |
 |---|---|---|
-| 400 | `invalid_request` | malformed body, missing `customerId`, unknown JSON field |
+| 400 | `invalid_request` | malformed body, missing `email`, a `customerId` with whitespace or a slash in it, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
 | 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
 | 409 | `deactivated` | adding points to a customer who has left |

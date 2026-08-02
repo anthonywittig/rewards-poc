@@ -366,6 +366,13 @@ is still `Running`.
 `Changed: false`). `POST /api/customers` against a soft-deactivated ID reactivates rather than
 409ing; against an *active* running customer it still 409s.
 
+**Which needs the caller to know the ID, so enroll still takes one — but only rejoins send it.**
+A signup carries a name and an email, and the server mints the ID (`rewards.NewCustomerID`: a
+slug of the name, so the workflow ID still says who it belongs to, plus a random suffix, so two
+customers named Ada Lovelace are two customers). A minted ID names nobody, so a collision on one
+is bad luck rather than a rejoin: that path mints another and never reaches `reactivate`, which
+would otherwise hand a departed customer's balance to whoever signed up next.
+
 **Out-of-band cancel is the ops path, not the product one.** `temporal workflow cancel` (or
 Terminate) still closes the execution. Re-enrolling that ID is a fresh Start at zero — the old
 balance left with the closed run. `make reset` is the clean slate for demos.
@@ -715,7 +722,8 @@ pipeline, so the delay can be watched draining rather than taken on faith. See
 ## The HTTP API
 
 ```
-POST   /api/customers              → ExecuteWorkflow, or reactivate if soft-deactivated
+POST   /api/customers              → ExecuteWorkflow on a minted ID, or, if the body names
+                                     a soft-deactivated one, reactivate
 GET    /api/customers?q=<sql>      → ListWorkflow + CountWorkflow
 GET    /api/customers/{id}         → QueryWorkflow(getStatus) + Describe
 POST   /api/customers/{id}/points  → UpdateWorkflow(addPoints), synchronous

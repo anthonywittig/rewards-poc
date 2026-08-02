@@ -59,11 +59,21 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
+// mintAttempts bounds the collision retry in enrollMinted. Small on purpose:
+// with a random suffix on every minted ID, a collision means either
+// extraordinary luck or a Temporal that is refusing starts for another reason,
+// and neither improves past a few tries.
+const mintAttempts = 5
+
 // enroll starts a customer's workflow, or reactivates a soft-deactivated one.
+//
+// The ID is the caller's only when they send one. A signup from the UI does
+// not: it sends a name and an email, and the server mints the ID (enrollMinted).
 //
 // Re-enrollment keeps the existing balance: the workflow ID is still occupied,
 // so we Update rather than Start, and Deactivated flips back to false with
-// Points untouched.
+// Points untouched. That path needs the ID, which is why the endpoint still
+// takes one -- the detail page's Rejoin button sends the ID it is looking at.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -71,27 +81,18 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	req.CustomerID = strings.TrimSpace(req.CustomerID)
-	if req.CustomerID == "" {
-		return badRequest("customerId is required")
-	}
 	if strings.TrimSpace(req.Email) == "" {
 		return badRequest("email is required")
 	}
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
+	if req.CustomerID == "" {
+		return s.enrollMinted(w, r, req)
+	}
 
 	wfID := rewards.WorkflowID(req.CustomerID)
-	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
-		ID:                                       wfID,
-		TaskQueue:                                rewards.TaskQueue,
-		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
-		WorkflowExecutionErrorWhenAlreadyStarted: true,
-	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
-		CustomerID: req.CustomerID,
-		Name:       req.Name,
-		Email:      req.Email,
-	})
+	run, err := s.startCustomer(r.Context(), req.CustomerID, req)
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
 			CustomerID: req.CustomerID,
@@ -148,6 +149,58 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		RunID:      runID,
 	})
 	return nil
+}
+
+// enrollMinted handles an enrollment that brought no ID: the server mints one
+// and starts on it.
+//
+// A minted ID names nobody, so a taken one is a collision rather than a
+// re-enrollment -- reactivating on it would hand a departed customer's balance,
+// name and email to whoever signed up next. This path mints another instead,
+// and never reaches the reactivate Update.
+func (s *Server) enrollMinted(w http.ResponseWriter, r *http.Request, req EnrollRequest) error {
+	for range mintAttempts {
+		id := rewards.NewCustomerID(req.Name)
+		run, err := s.startCustomer(r.Context(), id, req)
+		if err == nil {
+			writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
+				CustomerID: id,
+				WorkflowID: run.GetID(),
+				RunID:      run.GetRunID(),
+			})
+			return nil
+		}
+
+		var already *serviceerror.WorkflowExecutionAlreadyStarted
+		if !errors.As(err, &already) {
+			return mapStartError(err)
+		}
+		s.log.Warn("minted customer ID was already taken; minting another",
+			"customerId", id)
+	}
+
+	// Not a 409: the caller named nobody, so there is nothing for them to have
+	// conflicted with and nothing they could change to retry.
+	return &apiError{http.StatusInternalServerError, CodeInternal,
+		"could not mint an unused customer ID"}
+}
+
+// startCustomer is the ExecuteWorkflow both enroll paths share. The conflict
+// policy is what makes a taken ID an error instead of a handle to the existing
+// run -- both callers depend on that.
+func (s *Server) startCustomer(
+	ctx context.Context, customerID string, req EnrollRequest,
+) (client.WorkflowRun, error) {
+	return s.temporal.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:                                       rewards.WorkflowID(customerID),
+		TaskQueue:                                rewards.TaskQueue,
+		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
+		WorkflowExecutionErrorWhenAlreadyStarted: true,
+	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
+		CustomerID: customerID,
+		Name:       req.Name,
+		Email:      req.Email,
+	})
 }
 
 // listCustomers serves the customer list straight out of the visibility store.
