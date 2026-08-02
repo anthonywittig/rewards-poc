@@ -165,9 +165,11 @@ services:
   # each other.
   #
   # No image of its own: it is node plus the repo's own source, and npm install
-  # on start is what a dev server does anyway.
+  # on start is what a dev server does anyway. Pinned here rather than in the env
+  # file, like deploy/Dockerfile's bases and for the same reason -- it says how
+  # the repo builds, not what this stack runs.
   web:
-    image: node:${NODE_VERSION}
+    image: node:22-alpine
     working_dir: /app
     depends_on:
       api:
