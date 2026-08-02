@@ -254,22 +254,12 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// hasOrderBy reports whether the query contains an ORDER BY clause, ignoring
-// anything inside single-quoted literals -- so a customer actually named
-// "order by" is searchable rather than mysteriously rejected.
+// hasOrderBy reports whether the query contains an ORDER BY clause. A plain
+// substring test, so it would also fire on a quoted literal ("CustomerName =
+// 'order by'") -- accepted: this pre-check exists only to keep the error
+// message friendly, and is not worth a parser.
 func hasOrderBy(q string) bool {
-	var b strings.Builder
-	inQuote := false
-	for _, r := range q {
-		if r == '\'' {
-			inQuote = !inQuote
-			continue
-		}
-		if !inQuote {
-			b.WriteRune(r)
-		}
-	}
-	return strings.Contains(strings.ToLower(b.String()), "order by")
+	return strings.Contains(strings.ToLower(q), "order by")
 }
 
 // scopedQuery constrains the list to our workflow type, and to one execution
