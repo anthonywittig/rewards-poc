@@ -8,68 +8,81 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
-// --- Minted customer IDs ----------------------------------------------------
+// --- Customer IDs derived from names ----------------------------------------
 //
-// A minted ID becomes a workflow ID and a URL path segment, so the shape is not
-// cosmetic: the API rejects a customer ID with whitespace or a slash in it, and
-// ValidateEnrollment fails a run whose ID does not match its payload.
+// A derived ID becomes a workflow ID and a URL path segment, so the shape is
+// not cosmetic: the API rejects a customer ID with whitespace or a slash in it,
+// and ValidateEnrollment fails a run whose ID does not match its payload.
 
-var mintedID = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+var derivedID = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
-func TestNewCustomerID_ShapeSurvivesAnyName(t *testing.T) {
-	for _, name := range []string{
-		"Ada Lovelace",
-		"  Ada  Lovelace  ",
-		"O'Brien-Smith, Jr.",
-		"ada@example.com",
-		"Ада Лавлейс", // nothing ASCII to slug
-		"",            // the form requires a name; the API does not
-		"!!!",
-		strings.Repeat("Wolfeschlegelsteinhausenbergerdorff ", 4),
+func TestCustomerIDForName(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want string
+	}{
+		{"Ada Lovelace", "ada-lovelace"},
+		{"  Ada  Lovelace  ", "ada-lovelace"},
+		{"ADA LOVELACE", "ada-lovelace"},
+		{"O'Brien-Smith, Jr.", "o-brien-smith-jr"},
+		{"ada@example.com", "ada-example-com"},
+		{"C3PO", "c3po"},
+		// Nothing to build an ID out of. The handler turns this into a 400
+		// rather than inventing one.
+		{"", ""},
+		{"!!!", ""},
+		{"Ада Лавлейс", ""},
+		// Truncated, not rejected: a workflow ID should stay readable.
+		{strings.Repeat("Wolfeschlegelstein ", 4), "wolfeschlegelstein-wolfeschlegel"},
 	} {
-		id := rewards.NewCustomerID(name)
-		if !mintedID.MatchString(id) {
-			t.Errorf("NewCustomerID(%q) = %q, want lowercase alphanumerics and single hyphens", name, id)
-		}
-		if len(id) > 48 {
-			t.Errorf("NewCustomerID(%q) = %q, %d chars is longer than a workflow ID wants to be",
-				name, id, len(id))
+		if got := rewards.CustomerIDForName(tc.name); got != tc.want {
+			t.Errorf("CustomerIDForName(%q) = %q, want %q", tc.name, got, tc.want)
 		}
 	}
 }
 
-// The readable half is the point of slugging rather than minting a UUID: a
-// workflow ID in the Temporal UI should say who it belongs to.
-func TestNewCustomerID_KeepsTheNameReadable(t *testing.T) {
-	id := rewards.NewCustomerID("Ada Lovelace")
-	if !strings.HasPrefix(id, "ada-lovelace-") {
-		t.Errorf("NewCustomerID(\"Ada Lovelace\") = %q, want an ada-lovelace-* slug", id)
-	}
-	// A name with no usable characters still gets an ID, just an opaque one.
-	if id := rewards.NewCustomerID("!!!"); !strings.HasPrefix(id, "c-") {
-		t.Errorf("NewCustomerID(%q) = %q, want the c-* fallback", "!!!", id)
-	}
-}
-
-// The name is not an identity. Repeats have to differ, or the second customer
-// named Ada Lovelace collides with the first instead of enrolling.
-func TestNewCustomerID_RepeatsDiffer(t *testing.T) {
-	seen := make(map[string]bool)
-	for range 100 {
-		id := rewards.NewCustomerID("Ada Lovelace")
-		if seen[id] {
-			t.Fatalf("minted %q twice in 100 tries", id)
+// Whatever comes out has to be usable as a workflow ID and a path segment.
+func TestCustomerIDForName_ShapeSurvivesAnyName(t *testing.T) {
+	for _, name := range []string{
+		"Ada Lovelace", "  Ada  Lovelace  ", "O'Brien-Smith, Jr.", "ada@example.com",
+		"C3PO", "-- dashes --", "半角/全角", strings.Repeat("Wolfeschlegelstein ", 4),
+	} {
+		id := rewards.CustomerIDForName(name)
+		if id == "" {
+			continue
 		}
-		seen[id] = true
+		if !derivedID.MatchString(id) {
+			t.Errorf("CustomerIDForName(%q) = %q, want lowercase alphanumerics and single hyphens",
+				name, id)
+		}
+		if len(id) > idSlugLimitForTest {
+			t.Errorf("CustomerIDForName(%q) = %q, %d chars is longer than the cap", name, id, len(id))
+		}
 	}
 }
 
-// A minted ID has to satisfy the same enrollment validator a hand-written one
+// The derivation *is* the identity rule -- the enroll handler leans on the same
+// name landing on the same workflow ID, where it becomes a duplicate or a
+// rejoin rather than a second customer.
+func TestCustomerIDForName_IsStable(t *testing.T) {
+	first := rewards.CustomerIDForName("Ada Lovelace")
+	for range 10 {
+		if got := rewards.CustomerIDForName("Ada Lovelace"); got != first {
+			t.Fatalf("CustomerIDForName is not deterministic: %q then %q", first, got)
+		}
+	}
+}
+
+// A derived ID has to satisfy the same enrollment validator a hand-written one
 // does -- the workflow refuses a payload that does not match its workflow ID.
-func TestNewCustomerID_PassesEnrollmentValidation(t *testing.T) {
-	id := rewards.NewCustomerID("Ada Lovelace")
+func TestCustomerIDForName_PassesEnrollmentValidation(t *testing.T) {
+	id := rewards.CustomerIDForName("Ada Lovelace")
 	state := &rewards.CustomerState{CustomerID: id, Name: "Ada Lovelace", Email: "ada@example.com"}
 	if err := rewards.ValidateEnrollment(rewards.WorkflowID(id), state); err != nil {
 		t.Errorf("ValidateEnrollment(%q) = %v, want nil", id, err)
 	}
 }
+
+// The cap is an implementation detail of the package under test; naming it here
+// keeps the assertion from hardcoding a number in two places.
+const idSlugLimitForTest = 32

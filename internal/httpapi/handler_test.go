@@ -53,10 +53,6 @@ type stubTemporal struct {
 	deactivate   *rewards.DeactivateResult
 	reactivate   *rewards.ReactivateResult
 
-	// startFailures caps how many leading ExecuteWorkflow calls startErr
-	// applies to, so a stub can fail the first start and let the next one
-	// through. Zero means every call fails.
-	startFailures int
 	// Workflow IDs passed to ExecuteWorkflow, in order.
 	startIDs []string
 
@@ -82,7 +78,7 @@ func (s *stubTemporal) ExecuteWorkflow(
 	_ context.Context, opts client.StartWorkflowOptions, _ any, _ ...any,
 ) (client.WorkflowRun, error) {
 	s.startIDs = append(s.startIDs, opts.ID)
-	if s.startErr != nil && (s.startFailures == 0 || len(s.startIDs) <= s.startFailures) {
+	if s.startErr != nil {
 		return nil, s.startErr
 	}
 	return &stubRun{id: opts.ID, runID: commonExecution.RunId}, nil

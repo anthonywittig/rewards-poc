@@ -137,10 +137,10 @@ func TestEnroll_FreeIDStarts(t *testing.T) {
 	}
 }
 
-// A signup sends no customerId at all: the server mints one, starts on it, and
+// A signup sends no customerId at all: the server derives one from the name and
 // answers with it. The response is the caller's only way to learn the ID, so an
 // empty one there strands the customer the request just created.
-func TestEnroll_WithoutAnIDMintsOne(t *testing.T) {
+func TestEnroll_WithoutAnIDDerivesOneFromTheName(t *testing.T) {
 	stub := &stubTemporal{}
 	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
 
@@ -152,84 +152,68 @@ func TestEnroll_WithoutAnIDMintsOne(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &res); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if res.CustomerID == "" {
-		t.Fatalf("minted no customer ID: %s", body)
+	if res.CustomerID != "ada-lovelace" {
+		t.Errorf("customerId = %q, want %q", res.CustomerID, "ada-lovelace")
 	}
-	// Readable half from the name, random half after it -- the whole reason for
-	// minting a slug rather than a bare UUID.
-	if !strings.HasPrefix(res.CustomerID, "ada-lovelace-") {
-		t.Errorf("customerId = %q, want an ada-lovelace-* slug", res.CustomerID)
-	}
-	if want := rewards.WorkflowID(res.CustomerID); res.WorkflowID != want {
+	if want := rewards.WorkflowID("ada-lovelace"); res.WorkflowID != want {
 		t.Errorf("workflowId = %q, want %q", res.WorkflowID, want)
 	}
-	if len(stub.startIDs) != 1 || stub.startIDs[0] != rewards.WorkflowID(res.CustomerID) {
-		t.Errorf("started %v, want one start on %q", stub.startIDs, rewards.WorkflowID(res.CustomerID))
+	if len(stub.startIDs) != 1 || stub.startIDs[0] != rewards.WorkflowID("ada-lovelace") {
+		t.Errorf("started %v, want one start on %q", stub.startIDs, rewards.WorkflowID("ada-lovelace"))
 	}
 }
 
-// Two signups under one name are two customers. Nothing in the mint may derive
-// from the name alone, or the second Ada Lovelace collides with the first.
-func TestEnroll_MintedIDsDoNotRepeatForTheSameName(t *testing.T) {
-	seen := make(map[string]bool)
-	for range 8 {
-		_, body := postEnroll(t, newTestServer(&stubTemporal{}),
-			`{"name":"Ada Lovelace","email":"ada@example.com"}`)
-
-		var res EnrollResponse
-		if err := json.Unmarshal([]byte(body), &res); err != nil {
-			t.Fatalf("decode: %v", err)
-		}
-		if seen[res.CustomerID] {
-			t.Fatalf("minted %q twice", res.CustomerID)
-		}
-		seen[res.CustomerID] = true
-	}
-}
-
-// A minted ID names nobody, so a taken one is a collision, not a rejoin.
-// Reactivating on it would hand a departed customer's balance -- and their name
-// and email -- to whoever signed up next, so this path mints again instead and
-// must not reach the reactivate Update.
-func TestEnroll_MintedIDCollisionRetriesAndNeverReactivates(t *testing.T) {
+// The derivation is the identity rule: a second signup under one name is the
+// same customer, and lands on the duplicate path rather than starting a rival
+// workflow. Getting this wrong is not a cosmetic ID difference -- it is two
+// executions for one person.
+func TestEnroll_SecondSignupUnderOneNameIsTheDuplicatePath(t *testing.T) {
 	stub := &stubTemporal{
-		startErr:      &serviceerror.WorkflowExecutionAlreadyStarted{},
-		startFailures: 1,
-		// Present so a wrong turn into the rejoin path would succeed rather
-		// than fail for some unrelated reason.
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Points: 600, Active: false},
+		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
+		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Active: true},
+	}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", code, body)
+	}
+	if len(stub.startIDs) != 1 {
+		t.Errorf("started %v, want a single attempt on the derived ID", stub.startIDs)
+	}
+}
+
+// Same derivation, so a departed customer rejoins by signing up again under the
+// name they left with -- balance intact, no ID to remember.
+func TestEnroll_WithoutAnIDReactivatesTheDeparted(t *testing.T) {
+	stub := &stubTemporal{
+		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
+		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Points: 600, Active: false},
 		reactivate:  &rewards.ReactivateResult{Changed: true},
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
 
-	if code != http.StatusCreated {
-		t.Fatalf("status = %d, want 201: %s", code, body)
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", code, body)
 	}
-	if stub.updates != nil {
-		t.Errorf("a minted-ID collision reached the workflow: %v", stub.updates)
-	}
-	if len(stub.startIDs) != 2 {
-		t.Fatalf("started %v, want a retry on a second ID", stub.startIDs)
-	}
-	if stub.startIDs[0] == stub.startIDs[1] {
-		t.Errorf("retried the same ID %q", stub.startIDs[0])
+	if len(stub.updates) != 1 || stub.updates[0] != rewards.UpdateReactivate {
+		t.Errorf("updates = %v, want one %s", stub.updates, rewards.UpdateReactivate)
 	}
 }
 
-// Every mint colliding is not a 409: the caller named nobody, so there is
-// nothing they conflicted with and nothing they could change to retry.
-func TestEnroll_MintingGivesUpAsA500NotAConflict(t *testing.T) {
-	stub := &stubTemporal{startErr: &serviceerror.WorkflowExecutionAlreadyStarted{}}
-	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace","email":"ada@example.com"}`)
+// A name with nothing to derive an ID from is a 400, not a workflow started
+// under some invented ID the caller has no way to predict.
+func TestEnroll_UnslugableNameIsA400(t *testing.T) {
+	stub := &stubTemporal{}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"!!!","email":"ada@example.com"}`)
 
-	if code != http.StatusInternalServerError {
-		t.Fatalf("status = %d, want 500: %s", code, body)
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", code, body)
 	}
-	if len(stub.startIDs) != mintAttempts {
-		t.Errorf("attempted %d mints, want %d", len(stub.startIDs), mintAttempts)
+	if !strings.Contains(body, CodeInvalidRequest) {
+		t.Errorf("code should be %q, got %s", CodeInvalidRequest, body)
 	}
-	if stub.updates != nil {
-		t.Errorf("gave up by reactivating something: %v", stub.updates)
+	if stub.startIDs != nil {
+		t.Errorf("started something anyway: %v", stub.startIDs)
 	}
 }
 

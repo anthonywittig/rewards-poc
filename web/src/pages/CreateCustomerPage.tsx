@@ -16,7 +16,7 @@ export function CreateCustomerPage() {
     setBusy(true)
     setError(null)
     try {
-      // No customerId: the server mints one and answers with it.
+      // No customerId: the server derives one from the name and answers with it.
       const enrolled = await enrollCustomer({
         name: name.trim(),
         email: email.trim(),
@@ -56,9 +56,10 @@ export function CreateCustomerPage() {
         <div>
           <h1>Enroll customer</h1>
           <p>
-            Creates a long-lived workflow under a server-assigned customer ID.
-            After save you land on the detail page (Query/Describe), not the
-            list — the visibility index lags writes.
+            Creates a long-lived workflow. The server derives the customer ID
+            from the name, so enrolling the same name twice reaches the same
+            customer. After save you land on the detail page (Query/Describe),
+            not the list — the visibility index lags writes.
           </p>
         </div>
       </div>
