@@ -277,15 +277,6 @@ textarea {
   padding: 0.65rem 0.8rem;
 }
 
-/* Read-only fields are shown, not typed in -- mute them so they do not read
-   as an empty box the user forgot to fill. */
-.field input[readonly] {
-  background: rgba(8, 12, 16, 0.25);
-  border-style: dashed;
-  color: var(--mist);
-  cursor: default;
-}
-
 .search-input:focus,
 .field input:focus,
 .field select:focus,

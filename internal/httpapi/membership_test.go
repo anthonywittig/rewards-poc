@@ -137,6 +137,86 @@ func TestEnroll_FreeIDStarts(t *testing.T) {
 	}
 }
 
+// A signup sends no customerId at all: the server derives one from the name and
+// answers with it. The response is the caller's only way to learn the ID, so an
+// empty one there strands the customer the request just created.
+func TestEnroll_WithoutAnIDDerivesOneFromTheName(t *testing.T) {
+	stub := &stubTemporal{}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
+
+	if code != http.StatusCreated {
+		t.Fatalf("status = %d, want 201: %s", code, body)
+	}
+
+	var res EnrollResponse
+	if err := json.Unmarshal([]byte(body), &res); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if res.CustomerID != "ada-lovelace" {
+		t.Errorf("customerId = %q, want %q", res.CustomerID, "ada-lovelace")
+	}
+	if want := rewards.WorkflowID("ada-lovelace"); res.WorkflowID != want {
+		t.Errorf("workflowId = %q, want %q", res.WorkflowID, want)
+	}
+	if len(stub.startIDs) != 1 || stub.startIDs[0] != rewards.WorkflowID("ada-lovelace") {
+		t.Errorf("started %v, want one start on %q", stub.startIDs, rewards.WorkflowID("ada-lovelace"))
+	}
+}
+
+// The derivation is the identity rule: a second signup under one name is the
+// same customer, and lands on the duplicate path rather than starting a rival
+// workflow. Getting this wrong is not a cosmetic ID difference -- it is two
+// executions for one person.
+func TestEnroll_SecondSignupUnderOneNameIsTheDuplicatePath(t *testing.T) {
+	stub := &stubTemporal{
+		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
+		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Active: true},
+	}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
+
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", code, body)
+	}
+	if len(stub.startIDs) != 1 {
+		t.Errorf("started %v, want a single attempt on the derived ID", stub.startIDs)
+	}
+}
+
+// Same derivation, so a departed customer rejoins by signing up again under the
+// name they left with -- balance intact, no ID to remember.
+func TestEnroll_WithoutAnIDReactivatesTheDeparted(t *testing.T) {
+	stub := &stubTemporal{
+		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
+		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Points: 600, Active: false},
+		reactivate:  &rewards.ReactivateResult{Changed: true},
+	}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
+
+	if code != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", code, body)
+	}
+	if len(stub.updates) != 1 || stub.updates[0] != rewards.UpdateReactivate {
+		t.Errorf("updates = %v, want one %s", stub.updates, rewards.UpdateReactivate)
+	}
+}
+
+// A name with nothing to derive an ID from is a 400, not a workflow started
+// under some invented ID the caller has no way to predict.
+func TestEnroll_UnslugableNameIsA400(t *testing.T) {
+	stub := &stubTemporal{}
+	code, body := postEnroll(t, newTestServer(stub), `{"name":"!!!"}`)
+
+	if code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", code, body)
+	}
+	if !strings.Contains(body, CodeInvalidRequest) {
+		t.Errorf("code should be %q, got %s", CodeInvalidRequest, body)
+	}
+	if stub.startIDs != nil {
+		t.Errorf("started something anyway: %v", stub.startIDs)
+	}
+}
+
 // The ID is taken and the customer is active. That is a duplicate signup, and it
 // must not reach the reactivate Update -- which would overwrite a live
 // customer's name with the second signup's.
