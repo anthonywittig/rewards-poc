@@ -61,7 +61,6 @@ func newState() rewards.CustomerState {
 	return rewards.CustomerState{
 		CustomerID: testCustomerID,
 		Name:       "Ada Lovelace",
-		Email:      "ada@example.com",
 	}
 }
 
@@ -303,7 +302,6 @@ func (s *RewardsSuite) Test_GetStatus_ReportsDerivedFields() {
 
 	s.Equal("c-001", status.CustomerID)
 	s.Equal("Ada Lovelace", status.Name)
-	s.Equal("ada@example.com", status.Email)
 	s.Equal(600, status.Points)
 	s.Equal(rewards.LevelGold, status.Level)
 	s.Equal(rewards.PlatinumThreshold, status.NextTierAt)
@@ -516,7 +514,6 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	s.True(next.EnrolledAt.Equal(enrolled), "original enrollment survives untouched")
 	s.Equal("c-001", next.CustomerID)
 	s.Equal("Ada Lovelace", next.Name)
-	s.Equal("ada@example.com", next.Email)
 }
 
 // The per-run counter is a local, so the successor run starts at zero rather
@@ -562,7 +559,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 	deact := s.deactivateAt(2*time.Minute, "leave")
 	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
 	s.reactivateAt(4*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace", Email: "ada@example.com",
+		Name: "Ada Lovelace",
 	})
 	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
 	s.stopAt(6 * time.Minute)
@@ -599,13 +596,13 @@ func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
 
 // Re-enrolling someone who never left is a duplicate signup, and the handler
 // reports rather than applies it. Applying would let a second signup silently
-// overwrite a live customer's name and email -- the enroll endpoint depends on
+// overwrite a live customer's name -- the enroll endpoint depends on
 // Changed=false to turn this into the 409 it owes the caller.
 func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	s.mockNotify(0)
 
 	rejoin := s.reactivateAt(time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Mallory", Email: "mallory@example.com",
+		Name: "Mallory",
 	})
 	status := s.queryStatusAt(2 * time.Minute)
 	s.stopAt(3 * time.Minute)
@@ -615,20 +612,19 @@ func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	s.Require().NoError(rejoin.completed)
 	s.False(rejoin.rejoined.Changed, "an active customer was not reactivated")
 	s.Equal("Ada Lovelace", status.Name, "a duplicate enroll must not rename the customer")
-	s.Equal("ada@example.com", status.Email, "nor take over their email")
 	s.True(status.Active)
 }
 
-// Re-enrollment takes the new name and email -- the customer signed up again,
-// possibly with different details -- while leaving everything that makes the
-// balance meaningful alone.
-func (s *RewardsSuite) Test_Reactivate_AdoptsNewContactDetailsAndKeepsCounters() {
+// Re-enrollment takes the new name -- the customer signed up again, possibly
+// under different details -- while leaving everything that makes the balance
+// meaningful alone.
+func (s *RewardsSuite) Test_Reactivate_AdoptsANewNameAndKeepsCounters() {
 	s.mockNotify(0)
 
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	rejoin := s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada King", Email: "ada.king@example.com",
+		Name: "Ada King",
 	})
 	status := s.queryStatusAt(4 * time.Minute)
 	s.stopAt(5 * time.Minute)
@@ -638,7 +634,6 @@ func (s *RewardsSuite) Test_Reactivate_AdoptsNewContactDetailsAndKeepsCounters()
 	s.Require().NoError(rejoin.completed)
 	s.True(rejoin.rejoined.Changed)
 	s.Equal("Ada King", status.Name)
-	s.Equal("ada.king@example.com", status.Email)
 	s.Equal(600, status.Points, "re-enrollment is not a reset")
 	s.Equal(1, status.LifetimeEarnEvents, "nor does it forget how the balance was earned")
 	s.Equal(rewards.LevelGold, status.Level)
@@ -653,7 +648,7 @@ func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace", Email: "ada@example.com",
+		Name: "Ada Lovelace",
 	})
 	after := s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.stopAt(5 * time.Minute)
@@ -674,7 +669,7 @@ func (s *RewardsSuite) Test_Reactivate_DoesNotRenotifyACarriedLevel() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
 	s.reactivateAt(3*time.Minute, "rejoin", rewards.ReactivateRequest{
-		Name: "Ada Lovelace", Email: "ada@example.com",
+		Name: "Ada Lovelace",
 	})
 	s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.stopAt(5 * time.Minute)
@@ -891,7 +886,6 @@ func (s *RewardsSuite) Test_Notify_DepartureUsesTheSameActivity() {
 	s.Equal(rewards.NotifyEventDeparted, departed.Event)
 	s.Equal(rewards.LevelGold, departed.Level, "the departure carries their final tier")
 	s.Equal("c-001:departed", departed.IdempotencyKey)
-	s.Equal("ada@example.com", departed.Email)
 }
 
 // A promotion armed in the same instant as soft-deactivate must still be sent

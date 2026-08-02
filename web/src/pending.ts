@@ -57,7 +57,6 @@ export function customerToListItem(c: CustomerResponse): CustomerListItem {
   return {
     customerId: c.customerId,
     name: c.name,
-    email: c.email,
     points: c.points,
     level: c.level,
     enrolledAt: c.enrolledAt,

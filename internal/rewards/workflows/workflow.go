@@ -196,28 +196,23 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
 	}
 
-	if err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateReactivate,
+	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateReactivate,
 		func(ctx workflow.Context, req rewards.ReactivateRequest) (rewards.ReactivateResult, error) {
 			// Not an error: re-enrolling an active customer is a duplicate, and
 			// the API turns Changed=false into a 409. Reported rather than
 			// applied, so a racing enroll cannot overwrite a live customer's
-			// name and email with a second signup's.
+			// name with a second signup's.
 			if !state.Deactivated {
 				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
-			}
-			if strings.TrimSpace(req.Email) == "" {
-				return rewards.ReactivateResult{}, temporal.NewNonRetryableApplicationError(
-					"email is required", rewards.ErrTypeInvalidEnrollment, nil)
 			}
 
 			// Staged and committed exactly as deactivate does, and for the same
 			// reason: a failed upsert must not leave the customer reactivated
-			// under a name and email the caller was told did not take.
+			// under a name the caller was told did not take.
 			next := state
 			if name := strings.TrimSpace(req.Name); name != "" {
 				next.Name = name
 			}
-			next.Email = strings.TrimSpace(req.Email)
 			next.Deactivated = false
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
 				return rewards.ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
@@ -229,16 +224,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"points", state.Points,
 				"level", rewards.Level(state.Points))
 			return rewards.ReactivateResult{Changed: true, Status: rewards.StatusOf(&state)}, nil
-		},
-		workflow.UpdateHandlerOptions{
-			Validator: func(ctx workflow.Context, req rewards.ReactivateRequest) error {
-				if strings.TrimSpace(req.Email) == "" {
-					return fmt.Errorf("email is required")
-				}
-				return nil
-			},
-		},
-	); err != nil {
+		}); err != nil {
 		return fmt.Errorf("register %s update: %w", rewards.UpdateReactivate, err)
 	}
 
@@ -296,7 +282,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {
 	return workflow.UpsertTypedSearchAttributes(ctx,
 		rewards.KeyCustomerID.ValueSet(state.CustomerID),
-		rewards.KeyCustomerEmail.ValueSet(state.Email),
 		rewards.KeyCustomerName.ValueSet(state.Name),
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),

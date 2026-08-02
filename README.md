@@ -62,17 +62,17 @@ The whole workflow is usable with no API and no UI — these targets go straight
 CLI inside the server container.
 
 ```sh
-make enroll ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com
+make enroll ID=c-001 NAME="Ada Lovelace"
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
 make deactivate ID=c-001                          # soft leave; the workflow keeps running
-make reactivate ID=c-001 NAME="Ada Lovelace" EMAIL=ada@example.com   # rejoin, balance intact
+make reactivate ID=c-001 NAME="Ada Lovelace"   # rejoin, balance intact
 make audit  ID=c-001                              # the timeline, crawled out of Event History
 ```
 
-Re-enrollment takes the name and email it is given, so pass them unless you mean to change them
-— the target's defaults are a convenience for throwaway IDs, not a no-op.
+Re-enrollment takes the name it is given, so pass it unless you mean to change it — the
+target's default is a convenience for throwaway IDs, not a no-op.
 
 ## Commands
 
@@ -105,7 +105,7 @@ on one stack is much cheaper if you only need isolated workflows.
 
 ```sh
 curl -XPOST localhost:8081/api/customers \
-  -d '{"customerId":"c-001","name":"Ada Lovelace","email":"ada@example.com"}'
+  -d '{"customerId":"c-001","name":"Ada Lovelace"}'
 
 curl localhost:8081/api/customers/c-001
 curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":500,"reason":"purchase"}'
@@ -160,7 +160,7 @@ Each of these takes a couple of commands against a running stack.
 one carrying state forward.
 
 ```sh
-make enroll ID=roll NAME="Rolly Poly" EMAIL=r@example.com
+make enroll ID=roll NAME="Rolly Poly"
 for i in 1 2 3 4 5 6 7; do make add ID=roll AMOUNT=100 REASON="add $i"; done
 make status ID=roll     # generation 2, points 700
 ```

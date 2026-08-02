@@ -9,7 +9,6 @@ import "go.temporal.io/sdk/temporal"
 // humans read.
 var (
 	KeyCustomerID    = temporal.NewSearchAttributeKeyKeyword("CustomerId")
-	KeyCustomerEmail = temporal.NewSearchAttributeKeyKeyword("CustomerEmail")
 	KeyCustomerName  = temporal.NewSearchAttributeKeyString("CustomerName")
 	KeyRewardsLevel  = temporal.NewSearchAttributeKeyKeyword("RewardsLevel")
 	KeyRewardsPoints = temporal.NewSearchAttributeKeyInt64("RewardsPoints")
@@ -22,4 +21,4 @@ var (
 // is NewSearchAttributeKeyString -- the SDK's "String" is the server's "Text".
 // Keyword is exact-match, Text is tokenized, which is why names use Text
 // (word-prefix search via STARTS_WITH -- FINDINGS.md#prefix-search-works-on-a-text-attribute-with-three-catches)
-// and IDs/emails use Keyword (exact lookup).
+// and IDs use Keyword (exact lookup).

@@ -45,8 +45,7 @@ type DeactivateResult struct {
 
 // ReactivateRequest is the reactivate Update argument (re-enrollment).
 type ReactivateRequest struct {
-	Name  string `json:"name"`
-	Email string `json:"email"`
+	Name string `json:"name"`
 }
 
 // ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
@@ -61,7 +60,6 @@ type ReactivateResult struct {
 type CustomerStatus struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
-	Email      string    `json:"email"`
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
@@ -87,7 +85,6 @@ func StatusOf(state *CustomerState) CustomerStatus {
 	return CustomerStatus{
 		CustomerID:         state.CustomerID,
 		Name:               state.Name,
-		Email:              state.Email,
 		Points:             state.Points,
 		Level:              Level(state.Points),
 		NextTierAt:         nextAt,

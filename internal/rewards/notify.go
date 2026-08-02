@@ -25,7 +25,6 @@ const (
 // real notification service would honour it, and Activities are at-least-once.
 type NotifyRequest struct {
 	CustomerID     string `json:"customerId"`
-	Email          string `json:"email"`
 	Event          string `json:"event"`
 	Level          string `json:"level"`
 	IdempotencyKey string `json:"idempotencyKey,omitempty"`

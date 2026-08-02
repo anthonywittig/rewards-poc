@@ -8,7 +8,6 @@ import { customerToListItem, rememberPending } from '../pending'
 export function CreateCustomerPage() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
-  const [email, setEmail] = useState('')
   const [customerId, setCustomerId] = useState('')
   const [idTouched, setIdTouched] = useState(false)
   const [error, setError] = useState<unknown>(null)
@@ -28,7 +27,6 @@ export function CreateCustomerPage() {
       const enrolled = await enrollCustomer({
         customerId: id,
         name: name.trim(),
-        email: email.trim(),
       })
       // Detail is strongly consistent; list is not. Stash for optimistic list merge.
       try {
@@ -38,7 +36,6 @@ export function CreateCustomerPage() {
         rememberPending({
           customerId: enrolled.customerId,
           name: name.trim(),
-          email: email.trim(),
           points: 0,
           level: 'basic',
           enrolledAt: new Date().toISOString(),
@@ -82,17 +79,6 @@ export function CreateCustomerPage() {
             value={name}
             onChange={(e) => onName(e.target.value)}
             autoComplete="name"
-          />
-        </div>
-        <div className="field">
-          <label htmlFor="email">Email</label>
-          <input
-            id="email"
-            type="email"
-            required
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            autoComplete="email"
           />
         </div>
         <div className="field">

@@ -100,7 +100,6 @@ If spending ever arrives, it means reintroducing a separate lifetime field — n
 type CustomerState struct {
     CustomerID string
     Name       string
-    Email      string
 
     Points     int // monotonic -- only ever increases
 
@@ -187,7 +186,7 @@ monotonic "achieved tier."
 |---|---|---|
 | Update | `addPoints` | `AddPointsRequest{Amount int, Reason string} → AddPointsResult{Balance int, Level string, EventID string}` |
 | Update | `deactivate` | `→ DeactivateResult{Changed bool}` — soft leave; idempotent |
-| Update | `reactivate` | `ReactivateRequest{Name, Email} → ReactivateResult{Changed bool, Status CustomerStatus}` — restore membership |
+| Update | `reactivate` | `ReactivateRequest{Name} → ReactivateResult{Changed bool, Status CustomerStatus}` — restore membership |
 | Query | `getStatus` | `→ CustomerStatus{…, Active bool, …}` — `Active` is `!Deactivated` |
 
 ### The validator/handler split
@@ -351,7 +350,7 @@ argument that a fixed count is the wrong trigger.
 Product leave is an Update, not a cancellation. `deactivate` sets
 `CustomerState.Deactivated = true`, upserts `RewardsActive = false`, arms the departure
 notification, and returns. The execution stays `Running`. `reactivate` clears the flag,
-optionally refreshes name/email, upserts `RewardsActive = true`, and returns the same balance
+optionally refreshes the name, upserts `RewardsActive = true`, and returns the same balance
 the customer left with. The audit timeline shows a `deactivated` row followed by a
 `reactivated` one — there is no closed run in between.
 
@@ -392,9 +391,11 @@ CLI cannot be used to verify this behaviour — check it through the SDK.
 
 ### Tier promotion notifications
 
-The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Email, Event,
-Level})` logs a line saying what would be sent, and returns. The body is a stub — production
-would call an email or push service here — but everything *around* it is real.
+The one Activity in the system. `NotifyCustomer(ctx, NotifyRequest{CustomerID, Event, Level})`
+logs a line saying what would be sent, and returns. The body is a stub — production would call
+an email or push service here — but everything *around* it is real. The request carries the
+customer ID and no contact details: a real provider looks those up itself, which keeps them out
+of Event History (#no-authentication-and-no-payload-encryption).
 
 Triggered when a point-add leaves the customer at a tier they have not been told about. Because
 tiers are derived this is a pure comparison inside the handler: is `Level(points)` absent from
@@ -522,7 +523,6 @@ Registered once at bootstrap, before any workflow starts, using the typed API
 | Name | Type | Written |
 |---|---|---|
 | `CustomerId` | Keyword | at start, re-asserted each run |
-| `CustomerEmail` | Keyword | at start |
 | `CustomerName` | Text | at start (tokenized → word-prefix search) |
 | `RewardsLevel` | Keyword | on every balance change |
 | `RewardsPoints` | Int | on every balance change |
@@ -618,7 +618,7 @@ cannot ask for it through the supported API.
 
 What still works, and is enough: equality and range filters on custom attributes
 (`RewardsPoints >= 500`), word-prefix search on `CustomerName` (below), `Keyword` exact match on
-`CustomerEmail`, `RewardsActive` for active-vs-deactivated, and `ExecutionStatus` to exclude
+`CustomerId`, `RewardsActive` for active-vs-deactivated, and `ExecutionStatus` to exclude
 rolled-over generations. Results come back in the server's default order (most recent first).
 
 The consequence: **sorting must happen client-side**, which is only equivalent to server-side
@@ -899,7 +899,7 @@ ordinary while being stale and short a field, announced by a log line nobody rea
 **Enroll's conflict check is the sharper case, and it is settled the same way.** Guessing
 active-versus-vacant from visibility would keep a duplicate enroll a 409 with the worker down,
 which is the friendlier answer. It is also the one question here whose wrong answer is
-destructive — enroll *reactivates* on a false, rewriting a live customer's name and email — so
+destructive — enroll *reactivates* on a false, rewriting a live customer's name — so
 settling it from the laggiest read available trades a status code for data loss. A 503 the
 caller cannot act on is both the honest answer and the safe one.
 
@@ -1398,8 +1398,14 @@ Postgres implementation.
 
 ### No authentication, and no payload encryption
 
-Customer names and emails land in Event History and are readable in plaintext in the Temporal
-UI. Fine for a POC; the production answer is a Codec Server. Use obviously fake seed data.
+Customer names land in Event History and are readable in plaintext in the Temporal UI. Fine for
+a POC; the production answer is a Codec Server. Use obviously fake seed data.
+
+Email addresses were removed from the system entirely rather than being protected: nothing here
+needed one, and the cheapest way to keep a piece of customer data out of plaintext history is not
+to carry it. A namespace bootstrapped before that change still has a `CustomerEmail` search
+attribute registered, holding whatever was last upserted — deregistering it, or a fresh
+`make destroy && make up`, is what actually clears it.
 
 There is no authentication anywhere either. Nothing here is a starting point for something
 exposed.

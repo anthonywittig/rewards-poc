@@ -242,13 +242,13 @@ TCLI = $(COMPOSE) exec -T \
          -e TEMPORAL_NAMESPACE=$(NAMESPACE) \
          temporal temporal
 
-enroll: $(ENV) ## Enroll a customer (make enroll ID=c-001 NAME="Ada" EMAIL=ada@example.com)
+enroll: $(ENV) ## Enroll a customer (make enroll ID=c-001 NAME="Ada")
 	@$(TCLI) workflow start \
 	  --task-queue rewards \
 	  --type CustomerRewardsWorkflow \
 	  --workflow-id customer-$(ID) \
 	  --id-conflict-policy Fail \
-	  --input '{"customerId":"$(ID)","name":"$(or $(NAME),Ada Lovelace)","email":"$(or $(EMAIL),$(ID)@example.com)"}'
+	  --input '{"customerId":"$(ID)","name":"$(or $(NAME),Ada Lovelace)"}'
 
 status: $(ENV) ## Query a customer's status (make status ID=c-001)
 	@$(TCLI) workflow query --workflow-id customer-$(ID) --type getStatus
@@ -264,11 +264,11 @@ deactivate: $(ENV) ## Soft-leave the program (make deactivate ID=c-001)
 	  --workflow-id customer-$(ID) \
 	  --name deactivate
 
-reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAME="Ada" EMAIL=ada@example.com)
+reactivate: $(ENV) ## Re-enroll and restore points (make reactivate ID=c-001 NAME="Ada")
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name reactivate \
-	  --input '{"name":"$(or $(NAME),Ada Lovelace)","email":"$(or $(EMAIL),$(ID)@example.com)"}'
+	  --input '{"name":"$(or $(NAME),Ada Lovelace)"}'
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed

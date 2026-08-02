@@ -137,7 +137,7 @@ export function CustomerDetailPage() {
 
   // Re-enrollment is the same POST /api/customers a new signup uses: the server
   // sees the ID is taken and inactive, and reactivates instead of starting.
-  // Resending the name and email we already hold keeps this one click.
+  // Resending the name we already hold keeps this one click.
   async function onReactivate() {
     if (!customer) return
     const requestedId = customer.customerId
@@ -147,7 +147,6 @@ export function CustomerDetailPage() {
       await enrollCustomer({
         customerId: requestedId,
         name: customer.name,
-        email: customer.email,
       })
       if (requestedId !== id) return
       await refresh()
@@ -212,7 +211,7 @@ export function CustomerDetailPage() {
         <section className="detail-hero">
           <TierBadge level={customer.level} />
           <h1 className="name">{customer.name}</h1>
-          <p className="email">{customer.email}</p>
+          <p className="customer-id">{customer.customerId}</p>
 
           <div className="points-block">
             <div className="points">

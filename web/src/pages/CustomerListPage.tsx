@@ -300,9 +300,7 @@ export function CustomerListPage() {
               <tr key={c.customerId}>
                 <td>
                   <Link to={`/customers/${c.customerId}`}>{c.name}</Link>
-                  <div className="muted row-sub">
-                    {c.customerId} · {c.email}
-                  </div>
+                  <div className="muted row-sub">{c.customerId}</div>
                 </td>
                 <td>
                   <TierBadge level={c.level} />
@@ -319,7 +317,7 @@ export function CustomerListPage() {
               <tr key={`placeholder-${i}`} className="row-placeholder">
                 <td>
                   {i === 0 && items.length === 0 ? 'Loading…' : ' '}
-                  {/* Mirrors the id · email line so the row is the same height. */}
+                  {/* Mirrors the customer-id line so the row is the same height. */}
                   <div className="row-sub">&nbsp;</div>
                 </td>
                 <td />

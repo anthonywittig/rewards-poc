@@ -14,8 +14,12 @@ import (
 	"go.temporal.io/sdk/activity"
 )
 
-// Notifier is the seam a real email or push provider drops into. The Activity
+// Notifier is the seam a real notification provider drops into. The Activity
 // owns the Temporal concerns and delegates only the delivery itself.
+//
+// The request carries the customer ID and no contact details: a real provider
+// looks those up itself, which keeps them out of Event History.
+// FINDINGS.md#no-authentication-and-no-payload-encryption.
 type Notifier interface {
 	Notify(ctx context.Context, req rewards.NotifyRequest) error
 }
@@ -42,7 +46,6 @@ type Activities struct {
 func (a *Activities) NotifyCustomer(ctx context.Context, req rewards.NotifyRequest) error {
 	activity.GetLogger(ctx).Info("notifying customer",
 		"customerId", req.CustomerID,
-		"email", req.Email,
 		"event", req.Event,
 		"level", req.Level,
 		"idempotencyKey", req.IdempotencyKey,

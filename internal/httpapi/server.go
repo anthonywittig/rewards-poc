@@ -74,9 +74,6 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	if req.CustomerID == "" {
 		return badRequest("customerId is required")
 	}
-	if strings.TrimSpace(req.Email) == "" {
-		return badRequest("email is required")
-	}
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
@@ -90,7 +87,6 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
-		Email:      req.Email,
 	})
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
@@ -117,15 +113,14 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	res, err := s.reactivateWithRolloverRetry(r.Context(), wfID, rewards.ReactivateRequest{
-		Name:  req.Name,
-		Email: req.Email,
+		Name: req.Name,
 	})
 	if err != nil {
 		return err
 	}
 	// The customer went active between the check above and the Update -- a
 	// concurrent enroll won. The handler reports that rather than applying our
-	// name and email over theirs, so this is still the duplicate 409.
+	// name over theirs, so this is still the duplicate 409.
 	if !res.Changed {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
@@ -223,7 +218,6 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		items = append(items, CustomerListItem{
 			CustomerID: id,
 			Name:       v.Name,
-			Email:      v.Email,
 			Points:     v.Points,
 			Level:      v.Level,
 			EnrolledAt: v.EnrolledAt,
@@ -348,7 +342,6 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 	out.Name = st.Name
-	out.Email = st.Email
 	out.Points = st.Points
 	out.Level = st.Level
 	out.NextTierAt = st.NextTierAt
@@ -497,7 +490,7 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 // workflow's own word and nothing else.
 //
 // Deliberately not answerable from visibility, however tempting: enroll
-// *reactivates* on a false, rewriting a live customer's name and email, so this
+// *reactivates* on a false, rewriting a live customer's name, so this
 // is the question here whose wrong answer is destructive and the last one to
 // settle from a store that lags writes. An error the caller cannot act on is
 // both the honest answer and the safe one.
@@ -693,7 +686,6 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 type searchAttrValues struct {
 	CustomerID string
 	Name       string
-	Email      string
 	Points     int
 	Level      string
 	EnrolledAt time.Time
@@ -727,7 +719,6 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 
 	decodeStr(rewards.KeyCustomerID.GetName(), &out.CustomerID)
 	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
-	decodeStr(rewards.KeyCustomerEmail.GetName(), &out.Email)
 	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
 	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
 	decodeInt(rewards.KeyGeneration.GetName(), &out.Generation)
