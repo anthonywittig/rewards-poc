@@ -148,24 +148,19 @@ are quiet: a missing case in `NextTierAt` is a wrong progress bar, and a missing
 `basic` is deliberately not a rung. It is the floor, what you are when no rule matches, so
 `promotionFor` needs no clause to avoid congratulating anyone for reaching it.
 
-**There was a fourth reader, and it was in the browser.** `CustomerResponse` carried
-`nextTierAt` and nothing else, which is enough to *name* the next target but not to draw a bar:
-that also needs the rung the customer is standing on. The UI reverse-looked-it-up from the one
-number it had —
+**The fourth reader is in the browser, which is why the ladder ships to it.** `nextTierAt` is
+enough to *name* the next target but not to draw a bar: that also needs the rung the customer is
+standing on. Deriving that in the client means a copy of the thresholds in another language and
+another build artifact, with no test in front of it — so "adding a tier is one line" would be
+false, and the missed line would fail the quietest way yet, since a bar of the wrong width
+renders perfectly. `CustomerResponse` therefore carries the whole ladder (`tiers`, ascending,
+`basic` absent) and the client derives its floor from that.
 
-```tsx
-const prev = nextTierAt === 500 ? 0 : nextTierAt === 1000 ? 500 : 0
-```
-
-— so "adding a tier is one line" was false, and the missed line was in another language, in
-another build artifact, with no test in front of it. It fails the quietest way yet: a bar of the
-wrong width renders perfectly. The response now carries the whole ladder (`tiers`, ascending,
-`basic` absent) and the client derives its floor from that. The ladder comes back from the
-**Query** rather than being attached by the API, because `api` and `worker` are separate
-binaries on separate deploys — an API pairing its own rungs with a `nextTierAt` from another
-build could name a target that is not on the ladder printed beside it. Which also means a
-`make api` without a `make worker` serves `tiers: null` until the worker catches up; the bar
-degrades to spanning the whole climb rather than the current segment.
+The ladder comes back from the **Query** rather than being attached by the API, because `api`
+and `worker` are separate binaries on separate deploys — an API pairing its own rungs with a
+`nextTierAt` from another build could name a target that is not on the ladder printed beside it.
+Which also means a `make api` without a `make worker` serves `tiers: null` until the worker
+catches up; the bar degrades to spanning the whole climb rather than the current segment.
 
 **Which direction `promotionFor` walks the ladder is the "only the tier they are at" decision**
 ([notifications](#tier-promotion-notifications)), and it is where you would go to decide
@@ -887,19 +882,30 @@ Query returns full state including `Active: false`, balance, tier, and `Lifetime
 *ops-closed* execution (out-of-band cancel) also answers Queries via history replay, so the same
 fields are available until the run is reaped.
 
-Worth stating because assuming the opposite is easy and the cost is silent: the detail endpoint
-initially short-circuited on status and fell straight to search attributes, which carry no
-`LifetimeEarnEvents`, so departed customers read back missing a field that had been available
-all along. The assumption was never tested because the code path that would have tested it was
-skipped.
+Worth stating because assuming the opposite is easy and the cost is silent. An endpoint that
+short-circuits on status and reads search attributes instead gets no `LifetimeEarnEvents` —
+they are workflow state, not a registered attribute — so departed customers read back missing a
+field that was available all along, and no test fails, because the code path that would have
+tested it was skipped.
 
-The search-attribute fallback survives, on the degraded path only: replay needs a worker, so a
-closed customer with none would otherwise 503 despite the execution record already holding most
-of the page. Falling back beats failing for someone who cannot change anyway.
+**Which is why `GET /api/customers/{id}` has exactly one source, and 503s when it cannot be
+reached.** A search-attribute fallback is tempting here: replay needs a worker, so a closed
+customer with none 503s despite the execution record already holding most of the page, and
+falling back looks like it beats failing for someone who cannot change anyway. What it buys is
+a second way to produce a customer detail, assembled from a store that
+[lags writes](#visibility-lag) and cannot carry `LifetimeEarnEvents` at all — a page that looks
+ordinary while being stale and short a field, announced by a log line nobody reads.
 
-It does **not** cover a reaped customer. `make reap` deletes the whole execution record, search
-attributes included, so those fail at `Describe` and surface as a 404 rather than degrading.
-Truncation detection is the crawl's job, not this endpoint's.
+**Enroll's conflict check is the sharper case, and it is settled the same way.** Guessing
+active-versus-vacant from visibility would keep a duplicate enroll a 409 with the worker down,
+which is the friendlier answer. It is also the one question here whose wrong answer is
+destructive — enroll *reactivates* on a false, rewriting a live customer's name and email — so
+settling it from the laggiest read available trades a status code for data loss. A 503 the
+caller cannot act on is both the honest answer and the safe one.
+
+Neither would cover a reaped customer anyway: `make reap` deletes the whole execution record,
+search attributes included, so those fail at `Describe` and surface as a 404. Truncation
+detection is the crawl's job, not this endpoint's.
 
 ### Deactivation is a request, not a completion
 

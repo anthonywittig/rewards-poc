@@ -9,6 +9,7 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
 	enumspb "go.temporal.io/api/enums/v1"
+	"go.temporal.io/api/serviceerror"
 	workflowpb "go.temporal.io/api/workflow/v1"
 )
 
@@ -74,29 +75,31 @@ func TestGetCustomer_LadderComesFromTheWorkerNotTheAPI(t *testing.T) {
 	}
 }
 
-// The degraded path serves a customer no worker can be asked about, and the
-// detail page it feeds draws the same bar. Dropping the ladder here would render
-// it against an empty one.
-func TestGetCustomer_LadderSurvivesTheSearchAttributeFallback(t *testing.T) {
+// The strongest case for answering without a worker: a departed customer, whose
+// execution record already holds almost everything the page renders and whose
+// balance cannot move anyway. Still a 503, because "almost everything" is a page
+// that looks ordinary while being stale and missing LifetimeEarnEvents.
+func TestGetCustomer_NoWorkerIs503EvenWhenVisibilityCouldAnswer(t *testing.T) {
+	rec := httptest.NewRecorder()
 	h := newTestServer(&stubTemporal{
 		describeInfo: &workflowpb.WorkflowExecutionInfo{
 			Execution:        &commonExecution,
 			Status:           enumspb.WORKFLOW_EXECUTION_STATUS_CANCELED,
-			SearchAttributes: searchAttrs(t, nil),
+			SearchAttributes: searchAttrs(t, ptr(false)),
 		},
-		// No queryStatus: QueryWorkflow fails, which is the premise.
+		queryErr: serviceerror.NewFailedPrecondition("no poller seen for task queue recently"),
 	})
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/customers/ada", nil))
 
-	got := getCustomerDetail(t, h, "ada")
-	if got.Status != "deactivated" {
-		t.Fatalf("status = %q, want deactivated (the fallback path was not taken)", got.Status)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want 503: %s", rec.Code, rec.Body.String())
 	}
-	if len(got.Tiers) != len(rewards.Ladder()) {
-		t.Errorf("tiers = %+v, want this build's ladder %+v", got.Tiers, rewards.Ladder())
+
+	var body ErrorResponse
+	if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
 	}
-	// searchAttrs puts the customer at 600 points, so the bar's target is
-	// platinum and its floor is a rung that has to be in what we just sent.
-	if got.NextTierAt != rewards.PlatinumThreshold {
-		t.Errorf("nextTierAt = %d, want %d", got.NextTierAt, rewards.PlatinumThreshold)
+	if body.Error.Code != CodeWorkerUnavailable {
+		t.Errorf("code = %q, want %q", body.Error.Code, CodeWorkerUnavailable)
 	}
 }

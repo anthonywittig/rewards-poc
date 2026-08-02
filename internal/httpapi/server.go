@@ -311,6 +311,12 @@ func mapListError(err error, userQuery string) error {
 
 // getCustomer reads current state via Query. Status is active only when the
 // execution is still Running and soft-inactive says Active.
+//
+// The Query is the only source, including for customers who have left and for
+// closed executions. Search attributes would answer most of this without a
+// worker, but they lag writes and carry no LifetimeEarnEvents, so a page built
+// from them looks ordinary while being stale and short a field. Better to fail
+// and say which worker is missing.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -332,39 +338,26 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 		RunID:      info.GetExecution().GetRunId(),
 	}
 
-	enc, qerr := s.queryStatus(r.Context(), wfID)
-	switch {
-	case qerr == nil:
-		var st rewards.CustomerStatus
-		if err := enc.Get(&st); err != nil {
-			return err
-		}
-		out.Name = st.Name
-		out.Email = st.Email
-		out.Points = st.Points
-		out.Level = st.Level
-		out.NextTierAt = st.NextTierAt
-		out.Tiers = st.Tiers
-		out.EnrolledAt = st.EnrolledAt
-		out.LifetimeEarnEvents = st.LifetimeEarnEvents
-		out.Generation = st.Generation
-		if running && st.Active {
-			out.Status = "active"
-		}
+	enc, err := s.queryStatus(r.Context(), wfID)
+	if err != nil {
+		return err
+	}
 
-	default:
-		// Soft-deactivated customers stay Running, so the old "closed only"
-		// degrade path missed them when the worker is down. Fall back whenever
-		// visibility already says inactive, or the execution is closed.
-		v := decodeSearchAttributes(info.GetSearchAttributes())
-		if !running || (v.Active != nil && !*v.Active) {
-			s.log.Info("query failed; falling back to search attributes",
-				"workflowId", wfID, "running", running, "error", qerr)
-			fillFromSearchAttributes(&out, info.GetSearchAttributes())
-			out.Status = "deactivated"
-			break
-		}
-		return qerr
+	var st rewards.CustomerStatus
+	if err := enc.Get(&st); err != nil {
+		return err
+	}
+	out.Name = st.Name
+	out.Email = st.Email
+	out.Points = st.Points
+	out.Level = st.Level
+	out.NextTierAt = st.NextTierAt
+	out.Tiers = st.Tiers
+	out.EnrolledAt = st.EnrolledAt
+	out.LifetimeEarnEvents = st.LifetimeEarnEvents
+	out.Generation = st.Generation
+	if running && st.Active {
+		out.Status = "active"
 	}
 
 	writeJSON(w, s.log, http.StatusOK, out)
@@ -500,38 +493,24 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
-// isActive answers "is this customer currently enrolled and active", preferring
-// the workflow's own word and degrading to visibility when no worker answers.
-// The degrade is what keeps a duplicate enroll a 409 with the worker down.
+// isActive answers "is this customer currently enrolled and active", from the
+// workflow's own word and nothing else.
 //
-// Unknown means active: a customer whose attributes predate RewardsActive, or
-// whose record cannot be read at all, must not be quietly overwritten by a
-// second enrollment. A wrong 409 is a retry; a wrong reactivate is data loss.
+// Deliberately not answerable from visibility, however tempting: enroll
+// *reactivates* on a false, rewriting a live customer's name and email, so this
+// is the question here whose wrong answer is destructive and the last one to
+// settle from a store that lags writes. An error the caller cannot act on is
+// both the honest answer and the safe one.
 func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
-	enc, qerr := s.queryStatus(ctx, wfID)
-	if qerr == nil {
-		var st rewards.CustomerStatus
-		if err := enc.Get(&st); err != nil {
-			return false, err
-		}
-		return st.Active, nil
+	enc, err := s.queryStatus(ctx, wfID)
+	if err != nil {
+		return false, err
 	}
-
-	desc, derr := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
-	if derr != nil {
-		// Report the Query failure rather than the Describe one: it is what we
-		// actually wanted, and its mapper knows to blame the worker.
-		return false, qerr
+	var st rewards.CustomerStatus
+	if err := enc.Get(&st); err != nil {
+		return false, err
 	}
-	s.log.Info("enroll conflict check fell back to search attributes",
-		"workflowId", wfID, "error", qerr)
-
-	info := desc.GetWorkflowExecutionInfo()
-	if info.GetStatus() != enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING {
-		return false, nil
-	}
-	v := decodeSearchAttributes(info.GetSearchAttributes())
-	return v.Active == nil || *v.Active, nil
+	return st.Active, nil
 }
 
 // listTimeout bounds the two visibility calls. Generous next to queryTimeout
@@ -763,36 +742,6 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 		}
 	}
 	return out
-}
-
-// fillFromSearchAttributes populates the fields a Query would have provided,
-// for a closed customer no worker is available to replay.
-//
-// Recovers everything the detail page shows except LifetimeEarnEvents, which is
-// workflow state rather than a registered search attribute.
-func fillFromSearchAttributes(out *CustomerResponse, sa *commonpb.SearchAttributes) {
-	v := decodeSearchAttributes(sa)
-	out.Name = v.Name
-	out.Email = v.Email
-	out.Level = v.Level
-	out.Points = v.Points
-	out.Generation = v.Generation
-	out.EnrolledAt = v.EnrolledAt
-
-	// Derived rather than stored, so it stays consistent with the balance we
-	// just recovered. FINDINGS.md#tiers-are-derived-never-stored.
-	//
-	// The ladder comes from this binary because there is no worker to ask -- the
-	// premise of this whole path. Correct while thresholds are a compile-time
-	// constant; if they ever become per-customer, this is the one caller that
-	// cannot know which ladder the customer was actually on.
-	out.NextTierAt, _ = rewards.NextTierAt(out.Points)
-	out.Tiers = rewards.Ladder()
-
-	// Status is deliberately not set here. Deciding active from deactivated
-	// needs the execution status as well as RewardsActive, and the caller has
-	// both -- see getCustomer, which reaches this only once it has already
-	// concluded "deactivated".
 }
 
 func decodeJSON(r *http.Request, dst any) error {

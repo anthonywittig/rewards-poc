@@ -198,10 +198,15 @@ func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
 	}
 }
 
-// With the worker down the Query cannot answer, but an ID that already exists is
-// answerable from the execution record alone. Requiring a worker for it would
-// turn a 409 into a 503.
-func TestEnroll_DuplicateIs409WithNoWorker(t *testing.T) {
+// Telling an active duplicate from a soft-deactivated vacancy is the Query's job
+// and no other read's, so with the worker down that question has no answer and
+// the request is a 503.
+//
+// The assertion that matters is the second one. Enroll reactivates on a "not
+// active", so anything that answers this from a laggy read can rewrite a live
+// customer's name and email; failing cannot. Visibility plainly saying "active"
+// is the strongest case for guessing, which is why it is the one stubbed.
+func TestEnroll_DuplicateNeedsAWorkerAndSendsNoUpdateWithoutOne(t *testing.T) {
 	stub := &stubTemporal{
 		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
 		queryErr: serviceerror.NewFailedPrecondition("no poller seen for task queue recently"),
@@ -213,45 +218,11 @@ func TestEnroll_DuplicateIs409WithNoWorker(t *testing.T) {
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
 
-	if code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", code, body)
-	}
-	if stub.updates != nil {
-		t.Errorf("fell through to reactivate on a guess: %v", stub.updates)
-	}
-}
-
-// Unknown means active. A record with no RewardsActive -- enrolled before the
-// attribute existed -- must not be treated as a vacancy: a wrong 409 costs a
-// retry, a wrong reactivate silently rewrites a live customer.
-func TestEnroll_UnknownActiveWithNoWorkerIs409(t *testing.T) {
-	stub := &stubTemporal{
-		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryErr: serviceerror.NewFailedPrecondition("no poller seen for task queue recently"),
-		describeInfo: &workflowpb.WorkflowExecutionInfo{
-			Execution:        &commonExecution,
-			Status:           enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-			SearchAttributes: searchAttrs(t, nil),
-		},
-	}
-	code, _ := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
-
-	if code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409", code)
-	}
-}
-
-// Nothing answered at all: an outage, not a conflict.
-func TestEnroll_NothingAnswersIs503(t *testing.T) {
-	stub := &stubTemporal{
-		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryErr:    serviceerror.NewFailedPrecondition("no poller seen for task queue recently"),
-		describeErr: serviceerror.NewUnavailable("visibility is down"),
-	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada","email":"ada@example.com"}`)
-
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", code, body)
+	}
+	if stub.updates != nil {
+		t.Errorf("reactivated without being able to read the customer: %v", stub.updates)
 	}
 }
 

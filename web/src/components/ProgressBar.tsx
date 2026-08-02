@@ -6,10 +6,10 @@ import type { Tier } from '../types'
  *
  * Both ends come from the server: `nextTierAt` is the target, and `tiers` is
  * the ladder it was derived from, which is what supplies the *floor* — the rung
- * the customer is standing on. That floor used to be a hardcoded reverse-lookup
- * of the thresholds (`nextTierAt === 500 ? 0 : ...`), which is the kind of copy
- * that goes stale in silence: change a threshold and the bar keeps rendering,
- * just at the wrong width.
+ * the customer is standing on. Deriving that floor from the thresholds directly
+ * would put a second copy of the ladder in the client, and it would go stale in
+ * silence: change a threshold and the bar keeps rendering, just at the wrong
+ * width.
  *
  * `nextTierAt === 0` means no next tier (top of the ladder). Do not divide by it.
  */
