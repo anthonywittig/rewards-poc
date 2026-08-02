@@ -24,13 +24,10 @@ Configuration defaults come from `.env.example`, so a fresh checkout needs no co
 to `.env` only when you want local overrides.
 
 ```sh
-# 1. The whole stack: Postgres, Elasticsearch, Temporal, Temporal UI -- then
-#    namespace and search-attribute bootstrap, then the workflow worker and the
-#    HTTP API, then eighteen demo customers, six per tier, including the
-#    interesting edge cases, and the React UI. Takes a couple of minutes the
-#    first time, since it compiles the Go services into their images. The UI
-#    starts last and is not waited on -- its first start installs npm packages,
-#    which takes a few minutes more. `make web-logs` shows how far along it is.
+# The whole stack: Postgres, Elasticsearch, Temporal + its UI, the worker, the
+# HTTP API, the demo customers, and the React UI. Takes a couple of minutes the
+# first time (it compiles the Go services into their images); the UI starts
+# last and is not waited on -- `make web-logs` shows its progress.
 make up
 ```
 
@@ -88,15 +85,10 @@ derives a different ID, which is a different customer.
 | `make seed` / `reset` | demo customers, also run by `make up` (idempotent) / delete every customer workflow |
 | `make reap [WF=customer-x]` | delete closed runs now, to force audit-log truncation |
 | `make tools` / `psql` / `es` / `inspect` | shell with the `temporal` CLI / datastore access |
-| `make verify-config` | re-check the platform assumptions the design depends on |
 
 Every target runs against one stack, selected by `ENV`. For a second stack side by side, copy
-`.env.example` to `.env.beta`, set a different `COMPOSE_PROJECT_NAME` and bump every `*_PORT`,
-then `make up ENV=.env.beta` — `COMPOSE_PROJECT_NAME` is what isolates containers, networks,
-and volumes — beta's UI serves on beta's `WEB_PORT`, proxying to beta's API and linking to beta's
-Temporal UI.
-Elasticsearch is the expensive part (~500–700 MB per stack even tuned down); a second namespace
-on one stack is much cheaper if you only need isolated workflows.
+`.env.example` to `.env.beta` with a different `COMPOSE_PROJECT_NAME` and ports, then
+`make up ENV=.env.beta`.
 
 ## The HTTP API
 
@@ -149,10 +141,8 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 The 503 is the one you'll meet most, because the worker is down more often than anything else in
 development.
 
-The UI reaches the API through Vite's proxy rather than a cross-origin base URL: the Go API
-deliberately sends no CORS headers, and same-origin proxying is both the normal Vite setup and
-the one that survives into production. The `web` service proxies to the API over the compose
-network, so a second stack's UI reaches its own API without either one publishing a port.
+The UI reaches the API through Vite's proxy rather than a cross-origin base URL — the Go API
+deliberately sends no CORS headers.
 
 ## Things worth seeing
 
@@ -246,16 +236,9 @@ it schedules by the `rewards.ActivityNotifyCustomer` name instead, and an Activi
 stay reachable only from the `Activities` struct the worker builds. Both import the parent
 `internal/rewards`, which holds the types and the rules as plain functions and imports neither.
 
-Activities are registered as that struct rather than as bare functions:
-
-```go
-w.RegisterActivity(&activities.Activities{Notifier: activities.LogNotifier{}})
-```
-
-`RegisterActivity` on a struct registers every exported method under the method's own name, so
-`NotifyCustomer` is still registered as `"NotifyCustomer"` — which the audit crawl matches on, and
-`TestActivityNameMatchesRegistration` pins. Injecting a real notification provider is a different
-value in that one line and no change anywhere else.
+Activities are registered as a struct (`w.RegisterActivity(&activities.Activities{...})`), so
+injecting a real notification provider is a different value in that one line and no change
+anywhere else.
 
 ## Behaviour to expect
 
@@ -298,20 +281,15 @@ Stale *workflows* fail loudly on replay; stale *workers* succeed quietly with th
 rebuild before concluding anything about workflow behaviour.
 
 **`BadSearchAttributes: search attribute CustomerId is not defined` in the worker log, right
-after a fresh `make up`?** The server caches search attribute definitions, so for about a minute
-after `bootstrap.sh` registers them every `UpsertSearchAttributes` fails the workflow task —
-enrollment succeeds, then every add points fails with a 500. `dev.yaml` sets
+after a fresh `make up`?** The server caches search attribute definitions for about a minute
+after `bootstrap.sh` registers them. `dev.yaml` sets
 `system.forceSearchAttributesCacheRefreshOnRead` to read through the cache, which is why you
-should not see it; if you do, check that the dynamic config is mounted (`make verify-config`).
+should not see it; if you do, check that the dynamic config is mounted.
 
 **A 503 `worker_unavailable` usually means nothing is polling the task queue** — check
 `make ps` and run `make worker` if it isn't up. (The same code also covers a slow or unreachable
 Temporal, because it is the contract's only 503 — so if the worker is running, look at the rest
 of `make ps` before restarting it.)
-Underneath, a Query with no worker fails three different ways depending on how long the worker
-has been gone — two taking ~9–10 s, one a bare transport error at ~2.5 s — while an Update
-doesn't fail at all: it blocks, observed still waiting after two minutes. The API bounds both
-so they become one predictable 503.
 
 **Changed the workflow code and existing runs now misbehave?** Constants like `EarnsPerRun` are
 baked into recorded history. In dev, `make reset` and start over.
@@ -354,7 +332,7 @@ deploy/
   bootstrap.sh                namespace + search attributes (idempotent)
   reap.sh                     force-delete closed executions
   reset.sh                    delete every customer workflow (make reset)
-  inspect/verify-config.sh    platform assumption checks
+  inspect/                    canned Postgres/ES queries (docs/DATASTORES.md)
 .env.example                  ports, versions, tuning
 Makefile
 ```

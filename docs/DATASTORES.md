@@ -148,7 +148,7 @@ no state blob, no audit trail.
 make inspect-es Q=mapping
 make inspect-es Q=customer ID=inspect
 make inspect-es Q=gold-running
-make inspect-es Q=indices
+make es          # index size / doc counts
 ```
 
 A customer who continued-as-new twice shows **three** hits for the same
@@ -174,10 +174,10 @@ in Elasticsearch. For this POC, fetch the filtered set and sort in the API.
 ### Closed generations, then reap
 
 ```sh
-make inspect-es Q=closed ID=inspect    # ContinuedAsNew docs + the Running one
+make inspect-es Q=customer ID=inspect  # ContinuedAsNew docs + the Running one
 make reap WF=customer-inspect
 # wait ~30s
-make inspect-es Q=closed ID=inspect    # only the Running doc survives
+make inspect-es Q=customer ID=inspect  # only the Running doc survives
 ```
 
 ES does not decide to delete those documents on its own — they go because the
@@ -188,9 +188,9 @@ Deactivation is soft: the execution stays `Running` with `RewardsActive: false`,
 so it is neither closed nor reapable. Only an ops-level cancel or terminate
 produces a closed run for a customer who left.
 
-**Caveat:** `_cat/indices` `docs.count` can stay inflated after deletes until
-Lucene merges drop soft-deleted docs (`docs.deleted` in the canned indices
-query). Prefer `_search` / `_count` for "is it gone?"
+**Caveat:** `_cat/indices` `docs.count` (shown by `make es`) can stay inflated
+after deletes until Lucene merges drop soft-deleted docs. Prefer `_search` /
+`_count` for "is it gone?"
 
 Index size for a handful of customers is tens of KB. That is the
 "Elasticsearch is overkill for this POC" point with numbers.
