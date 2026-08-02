@@ -9,22 +9,20 @@ export function CreateCustomerPage() {
   const navigate = useNavigate()
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
-  const [customerId, setCustomerId] = useState('')
-  const [idTouched, setIdTouched] = useState(false)
   const [error, setError] = useState<unknown>(null)
   const [busy, setBusy] = useState(false)
 
-  function onName(v: string) {
-    setName(v)
-    if (!idTouched) setCustomerId(slugifyId(v))
-  }
+  // Derived, never typed: the ID always follows the name. slugifyId's
+  // timestamp fallback stays out of the preview so the field does not churn
+  // on every keystroke -- submit resolves it once, for real.
+  const customerId = name.trim() ? slugifyId(name) : ''
 
   async function onSubmit(e: React.FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      const id = customerId.trim() || slugifyId(name)
+      const id = customerId || slugifyId(name)
       const enrolled = await enrollCustomer({
         customerId: id,
         name: name.trim(),
@@ -80,7 +78,7 @@ export function CreateCustomerPage() {
             id="name"
             required
             value={name}
-            onChange={(e) => onName(e.target.value)}
+            onChange={(e) => setName(e.target.value)}
             autoComplete="name"
           />
         </div>
@@ -99,16 +97,15 @@ export function CreateCustomerPage() {
           <label htmlFor="cid">Customer ID</label>
           <input
             id="cid"
-            required
+            readOnly
             value={customerId}
-            onChange={(e) => {
-              setIdTouched(true)
-              setCustomerId(e.target.value)
-            }}
-            pattern="[a-zA-Z0-9._-]+"
-            title="Letters, digits, dots, underscores, hyphens"
+            placeholder="derived from name"
+            aria-describedby="cid-hint"
+            tabIndex={-1}
           />
-          <span className="hint">Becomes workflow ID customer-&lt;id&gt;</span>
+          <span className="hint" id="cid-hint">
+            Derived from the name. Becomes workflow ID customer-&lt;id&gt;
+          </span>
         </div>
         <div className="form-actions">
           <button className="btn btn-primary" type="submit" disabled={busy}>
