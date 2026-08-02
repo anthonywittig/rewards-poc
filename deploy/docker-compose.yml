@@ -152,7 +152,11 @@ services:
       # /healthz answers from the process alone -- no Temporal call -- so this
       # reports the server being up, which is what `make up --wait` needs before
       # `make seed` can work. Alpine has busybox wget, not curl.
-      test: ["CMD-SHELL", "wget -qO- http://localhost:8081/healthz >/dev/null 2>&1"]
+      #
+      # 127.0.0.1, not localhost: see the web service's healthcheck. Go happens
+      # to listen on both address families, so this one was never at risk, but
+      # there is no reason for the two to differ.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 10
@@ -189,21 +193,28 @@ services:
       - web-node-modules:/app/node_modules
     ports:
       - "${WEB_PORT}:${WEB_PORT}"
-    # Typecheck before serving, so a type error stops here rather than after the
-    # dev server is already up. --host because Vite binds loopback by default,
-    # which from outside the container is nothing at all.
+    # Install and serve, nothing else. This typechecked first, the way the old
+    # host-side `make web` did, but in a container that runs on every start,
+    # delays serving by a full production build, and turns a type error into a
+    # restart loop rather than a message. `make web-check` runs it on demand.
     #
-    # A type error therefore exits the container, and restart: unless-stopped
-    # retries it -- the error stays in `make web-logs` until the source is fixed,
-    # and the next retry serves the fix, because the source is a bind mount.
-    command: sh -c "npm install && npm run build && npm run dev -- --host 0.0.0.0"
+    # --host because Vite binds loopback by default, which from outside the
+    # container is nothing at all.
+    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:${WEB_PORT}/ >/dev/null 2>&1"]
+      # 127.0.0.1, not localhost. `--host 0.0.0.0` binds IPv4 only, and Docker
+      # writes an "::1 localhost" line into /etc/hosts on hosts with IPv6
+      # enabled, so a resolver that answers ::1 first sends the probe to a port
+      # nothing is listening on. The server is up, the check fails forever, and
+      # compose reports the container as never becoming healthy.
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:${WEB_PORT}/ >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
-      retries: 30
-      # The first start installs dependencies and builds before it serves.
-      start_period: 60s
+      retries: 20
+      # A first start installs a few hundred packages over a bind mount, which is
+      # minutes on Docker Desktop. Generous, so `make ps` reads "starting" rather
+      # than "unhealthy" while that happens.
+      start_period: 180s
     restart: unless-stopped
 
   # A one-shot, not a service: the `tools` profile keeps `compose up` from

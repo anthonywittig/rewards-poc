@@ -18,7 +18,7 @@ WEB_PORT  = $(shell grep -E '^WEB_PORT=' $(ENV) | cut -d= -f2)
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools verify-config reap \
         worker worker-logs worker-stop api api-logs api-stop test workflowcheck enroll status add deactivate reactivate \
-        inspect inspect-pg inspect-es write-trace audit web web-logs web-stop seed reset
+        inspect inspect-pg inspect-es write-trace audit web web-logs web-check web-stop seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
 # The CLI ships in the server image, and exec-ing beats `compose run` on a
@@ -35,18 +35,23 @@ $(ENV):
 up: $(ENV) ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 	$(COMPOSE) up -d --wait postgres elasticsearch temporal temporal-ui
 	@$(MAKE) --no-print-directory bootstrap ENV=$(ENV)
-# Started after bootstrap, so nothing talks to a namespace that doesn't exist
-# yet; --build so a fresh checkout runs code built from its own tree. --wait
-# holds until the API answers /healthz, which is what seeding needs -- and until
-# the UI serves, which on a first run means npm install and a typecheck.
-	$(COMPOSE) up -d --build --wait worker api web
+# Started after bootstrap, so neither one talks to a namespace that doesn't
+# exist yet; --build so a fresh checkout runs code built from its own tree.
+# --wait holds until the API answers /healthz, which is what seeding needs.
+	$(COMPOSE) up -d --build --wait worker api
 # Idempotent, so `make up` on a stack that already has its customers reports
 # them and changes nothing. A mismatch fails the target on purpose -- it means
 # the running dataset is not the one in cmd/seed, and only `make reset` fixes
 # that. The stack is up either way.
 	@$(MAKE) --no-print-directory seed ENV=$(ENV)
+# Last, and deliberately not waited on. A first start installs a few hundred
+# npm packages over a bind mount, which is minutes on Docker Desktop, and
+# nothing else here needs the UI -- blocking on it would hold up seeding and
+# make an npm problem look like a broken stack. `make web-logs` shows progress;
+# `make ps` shows when it is serving.
+	$(COMPOSE) up -d web
 	@echo
-	@echo "React UI:     http://localhost:$(WEB_PORT)"
+	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make web-logs)"
 	@echo "Temporal UI:  http://localhost:$(UI_PORT)"
 	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
 	@echo "Namespace:    $(NAMESPACE) (retention $(RETENTION))"
@@ -202,18 +207,25 @@ api-stop: $(ENV) ## Stop the API (leaves the rest of the stack up)
 	$(COMPOSE) stop api
 
 # The Vite dev server is a Compose service too, with web/ bind-mounted, so an
-# edit still hot-reloads without restarting anything. It installs dependencies
-# and typechecks on the way up, which makes the first start the slow one.
+# edit still hot-reloads without restarting anything. It installs dependencies on
+# the way up, so the first start is minutes and later ones are seconds; nothing
+# waits on it, so that cost lands on the UI alone.
 #
 # Its serve port, proxy target and Temporal UI URL come from $(ENV) via compose,
 # so `make web ENV=.env.beta` serves on beta's WEB_PORT and points at beta's API
 # and Temporal UI. A shell variable outranks web/.env* in Vite's loadEnv, so this
 # wins over a local override file.
 web: $(ENV) ## Start (or restart) the Vite UI in the stack
-	$(COMPOSE) up -d --wait web
+	$(COMPOSE) up -d web
 
 web-logs: $(ENV) ## Tail the Vite dev server's logs (Ctrl-C to stop tailing)
 	$(COMPOSE) logs -f web
+
+# The typecheck the container used to run on every start. Vite's dev server does
+# not typecheck, so this is the only thing that does -- run it before believing
+# the UI compiles.
+web-check: $(ENV) ## Typecheck and production-build the UI (tsc -b && vite build)
+	$(COMPOSE) exec -T web npm run build
 
 web-stop: $(ENV) ## Stop the UI (leaves the rest of the stack up)
 	$(COMPOSE) stop web
