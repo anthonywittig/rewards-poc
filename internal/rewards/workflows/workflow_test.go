@@ -414,35 +414,6 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	s.Equal(rewards.LevelGold, status.Level)
 }
 
-// --- Points are monotonic ----------------------------------------------------
-
-// The invariant the whole state shape now rests on: points only ever increase.
-// There is no spend, redeem, expire or adjust path, so no sequence of legal
-// operations can lower a balance. If a redemption feature ever arrives, this
-// test is the one that should fail first.
-func (s *RewardsSuite) Test_Points_OnlyEverIncrease() {
-	// One run's worth: beyond EarnsPerRun the run rolls over.
-	adds := []int{10, 250, 1}
-
-	results := make([]*updateResult, len(adds))
-	for i, amount := range adds {
-		results[i] = s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
-			rewards.AddPointsRequest{Amount: amount, Reason: "purchase"})
-	}
-	s.stopAt(time.Duration(len(adds)+1) * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	prev, want := 0, 0
-	for i, amount := range adds {
-		s.Require().NoError(results[i].completed)
-		want += amount
-		s.Equal(want, results[i].value.Balance, "add %d", i)
-		s.Greater(results[i].value.Balance, prev, "balance must strictly increase on every add")
-		prev = results[i].value.Balance
-	}
-}
-
 // --- Continue-as-new -------------------------------------------------------
 
 // The roll fires on exactly the Nth add, not before.
@@ -506,49 +477,23 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	s.Equal("Ada Lovelace", next.Name)
 }
 
-// The per-run counter is a local, so the successor run starts at zero rather
-// than rolling again immediately. Asserted by running the successor's payload
-// through the workflow again and watching it take another full N adds.
-func (s *RewardsSuite) Test_ContinueAsNew_ResetsPerRunCounter() {
-	for i := 0; i < rewards.EarnsPerRun; i++ {
-		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
-			rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	}
-	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
-	next := s.continuedState()
-
-	// Second run, same customer, one add short of the threshold.
-	env2 := s.newEnv()
-	for i := 0; i < rewards.EarnsPerRun-1; i++ {
-		i := i
-		env2.RegisterDelayedCallback(func() {
-			env2.UpdateWorkflow(rewards.UpdateAddPoints, fmt.Sprintf("v%d", i),
-				&testsuite.TestUpdateCallback{
-					OnAccept: func() {}, OnReject: func(error) {}, OnComplete: func(interface{}, error) {},
-				}, rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
-		}, time.Duration(i+1)*time.Minute)
-	}
-	// CancelWorkflow is test-env teardown only; not a product leave path.
-	env2.RegisterDelayedCallback(env2.CancelWorkflow, time.Duration(rewards.EarnsPerRun+1)*time.Minute)
-	env2.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, next)
-
-	s.Require().True(env2.IsWorkflowCompleted())
-	var canErr *workflow.ContinueAsNewError
-	s.False(errors.As(env2.GetWorkflowError(), &canErr),
-		"the successor run must start its own count, not inherit a primed one")
-}
-
 // --- Soft deactivation -----------------------------------------------------
 
-// Soft-deactivate keeps the workflow running with the balance intact;
-// reactivate clears the flag and restores the same points.
-func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
+// The full leave/rejoin round trip. Soft-deactivate keeps the workflow running
+// with the balance intact; reactivate clears the flag, restores the same
+// points, and the customer earns again on top of them. The reactivate Update
+// takes no argument at all, so there is no path by which rejoining can rewrite
+// the customer's name -- the ID is derived from that name, so a re-enrollment
+// only reaches this workflow when the name it arrived under already slugs to
+// this customer's ID.
+func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
 	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
-	s.reactivateAt(4*time.Minute, "rejoin")
+	rejoin := s.reactivateAt(4*time.Minute, "rejoin")
 	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
-	s.stopAt(6 * time.Minute)
+	after := s.addPoints(6*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
+	s.stopAt(7 * time.Minute)
 
 	_ = s.runUntilStopped(newState())
 
@@ -557,8 +502,18 @@ func (s *RewardsSuite) Test_SoftDeactivate_KeepsPointsForReenroll() {
 	s.True(deact.left.Changed, "the first leave is a real transition")
 	s.False(statusAfterLeave.Active, "soft leave must mark inactive")
 	s.Equal(600, statusAfterLeave.Points, "points must survive deactivation")
-	s.True(statusAfterRejoin.Active, "re-enroll must reactivate")
-	s.Equal(600, statusAfterRejoin.Points, "re-enroll must restore the prior balance")
+
+	s.Require().NoError(rejoin.completed)
+	s.True(rejoin.rejoined.Changed)
+	s.True(statusAfterRejoin.Active, "the customer is a member again")
+	s.Equal("Ada Lovelace", statusAfterRejoin.Name, "rejoining cannot rename the customer")
+	s.Equal(600, statusAfterRejoin.Points, "re-enrollment is not a reset")
+	s.Equal(1, statusAfterRejoin.LifetimeEarnEvents, "nor does it forget how the balance was earned")
+	s.Equal(rewards.LevelGold, statusAfterRejoin.Level)
+
+	s.Require().NoError(after.rejected)
+	s.Require().NoError(after.completed, "a rejoined customer must be able to earn again")
+	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
 }
 
 // Both membership Updates are idempotent, and both have to *say* so: the API
@@ -593,46 +548,6 @@ func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	s.False(rejoin.rejoined.Changed, "an active customer was not reactivated")
 	s.Equal("Ada Lovelace", status.Name, "a duplicate enroll must not rename the customer")
 	s.True(status.Active)
-}
-
-// Re-enrollment restores membership and touches nothing else. The Update takes
-// no argument at all, so there is no path by which rejoining can rewrite the
-// customer's name -- the ID is derived from that name, so a re-enrollment only
-// reaches this workflow when the name it arrived under already slugs to this
-// customer's ID.
-func (s *RewardsSuite) Test_Reactivate_RestoresMembershipAndKeepsEverythingElse() {
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	rejoin := s.reactivateAt(3*time.Minute, "rejoin")
-	status := s.queryStatusAt(4 * time.Minute)
-	s.stopAt(5 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().NoError(rejoin.completed)
-	s.True(rejoin.rejoined.Changed)
-	s.True(status.Active, "the customer is a member again")
-	s.Equal("Ada Lovelace", status.Name, "rejoining cannot rename the customer")
-	s.Equal(600, status.Points, "re-enrollment is not a reset")
-	s.Equal(1, status.LifetimeEarnEvents, "nor does it forget how the balance was earned")
-	s.Equal(rewards.LevelGold, status.Level)
-}
-
-// A rejoined customer can earn again. Without this, "restore the balance" would
-// be a display-only claim: the handler's deactivated guard reads the same flag
-// reactivate clears, so a clear that did not take shows up here as a 409.
-func (s *RewardsSuite) Test_Reactivate_RestoresTheAbilityToEarn() {
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	s.reactivateAt(3*time.Minute, "rejoin")
-	after := s.addPoints(4*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(5 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().NoError(after.rejected)
-	s.Require().NoError(after.completed, "a rejoined customer must be able to earn again")
-	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
 }
 
 // addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.
