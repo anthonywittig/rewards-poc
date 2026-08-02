@@ -1,5 +1,6 @@
+import { Fragment } from 'react'
 import { temporalRunUrl } from '../api'
-import type { AuditResponse } from '../types'
+import type { AuditEntry, AuditResponse } from '../types'
 import { formatWhen, tierLabel } from '../format'
 
 export function AuditTimeline({ audit }: { audit: AuditResponse }) {
@@ -13,32 +14,34 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
       ) : (
         <div className="timeline">
           {audit.entries.map((e) => {
+            const key = `${e.runId}-${e.eventId}-${e.kind}`
+
             if (e.kind === 'generation_rolled') {
               return (
-                <div
-                  key={`${e.runId}-${e.eventId}-${e.kind}`}
-                  className="timeline-item divider"
-                >
-                  <div className="when">{formatWhen(e.at)}</div>
-                  <div className="body">
-                    [debug]{' '}
-                    <a
-                      href={temporalRunUrl(audit.workflowId, e.runId)}
-                      target="_blank"
-                      rel="noreferrer"
-                    >
-                      Generation {e.generation} — continue-as-new workflow
-                      started
-                    </a>
+                <RunStartDivider key={key} e={e} workflowId={audit.workflowId} />
+              )
+            }
+
+            // Enrollment is two rows from one event: the membership fact, and
+            // under it the same run-start divider every other generation gets.
+            // Both name the WorkflowExecutionStarted event whose input is the
+            // enrollment payload -- which is what makes the link worth having.
+            if (e.kind === 'enrolled') {
+              return (
+                <Fragment key={key}>
+                  <div className="timeline-item">
+                    <div className="when">{formatWhen(e.at)}</div>
+                    <div className="body">Enrolled</div>
                   </div>
-                </div>
+                  <RunStartDivider e={e} workflowId={audit.workflowId} />
+                </Fragment>
               )
             }
 
             const rejected = e.kind === 'points_rejected'
             return (
               <div
-                key={`${e.runId}-${e.eventId}-${e.kind}`}
+                key={key}
                 className={`timeline-item${rejected ? ' rejected' : ''}`}
               >
                 <div className="when">{formatWhen(e.at)}</div>
@@ -61,10 +64,29 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
   )
 }
 
-function renderBody(e: AuditResponse['entries'][number]): React.ReactNode {
+/** The run boundary, linked to that run's history in the Temporal UI. */
+function RunStartDivider({ e, workflowId }: { e: AuditEntry; workflowId: string }) {
+  return (
+    <div className="timeline-item divider">
+      <div className="when">{formatWhen(e.at)}</div>
+      <div className="body">
+        [debug]{' '}
+        <a
+          href={temporalRunUrl(workflowId, e.runId)}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Generation {e.generation} —{' '}
+          {e.kind === 'generation_rolled' ? 'continue-as-new workflow' : 'workflow'}{' '}
+          started
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function renderBody(e: AuditEntry): React.ReactNode {
   switch (e.kind) {
-    case 'enrolled':
-      return <>Enrolled</>
     case 'points_added':
       return (
         <>
