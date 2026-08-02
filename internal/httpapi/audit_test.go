@@ -437,16 +437,21 @@ func TestWalkRuns_FirstRunNotFoundIsAnError(t *testing.T) {
 
 // --- assembly ---------------------------------------------------------------
 
-func TestAssemble_OldestFirst(t *testing.T) {
+func TestAssemble_NewestFirst(t *testing.T) {
 	runs := []runAudit{ // newest first, as the walk produces them
-		{runID: "b", entries: []AuditEntry{{Kind: AuditGenerationRolled, RunID: "b"}}, earnEvents: 1,
+		{runID: "b", entries: []AuditEntry{
+			{Kind: AuditGenerationRolled, RunID: "b"},
+			{Kind: AuditPointsAdded, RunID: "b"},
+		}, earnEvents: 1,
 			startState: rewards.CustomerState{LifetimeEarnEvents: 2}},
 		{runID: "a", entries: []AuditEntry{{Kind: AuditEnrolled, RunID: "a"}}, earnEvents: 2},
 	}
 
 	got := assemble("ada", runs, false)
-	if got.Entries[0].RunID != "a" || got.Entries[1].RunID != "b" {
-		t.Errorf("entries not reversed to oldest-first: %v", got.Entries)
+	// Newest run first, and within it the newest event first.
+	requireKinds(t, got.Entries, AuditPointsAdded, AuditGenerationRolled, AuditEnrolled)
+	if got.Entries[0].RunID != "b" || got.Entries[2].RunID != "a" {
+		t.Errorf("entries not ordered newest-first: %v", got.Entries)
 	}
 	if got.RunsWalked != 2 {
 		t.Errorf("runsWalked = %d, want 2", got.RunsWalked)
@@ -533,9 +538,9 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 
 	got := assemble("hist", runs, truncated)
 	requireKinds(t, got.Entries,
-		AuditEnrolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded,
-		AuditGenerationRolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+		AuditDeactivated, AuditPointsAdded, AuditGenerationRolled,
+		AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditGenerationRolled,
+		AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditEnrolled)
 
 	if got.ShownEarnEvents != 7 || got.LifetimeEarnEvents != 7 {
 		t.Errorf("shown=%d lifetime=%d, want both 7", got.ShownEarnEvents, got.LifetimeEarnEvents)
@@ -544,13 +549,12 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 		t.Error("an intact chain must not report truncation")
 	}
 
-	// Non-decreasing in time, which is what "oldest first" has to mean for a
+	// Non-increasing in time, which is what "newest first" has to mean for a
 	// timeline assembled from separately-fetched runs.
-	var prev time.Time
-	for i, e := range got.Entries {
-		if e.At.Before(prev) {
-			t.Errorf("entry %d (%s) at %v goes back in time from %v", i, e.Kind, e.At, prev)
+	for i := 1; i < len(got.Entries); i++ {
+		if got.Entries[i].At.After(got.Entries[i-1].At) {
+			t.Errorf("entry %d (%s) at %v jumps forward from %v",
+				i, got.Entries[i].Kind, got.Entries[i].At, got.Entries[i-1].At)
 		}
-		prev = e.At
 	}
 }

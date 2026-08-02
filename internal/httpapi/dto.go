@@ -185,7 +185,7 @@ type AuditEntry struct {
 // from ShownEarnEvents and LifetimeEarnEvents.
 type AuditResponse struct {
 	CustomerID string       `json:"customerId"`
-	Entries    []AuditEntry `json:"entries"` // oldest first
+	Entries    []AuditEntry `json:"entries"` // newest first
 	// True when the crawl hit a run whose history had been deleted.
 	Truncated bool `json:"truncated"`
 	// Point-add rows actually reconstructed, versus the lifetime count carried

@@ -7,13 +7,6 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
 
   return (
     <div>
-      {truncated ? (
-        <p className="notice timeline-notice">
-          Showing {audit.shownEarnEvents} of {audit.lifetimeEarnEvents} point
-          events. Earlier history has been deleted.
-        </p>
-      ) : null}
-
       {audit.entries.length === 0 ? (
         <p className="timeline-empty">No events yet — enrollment only.</p>
       ) : (
@@ -46,6 +39,15 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
           })}
         </div>
       )}
+
+      {/* Newest first, so the gap the crawl ran into is at the bottom of the
+          list -- the notice sits where the missing events would have been. */}
+      {truncated ? (
+        <p className="notice timeline-notice">
+          Showing {audit.shownEarnEvents} of {audit.lifetimeEarnEvents} point
+          events. Earlier history has been deleted.
+        </p>
+      ) : null}
     </div>
   )
 }
