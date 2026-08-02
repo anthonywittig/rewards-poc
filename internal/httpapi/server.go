@@ -437,56 +437,78 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// updateWithRolloverRetry sends the Update, and sends it again if the run it
+// withRolloverRetry sends an Update via send, and sends it again if the run it
 // addressed closed because of continue-as-new.
 //
 // Not defensive coding for a rare event: continue-as-new fires every 3 adds, so
 // without a transparent retry the demo looks broken roughly every third click.
 //
 // Soft-inactive customers stay Running, so a closed-run NotFound means rollover
-// (retry) or a force-closed execution (refuse). Product deactivation rejects
-// inside the Update handler as ErrTypeDeactivated instead.
+// (retry) or a force-closed execution, which whenClosed resolves: addPoints and
+// reactivate refuse, deactivate is idempotent and calls it done. Product
+// deactivation rejects inside the Update handler as ErrTypeDeactivated instead.
 //
 // Retrying is safe because the update did not run -- the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
 // UpdateID, which buys nothing across a run boundary.
-func (s *Server) updateWithRolloverRetry(
-	ctx context.Context, wfID string, req AddPointsRequest,
-) (rewards.AddPointsResult, error) {
+func withRolloverRetry[T any](
+	ctx context.Context, s *Server, wfID, updateName string,
+	send func(context.Context) (T, error),
+	whenClosed func() (T, error),
+) (T, error) {
+	var zero T
 	const attempts = 2
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := s.sendUpdate(ctx, wfID, req)
+		res, err := send(ctx)
 		if err == nil {
 			return res, nil
 		}
 		if !isClosedRun(err) {
-			return rewards.AddPointsResult{}, mapUpdateError(err)
+			return zero, mapUpdateError(err)
 		}
 
 		// The run is gone. Is a successor running, or is the customer?
 		running, describeErr := s.hasRunningExecution(ctx, wfID)
 		if describeErr != nil {
-			return rewards.AddPointsResult{}, mapQueryError(describeErr)
+			return zero, mapQueryError(describeErr)
 		}
 		if !running {
-			return rewards.AddPointsResult{}, &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer workflow is closed; re-enroll them before adding points",
-			}
+			return whenClosed()
 		}
 
 		s.log.Info("update lost its run to continue-as-new, retrying against the successor",
-			"workflowId", wfID, "attempt", attempt)
+			"workflowId", wfID, "update", updateName, "attempt", attempt)
 	}
 
 	// Two rollovers inside one request. An honest 409 beats a retry loop that
 	// could chase a busy customer indefinitely.
-	s.log.Warn("update lost its run twice in a row", "workflowId", wfID)
-	return rewards.AddPointsResult{}, &apiError{
+	s.log.Warn("update lost its run twice in a row", "workflowId", wfID, "update", updateName)
+	return zero, &apiError{
 		http.StatusConflict, CodeRolloverRace,
 		"the customer's workflow rolled over while applying this request; please retry",
 	}
+}
+
+// updateWithRolloverRetry is the addPoints verb over withRolloverRetry.
+func (s *Server) updateWithRolloverRetry(
+	ctx context.Context, wfID string, req AddPointsRequest,
+) (rewards.AddPointsResult, error) {
+	return withRolloverRetry(ctx, s, wfID, rewards.UpdateAddPoints,
+		func(ctx context.Context) (rewards.AddPointsResult, error) {
+			return sendUpdate[rewards.AddPointsResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+				WorkflowID: wfID,
+				UpdateName: rewards.UpdateAddPoints,
+				UpdateID:   req.RequestID, // empty means the SDK generates one
+				Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
+			})
+		},
+		func() (rewards.AddPointsResult, error) {
+			return rewards.AddPointsResult{}, &apiError{
+				http.StatusConflict, CodeDeactivated,
+				"customer workflow is closed; re-enroll them before adding points",
+			}
+		})
 }
 
 // hasRunningExecution reports whether the workflow ID currently has an open
@@ -548,128 +570,59 @@ const queryTimeout = 2 * time.Second
 // client holds the connection.
 const updateTimeout = 15 * time.Second
 
-func (s *Server) sendUpdate(
-	ctx context.Context, wfID string, req AddPointsRequest,
-) (rewards.AddPointsResult, error) {
+// sendUpdate sends one Update, waits for it to complete, and decodes its result.
+func sendUpdate[T any](
+	ctx context.Context, c client.Client, opts client.UpdateWorkflowOptions,
+) (T, error) {
+	var res T
+
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
 
-	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID:   wfID,
-		UpdateName:   rewards.UpdateAddPoints,
-		UpdateID:     req.RequestID, // empty means the SDK generates one
-		Args:         []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
-		WaitForStage: client.WorkflowUpdateStageCompleted,
-	})
+	opts.WaitForStage = client.WorkflowUpdateStageCompleted
+	handle, err := c.UpdateWorkflow(ctx, opts)
 	if err != nil {
-		return rewards.AddPointsResult{}, err
+		return res, err
 	}
-
-	var res rewards.AddPointsResult
-	if err := handle.Get(ctx, &res); err != nil {
-		return rewards.AddPointsResult{}, err
-	}
-	return res, nil
+	err = handle.Get(ctx, &res)
+	return res, err
 }
 
-func (s *Server) sendReactivate(
-	ctx context.Context, wfID string,
-) (rewards.ReactivateResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
-	defer cancel()
-
-	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID:   wfID,
-		UpdateName:   rewards.UpdateReactivate,
-		WaitForStage: client.WorkflowUpdateStageCompleted,
-	})
-	if err != nil {
-		return rewards.ReactivateResult{}, err
-	}
-	var res rewards.ReactivateResult
-	if err := handle.Get(ctx, &res); err != nil {
-		return rewards.ReactivateResult{}, err
-	}
-	return res, nil
-}
-
-func (s *Server) sendDeactivate(ctx context.Context, wfID string) (rewards.DeactivateResult, error) {
-	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
-	defer cancel()
-
-	handle, err := s.temporal.UpdateWorkflow(ctx, client.UpdateWorkflowOptions{
-		WorkflowID:   wfID,
-		UpdateName:   rewards.UpdateDeactivate,
-		WaitForStage: client.WorkflowUpdateStageCompleted,
-	})
-	if err != nil {
-		return rewards.DeactivateResult{}, err
-	}
-	var res rewards.DeactivateResult
-	if err := handle.Get(ctx, &res); err != nil {
-		return rewards.DeactivateResult{}, err
-	}
-	return res, nil
-}
-
-// reactivateWithRolloverRetry mirrors updateWithRolloverRetry: a re-enroll that
-// races continue-as-new must retry against the successor rather than 404.
+// reactivateWithRolloverRetry is the reactivate verb over withRolloverRetry: a
+// re-enroll that races continue-as-new must retry against the successor rather
+// than 404.
 func (s *Server) reactivateWithRolloverRetry(
 	ctx context.Context, wfID string,
 ) (rewards.ReactivateResult, error) {
-	const attempts = 2
-	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := s.sendReactivate(ctx, wfID)
-		if err == nil {
-			return res, nil
-		}
-		if !isClosedRun(err) {
-			return rewards.ReactivateResult{}, mapUpdateError(err)
-		}
-		running, describeErr := s.hasRunningExecution(ctx, wfID)
-		if describeErr != nil {
-			return rewards.ReactivateResult{}, mapQueryError(describeErr)
-		}
-		if !running {
+	return withRolloverRetry(ctx, s, wfID, rewards.UpdateReactivate,
+		func(ctx context.Context) (rewards.ReactivateResult, error) {
+			return sendUpdate[rewards.ReactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+				WorkflowID: wfID,
+				UpdateName: rewards.UpdateReactivate,
+			})
+		},
+		func() (rewards.ReactivateResult, error) {
 			return rewards.ReactivateResult{}, &apiError{
 				http.StatusConflict, CodeDeactivated,
 				"customer workflow is closed; enroll them again to start fresh",
 			}
-		}
-		s.log.Info("reactivate lost its run to continue-as-new, retrying against the successor",
-			"workflowId", wfID, "attempt", attempt)
-	}
-	return rewards.ReactivateResult{}, &apiError{
-		http.StatusConflict, CodeRolloverRace,
-		"the customer's workflow rolled over while reactivating; please retry",
-	}
+		})
 }
 
+// deactivateWithRolloverRetry is the deactivate verb over withRolloverRetry.
 func (s *Server) deactivateWithRolloverRetry(ctx context.Context, wfID string) error {
-	const attempts = 2
-	for attempt := 1; attempt <= attempts; attempt++ {
-		_, err := s.sendDeactivate(ctx, wfID)
-		if err == nil {
-			return nil
-		}
-		if !isClosedRun(err) {
-			return mapUpdateError(err)
-		}
-		running, describeErr := s.hasRunningExecution(ctx, wfID)
-		if describeErr != nil {
-			return mapQueryError(describeErr)
-		}
-		if !running {
+	_, err := withRolloverRetry(ctx, s, wfID, rewards.UpdateDeactivate,
+		func(ctx context.Context) (rewards.DeactivateResult, error) {
+			return sendUpdate[rewards.DeactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+				WorkflowID: wfID,
+				UpdateName: rewards.UpdateDeactivate,
+			})
+		},
+		func() (rewards.DeactivateResult, error) {
 			// Already force-closed — DELETE is idempotent.
-			return nil
-		}
-		s.log.Info("deactivate lost its run to continue-as-new, retrying against the successor",
-			"workflowId", wfID, "attempt", attempt)
-	}
-	return &apiError{
-		http.StatusConflict, CodeRolloverRace,
-		"the customer's workflow rolled over while deactivating; please retry",
-	}
+			return rewards.DeactivateResult{}, nil
+		})
+	return err
 }
 
 // deactivate soft-leaves the customer via Update. The workflow stays Running
