@@ -19,7 +19,7 @@
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg=="
               },
-              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwicG9pbnRzIjo2MDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wOC0wMlQwNTowNjoxOS44MDM5NjA0NzZaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjo2LCJnZW5lcmF0aW9uIjoyfQ=="
+              "data": "eyJjdXN0b21lcklkIjoiaGlzdCIsIm5hbWUiOiJIaXN0b3J5IFByb2JlIiwicG9pbnRzIjo2MDAwLCJlbnJvbGxlZEF0IjoiMjAyNi0wOC0wMlQwNTowNjoxOS44MDM5NjA0NzZaIiwibGlmZXRpbWVFYXJuRXZlbnRzIjo2LCJydW5OdW1iZXIiOjN9"
             }
           ]
         },
@@ -62,12 +62,12 @@
               },
               "data": "IjIwMjYtMDgtMDJUMDU6MDY6MTkuODAzOTYwNDc2WiI="
             },
-            "RewardsGeneration": {
+            "RewardsRunNumber": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
                 "type": "SW50"
               },
-              "data": "MQ=="
+              "data": "Mg=="
             },
             "RewardsLevel": {
               "metadata": {
@@ -190,12 +190,12 @@
               },
               "data": "IjIwMjYtMDgtMDJUMDU6MDY6MTkuODAzOTYwNDc2WiI="
             },
-            "RewardsGeneration": {
+            "RewardsRunNumber": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
                 "type": "SW50"
               },
-              "data": "Mg=="
+              "data": "Mw=="
             },
             "RewardsLevel": {
               "metadata": {
@@ -283,12 +283,12 @@
               },
               "data": "IjIwMjYtMDgtMDJUMDU6MDY6MTkuODAzOTYwNDc2WiI="
             },
-            "RewardsGeneration": {
+            "RewardsRunNumber": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
                 "type": "SW50"
               },
-              "data": "Mg=="
+              "data": "Mw=="
             },
             "RewardsLevel": {
               "metadata": {
@@ -436,12 +436,12 @@
               },
               "data": "IjIwMjYtMDgtMDJUMDU6MDY6MTkuODAzOTYwNDc2WiI="
             },
-            "RewardsGeneration": {
+            "RewardsRunNumber": {
               "metadata": {
                 "encoding": "anNvbi9wbGFpbg==",
                 "type": "SW50"
               },
-              "data": "Mg=="
+              "data": "Mw=="
             },
             "RewardsLevel": {
               "metadata": {

@@ -183,7 +183,7 @@ export function CustomerDetailPage() {
                 Enrolled <strong>{formatDate(customer.enrolledAt)}</strong>
               </span>
               <span>
-                Generation <strong>{customer.generation}</strong>
+                Run <strong>{customer.runNumber}</strong>
               </span>
               <span>
                 Lifetime earns <strong>{customer.lifetimeEarnEvents}</strong>

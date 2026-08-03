@@ -18,7 +18,7 @@ import (
 // from the events Temporal recorded in order to run the workflow at all.
 
 // auditTimeout bounds the whole crawl: one GetWorkflowHistory round trip per
-// generation, walked serially because each run only learns its predecessor
+// run, walked serially because each run only learns its predecessor
 // from the run it just read.
 const auditTimeout = 30 * time.Second
 
@@ -172,14 +172,14 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 
 			kind := AuditEnrolled
 			if out.previousRunID != "" {
-				kind = AuditGenerationRolled
+				kind = AuditRunRolled
 			}
 			out.entries = append(out.entries, AuditEntry{
-				Kind:       kind,
-				At:         e.GetEventTime().AsTime(),
-				Generation: out.startState.Generation,
-				RunID:      runID,
-				EventID:    e.GetEventId(),
+				Kind:      kind,
+				At:        e.GetEventTime().AsTime(),
+				RunNumber: out.startState.RunNumber,
+				RunID:     runID,
+				EventID:   e.GetEventId(),
 			})
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED:
@@ -221,12 +221,12 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 					continue
 				}
 				out.entries = append(out.entries, AuditEntry{
-					Kind:       AuditDeactivated,
-					At:         p.at,
-					Generation: out.startState.Generation,
-					RunID:      runID,
-					EventID:    p.eventID,
-					RequestID:  p.updateID,
+					Kind:      AuditDeactivated,
+					At:        p.at,
+					RunNumber: out.startState.RunNumber,
+					RunID:     runID,
+					EventID:   p.eventID,
+					RequestID: p.updateID,
 				})
 				continue
 			}
@@ -239,13 +239,13 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			// Anchored to the accepted event: that is when the customer made
 			// the request.
 			entry := AuditEntry{
-				At:         p.at,
-				Generation: out.startState.Generation,
-				RunID:      runID,
-				EventID:    p.eventID,
-				Amount:     p.amount,
-				Reason:     p.reason,
-				RequestID:  p.updateID,
+				At:        p.at,
+				RunNumber: out.startState.RunNumber,
+				RunID:     runID,
+				EventID:   p.eventID,
+				Amount:    p.amount,
+				Reason:    p.reason,
+				RequestID: p.updateID,
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {

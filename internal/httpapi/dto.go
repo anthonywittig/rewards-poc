@@ -43,7 +43,7 @@ type CustomerResponse struct {
 	Tiers []rewards.Tier `json:"tiers"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
-	Generation         int `json:"generation"`
+	RunNumber          int `json:"runNumber"`
 
 	Status string `json:"status"` // "active" | "deactivated"
 	// Advisory: assembled from a separate read than the fields above, so it
@@ -72,7 +72,7 @@ type CustomerListItem struct {
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
 	EnrolledAt time.Time `json:"enrolledAt"`
-	Generation int       `json:"generation"`
+	RunNumber  int       `json:"runNumber"`
 	Status     string    `json:"status"` // "active" | "deactivated"
 	RunID      string    `json:"runId"`
 }
@@ -107,11 +107,11 @@ type CustomerListResponse struct {
 type AuditEntryKind string
 
 const (
-	AuditEnrolled         AuditEntryKind = "enrolled"
-	AuditPointsAdded      AuditEntryKind = "points_added"
-	AuditPointsRejected   AuditEntryKind = "points_rejected"
-	AuditGenerationRolled AuditEntryKind = "generation_rolled"
-	AuditDeactivated      AuditEntryKind = "deactivated"
+	AuditEnrolled       AuditEntryKind = "enrolled"
+	AuditPointsAdded    AuditEntryKind = "points_added"
+	AuditPointsRejected AuditEntryKind = "points_rejected"
+	AuditRunRolled      AuditEntryKind = "run_rolled"
+	AuditDeactivated    AuditEntryKind = "deactivated"
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
@@ -119,10 +119,10 @@ const (
 // covers handler-side rejections: a validator rejection wrote nothing to
 // history, so it is invisible here by design.
 type AuditEntry struct {
-	Kind       AuditEntryKind `json:"kind"`
-	At         time.Time      `json:"at"`
-	Generation int            `json:"generation"`
-	RunID      string         `json:"runId"`
+	Kind      AuditEntryKind `json:"kind"`
+	At        time.Time      `json:"at"`
+	RunNumber int            `json:"runNumber"`
+	RunID     string         `json:"runId"`
 	// History event ID, unique only within its run.
 	EventID int64 `json:"eventId"`
 
@@ -153,7 +153,7 @@ type AuditResponse struct {
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	// The oldest run the crawl could read. Empty when it reached enrollment.
 	OldestRunID string `json:"oldestRunId,omitempty"`
-	// How many runs were walked, for the generation dividers.
+	// How many runs were walked, for the run dividers.
 	RunsWalked int `json:"runsWalked"`
 }
 

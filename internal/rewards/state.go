@@ -87,7 +87,9 @@ type CustomerState struct {
 	// Count of successful adds, ever. Not derivable from history once it is
 	// reaped; used to quantify audit-log truncation.
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
-	Generation         int `json:"generation"`
+	// 1-based position of the current run in the continue-as-new chain: the
+	// enrollment run is 1, and the counter increments exactly once per roll.
+	RunNumber int `json:"runNumber"`
 
 	// Set when the customer leaves, and never cleared: deactivation is
 	// one-way, and the run completes once the flag is set. Not an Active bool:

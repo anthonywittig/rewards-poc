@@ -21,7 +21,10 @@ import (
 )
 
 // The golden files in testdata/ are `temporal workflow show -o json` output
-// from the local stack, one file per run of one customer's life:
+// from the local stack, one file per run of one customer's life. The
+// generation->runNumber rename (0-based generation became the 1-based
+// runNumber) was applied mechanically to the recorded payloads and search
+// attributes rather than recapturing every file:
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
@@ -123,6 +126,9 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 	if run.previousRunID != "" {
 		t.Errorf("previousRunID = %q, want empty on the enrollment run", run.previousRunID)
 	}
+	if run.startState.RunNumber != 1 {
+		t.Errorf("runNumber = %d, want 1 (the enrollment run)", run.startState.RunNumber)
+	}
 	requireKinds(t, run.entries,
 		AuditEnrolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded)
 	if run.earnEvents != 3 {
@@ -143,7 +149,7 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 	}
 }
 
-// A run that was rolled into. The generation divider is recorded here rather
+// A run that was rolled into. The run divider is recorded here rather
 // than on the predecessor's ContinuedAsNew event, so it survives the
 // predecessor being reaped.
 func TestAuditRun_ContinuedRun(t *testing.T) {
@@ -153,11 +159,11 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 		t.Fatal("previousRunID should name the predecessor run")
 	}
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded)
+		AuditRunRolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded)
 
-	if run.entries[0].Generation != 1 {
-		t.Errorf("divider generation = %d, want 1 (the generation being entered)",
-			run.entries[0].Generation)
+	if run.entries[0].RunNumber != 2 {
+		t.Errorf("divider runNumber = %d, want 2 (the run being entered)",
+			run.entries[0].RunNumber)
 	}
 	// Carried state is all this run knows about its predecessors.
 	if run.startState.LifetimeEarnEvents != 3 {
@@ -174,7 +180,7 @@ func TestAuditRun_DeactivatedRun(t *testing.T) {
 	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
 
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+		AuditRunRolled, AuditPointsAdded, AuditDeactivated)
 }
 
 // A deactivate that changed nothing -- a duplicate that raced the real leave
@@ -188,7 +194,7 @@ func TestAuditRun_NoOpDeactivateDrawsNoRow(t *testing.T) {
 	run := auditRun("run-2", events)
 
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+		AuditRunRolled, AuditPointsAdded, AuditDeactivated)
 }
 
 // The failure path. The handler stages its change and commits only once the
@@ -207,7 +213,7 @@ func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 	run := auditRun("run-2", append(events, pair...))
 
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+		AuditRunRolled, AuditPointsAdded, AuditDeactivated)
 }
 
 // The recorded half of the validator/handler split: a handler rejection
@@ -216,7 +222,7 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	run := auditRun("cap-run", loadEvents(t, "run-rejection.json"))
 
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditPointsRejected)
+		AuditRunRolled, AuditPointsAdded, AuditPointsRejected)
 
 	rejected := run.entries[2]
 	if rejected.Failure == "" {
@@ -302,7 +308,7 @@ func TestWalkRuns_FirstRunNotFoundIsAnError(t *testing.T) {
 func TestAssemble_NewestFirst(t *testing.T) {
 	runs := []runAudit{ // newest first, as the walk produces them
 		{runID: "b", entries: []AuditEntry{
-			{Kind: AuditGenerationRolled, RunID: "b"},
+			{Kind: AuditRunRolled, RunID: "b"},
 			{Kind: AuditPointsAdded, RunID: "b"},
 		}, earnEvents: 1,
 			startState: rewards.CustomerState{LifetimeEarnEvents: 2}},
@@ -311,7 +317,7 @@ func TestAssemble_NewestFirst(t *testing.T) {
 
 	got := assemble("ada", runs, false)
 	// Newest run first, and within it the newest event first.
-	requireKinds(t, got.Entries, AuditPointsAdded, AuditGenerationRolled, AuditEnrolled)
+	requireKinds(t, got.Entries, AuditPointsAdded, AuditRunRolled, AuditEnrolled)
 	if got.RunsWalked != 2 {
 		t.Errorf("runsWalked = %d, want 2", got.RunsWalked)
 	}
@@ -321,8 +327,8 @@ func TestAssemble_NewestFirst(t *testing.T) {
 // which is what lets the UI say "Showing 3 of 21 point events."
 func TestAssemble_LifetimeSurvivesTruncation(t *testing.T) {
 	runs := []runAudit{
-		{runID: "gen7", earnEvents: 2, startState: rewards.CustomerState{LifetimeEarnEvents: 19}},
-		{runID: "gen6", earnEvents: 1, startState: rewards.CustomerState{LifetimeEarnEvents: 18}},
+		{runID: "run7", earnEvents: 2, startState: rewards.CustomerState{LifetimeEarnEvents: 19}},
+		{runID: "run6", earnEvents: 1, startState: rewards.CustomerState{LifetimeEarnEvents: 18}},
 	}
 
 	got := assemble("grace", runs, true)
@@ -333,7 +339,7 @@ func TestAssemble_LifetimeSurvivesTruncation(t *testing.T) {
 		t.Errorf("lifetime = %d, want 21 -- it comes from carried state, not the rows",
 			got.LifetimeEarnEvents)
 	}
-	if got.OldestRunID != "gen6" {
+	if got.OldestRunID != "run6" {
 		t.Errorf("oldestRunId = %q, want the oldest run actually read", got.OldestRunID)
 	}
 }
@@ -347,20 +353,20 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	continued := loadEvents(t, "run-continued.json")
 	enrollment := loadEvents(t, "run-enrollment.json")
 
-	gen1 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
-	gen0 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
+	run2 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
+	run1 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
-		"gen2": deactivated, gen1: continued, gen0: enrollment,
-	}), "gen2")
+		"run3": deactivated, run2: continued, run1: enrollment,
+	}), "run3")
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
 
 	got := assemble("hist", runs, truncated)
 	requireKinds(t, got.Entries,
-		AuditDeactivated, AuditPointsAdded, AuditGenerationRolled,
-		AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditGenerationRolled,
+		AuditDeactivated, AuditPointsAdded, AuditRunRolled,
+		AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditRunRolled,
 		AuditPointsAdded, AuditPointsAdded, AuditPointsAdded, AuditEnrolled)
 
 	if got.ShownEarnEvents != 7 || got.LifetimeEarnEvents != 7 {

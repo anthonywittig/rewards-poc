@@ -40,7 +40,7 @@ var seedSet = []customer{
 	{
 		id: "ada", name: "Ada Lovelace",
 		adds: []int{120, 200, 180, 60, 40, 20, 20},
-		why:  "gold, a few generations in -- shows continue-as-new",
+		why:  "gold, a few runs in -- shows continue-as-new",
 	},
 	{
 		id: "grace", name: "Grace Hopper",
