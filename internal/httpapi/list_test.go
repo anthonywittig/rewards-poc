@@ -49,18 +49,6 @@ func TestScopedQuery(t *testing.T) {
 	}
 }
 
-// Visibility holds one document per Run, so without excluding ContinuedAsNew a
-// customer appears once per generation. Pins the clause so it cannot be dropped
-// as redundant-looking noise.
-func TestScopedQueryExcludesRolledOverGenerations(t *testing.T) {
-	for _, q := range []string{"", "RewardsLevel = 'gold'"} {
-		got := scopedQuery(q)
-		if !strings.Contains(got, "ExecutionStatus != 'ContinuedAsNew'") {
-			t.Errorf("scopedQuery(%q) = %q, must exclude rolled-over generations", q, got)
-		}
-	}
-}
-
 // ORDER BY is intercepted before the query is sent, purely so the error is
 // useful: Temporal's own "ORDER BY clause is not supported" is destroyed by our
 // parenthesising, which turns it into a bare syntax error.

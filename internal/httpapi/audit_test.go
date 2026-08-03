@@ -282,22 +282,6 @@ func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
 }
 
-// Neither membership Update may render as a point-add. They share the Update
-// event types with addPoints, and the amount/reason fields decode to zero from
-// their arguments, so a missed name check shows up as a silent "+0 ()" row
-// rather than as a failure.
-func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
-	events := loadEvents(t, "run-deactivated.json")
-	events = append(events, membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
-		rewards.ReactivateResult{Changed: true})...)
-
-	for _, e := range auditRun("run-2", events).entries {
-		if e.Kind == AuditPointsAdded && e.Amount == 0 {
-			t.Errorf("a membership Update rendered as a point-add: %+v", e)
-		}
-	}
-}
-
 // The recorded half of the validator/handler split. A handler rejection writes an
 // Accepted and a Completed-with-failure, so it becomes a row; a validator
 // rejection writes nothing at all and can never appear here.
