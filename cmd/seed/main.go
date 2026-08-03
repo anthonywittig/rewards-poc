@@ -50,7 +50,7 @@ var seedSet = []customer{
 	{
 		id: "departed", name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
-		why: "deactivated: re-enrolling restores the balance",
+		why: "deactivated: workflow completed, balance frozen for good",
 	},
 	{
 		id: "capped", name: "Max Capacity",

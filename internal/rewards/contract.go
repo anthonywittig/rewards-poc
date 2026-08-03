@@ -8,7 +8,6 @@ import "time"
 const (
 	UpdateAddPoints  = "addPoints"
 	UpdateDeactivate = "deactivate"
-	UpdateReactivate = "reactivate"
 	QueryGetStatus   = "getStatus"
 )
 
@@ -33,16 +32,9 @@ type AddPointsResult struct {
 }
 
 // DeactivateResult reports whether the Update actually changed anything, so a
-// repeat DELETE is distinguishable from a real leave.
+// raced duplicate is distinguishable from the real leave.
 type DeactivateResult struct {
 	Changed bool `json:"changed"`
-}
-
-// ReactivateResult mirrors DeactivateResult: the API tells a restore (200)
-// from a duplicate enrollment (409) by Changed.
-type ReactivateResult struct {
-	Changed bool           `json:"changed"`
-	Status  CustomerStatus `json:"status"`
 }
 
 // CustomerStatus is the getStatus Query result.

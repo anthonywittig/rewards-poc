@@ -12,7 +12,7 @@ const idSlugLimit = 32
 //
 // Nothing random goes in, so the derivation is also the identity rule: a
 // second enrollment under the same name lands on the same workflow ID, which
-// the enroll endpoint treats as a duplicate or a rejoin.
+// the enroll endpoint treats as a duplicate (409).
 //
 // Returns "" when the name has nothing to build an ID from.
 func CustomerIDForName(name string) string {

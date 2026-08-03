@@ -89,9 +89,10 @@ type CustomerState struct {
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
 
-	// Set when the customer leaves; cleared on re-enrollment. Not an Active
-	// bool: the zero value must mean active so older continue-as-new payloads
-	// keep decoding correctly.
+	// Set when the customer leaves, and never cleared: deactivation is
+	// one-way, and the run completes once the flag is set. Not an Active bool:
+	// the zero value must mean active so older continue-as-new payloads keep
+	// decoding correctly.
 	Deactivated bool `json:"deactivated,omitempty"`
 }
 

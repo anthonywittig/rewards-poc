@@ -1,16 +1,17 @@
 # rewards-poc
 
 A POC of the **Entity Workflow** pattern: **Temporal as the system of record**
-for a customer rewards program.
+for a customer rewards program. Written for developers who already know
+Temporal basics and want to see what using it as the *data store* looks like.
 
 There is no application database. A customer's points, tier, enrollment date,
-and history of point-earning events live entirely in a Temporal Workflow
-Execution and its Event History. One customer is one long-lived workflow with
-the ID `customer-<id>`:
+and history of point-earning events live entirely in a Workflow Execution and
+its Event History. One customer is one long-lived workflow with the ID
+`customer-<id>`:
 
 - **points arrive as Updates** (`addPoints`, with a validator),
-- **status is a Query** (`getStatus`),
-- **the customer list is a visibility query** over search attributes,
+- **current state is a Query** (`getStatus`),
+- **the customer list is a visibility query** over custom search attributes,
 - **the audit log is reconstructed by crawling Event History**,
 - **the workflow continues-as-new** every few updates to keep history bounded.
 
@@ -53,17 +54,15 @@ make enroll ID=c-001 NAME="Ada Lovelace"
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make deactivate ID=c-001                          # soft leave; the workflow keeps running
-make reactivate ID=c-001                          # rejoin, balance intact
 make audit  ID=c-001                              # the timeline, crawled out of Event History
+make deactivate ID=c-001                          # one-way: records the leave, completes the workflow
 ```
 
 ## The HTTP API
 
 ```sh
 # No customerId: the server derives one from the name (here, ada-lovelace).
-# The same name derives the same ID, so a second signup is a 409 -- or a
-# rejoin, if they had left.
+# The same name derives the same ID, so a second signup is a 409.
 curl -XPOST localhost:8081/api/customers -d '{"name":"Ada Lovelace"}'
 
 curl localhost:8081/api/customers/c-001
@@ -73,19 +72,20 @@ curl localhost:8081/api/customers/c-001/audit
 ```
 
 `GET /api/customers` is a `ListWorkflow` plus a `CountWorkflow` — no lookup
-table. `?q=` is passed to Temporal essentially as typed, so **the same query
-works unchanged in the Temporal UI**:
+table. Filtering is structured, and the server builds the visibility query
+from the params; the response echoes the query it built, **pasteable into the
+Temporal UI unchanged**:
 
 ```sh
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsActive = false"
+curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
+curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
+curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefix match
 ```
 
 Failures are `{"error":{"code":"...","message":"..."}}` with a stable code —
 notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
-when adding points to a customer who has left.
+for anything touching a departed customer.
 
 ## Things worth seeing
 
@@ -124,6 +124,14 @@ depends on the customer's accumulated state is permanently recorded. Facts
 about the *request* belong in the validator, facts about the *customer* in the
 handler.
 
+**Deactivation completes the workflow.** Leaving the program is one-way: the
+`deactivate` Update sets the flag, the run drains its handlers, and the
+workflow completes normally with the balance frozen in its final state. The
+detail page, list and audit log keep answering for a departed customer (Query
+and Describe work on closed runs until retention reaps them), and the enroll
+endpoint refuses to reuse the ID — `ALLOW_DUPLICATE_FAILED_ONLY` retires a
+completed execution's ID while still letting a *failed* enrollment be retried.
+
 **The replay test.** A customer's workflow outlives deploys, so today's code
 gets replayed against histories recorded weeks ago and the commands must match
 event for event:
@@ -152,9 +160,10 @@ on promotion, and that is what an Activity is for.
 
 - **Points only go up.** No spending or expiry, so tiers never demote and
   `Points` is also the lifetime total.
-- **Leaving is soft.** Deactivation sets a flag via Update; the execution stays
-  Running, so re-enrolling restores balance and history. Membership lives in
-  the `RewardsActive` search attribute, not in `ExecutionStatus`.
+- **Leaving is one-way.** Deactivation records the leave and completes the
+  workflow; there is no reactivation, and the customer's ID stays retired
+  until their history is reaped. Membership lives in the `RewardsActive`
+  search attribute, which the completed final run keeps.
 - **Visibility is asynchronous.** A new or updated workflow appears in the
   list after ~200–300 ms, never instantly. Read-after-write goes through
   Query or Describe instead.
@@ -194,6 +203,7 @@ internal/rewards/             the domain: types and rules, no workflow code
     replay_test.go            deploy rehearsal against a recorded history
 internal/httpapi/
   server.go                   enroll, detail, add points, deactivate, list
+  filter.go                   structured list params -> visibility query clauses
   audit.go                    the Event History crawl and truncation detection
   classify.go                 Temporal error classification
   errors.go                   stable error codes and their HTTP mapping

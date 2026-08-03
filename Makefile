@@ -9,7 +9,7 @@ WEB_PORT = 5173
 TEMPORAL_UI_PORT = 8080
 
 .PHONY: help up down destroy bootstrap logs ps tools \
-        worker worker-stop api test workflowcheck enroll status add deactivate reactivate \
+        worker worker-stop api test workflowcheck enroll status add deactivate \
         audit web web-check seed reset
 
 # The temporal CLI ships in the server image; exec-ing into it beats a
@@ -119,15 +119,10 @@ add: ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: ## Soft-leave the program (make deactivate ID=c-001)
+deactivate: ## Leave the program for good; one-way, completes the workflow (make deactivate ID=c-001)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name deactivate
-
-reactivate: ## Re-enroll and restore points (make reactivate ID=c-001)
-	@$(TCLI) workflow update execute \
-	  --workflow-id customer-$(ID) \
-	  --name reactivate
 
 # Through the API rather than the temporal CLI, because the audit log is not
 # something the server can be asked for -- it is reconstructed by crawling

@@ -59,10 +59,16 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// enroll starts a customer's workflow, or reactivates a soft-deactivated one.
-// Without a customerId in the body, the server derives one from the name; the
-// same name always derives the same ID, so a second signup under one name is a
-// duplicate (409) or a rejoin, never a second customer.
+// enroll starts a customer's workflow. Without a customerId in the body, the
+// server derives one from the name; the same name always derives the same ID,
+// so a second signup under one name is a duplicate, never a second customer.
+//
+// Deactivation is one-way and completes the workflow, so an occupied ID means
+// either a Running execution (an active customer -- duplicate signup) or a
+// Completed one (a departed customer, whose ID stays retired until their
+// history is reaped). ALLOW_DUPLICATE_FAILED_ONLY is what retires it: a
+// *failed* execution -- an enrollment payload the workflow refused -- may be
+// retried, a completed one may not be restarted.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -89,6 +95,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
 		ID:                                       wfID,
 		TaskQueue:                                rewards.TaskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
@@ -106,72 +113,52 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if !errors.As(err, &already) {
-		return mapStartError(err)
+		return classifyCommon(err)
 	}
 
-	// The ID is taken. Active -> 409. Soft-deactivated -> reactivate, which
-	// restores the prior balance.
-	active, aerr := s.isActive(r.Context(), wfID)
-	if aerr != nil {
-		return aerr
+	// ID is taken. Running -> a duplicate signup. Closed -> the customer left,
+	// and deactivation is one-way. Describe reads persistence, so neither
+	// answer needs a worker.
+	running, derr := s.hasRunningExecution(r.Context(), wfID)
+	if derr != nil {
+		return mapStoreReadError(derr)
 	}
-	if active {
+	if running {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
 	}
-
-	res, err := s.reactivate(r.Context(), wfID)
-	if err != nil {
-		return err
-	}
-	// Changed=false means a concurrent enroll won the race; still a duplicate.
-	if !res.Changed {
-		return &apiError{http.StatusConflict, CodeAlreadyExists,
-			"customer is already enrolled and active"}
-	}
-
-	desc, derr := s.temporal.DescribeWorkflowExecution(r.Context(), wfID, "")
-	runID := ""
-	if derr == nil {
-		runID = desc.GetWorkflowExecutionInfo().GetExecution().GetRunId()
-	} else {
-		s.log.Warn("reactivated, but describe failed so the response carries no runId",
-			"workflowId", wfID, "error", derr)
-	}
-
-	writeJSON(w, s.log, http.StatusOK, EnrollResponse{
-		CustomerID: req.CustomerID,
-		WorkflowID: wfID,
-		RunID:      runID,
-	})
-	return nil
+	return &apiError{http.StatusConflict, CodeDeactivated,
+		"this customer has been deactivated; deactivation is permanent"}
 }
 
 // listCustomers serves the customer list straight out of the visibility store:
 // a ListWorkflow plus a CountWorkflow, no lookup table.
+//
+// Filtering is structured -- ?tier= ?status= ?name= become clauses here, see
+// buildListFilter. Every query this sends is one the server built from
+// validated values, so a rejection is our bug and surfaces as a logged 500.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
-	userQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+	params := r.URL.Query()
 
-	// Caught here only for the error message: wrapped in parentheses below,
-	// Temporal's clear "ORDER BY not supported" becomes a bare syntax error.
-	if hasOrderBy(userQuery) {
-		return badRequest("ORDER BY is not supported by Temporal's visibility store; " +
-			"filter to narrow the result set and sort client-side")
+	filter, err := buildListFilter(params.Get("tier"), params.Get("status"), params.Get("name"))
+	if err != nil {
+		return err
 	}
+	// Echoed in the response so the UI can show a query that pastes into the
+	// Temporal UI unchanged.
+	effectiveQuery := strings.Join(filter, " AND ")
 
-	query := scopedQuery(userQuery)
+	query := scopedQuery(effectiveQuery)
 
 	ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
 	defer cancel()
 
-	// Count first: it is the call most likely to reject a malformed user query.
+	// Count failures degrade to "of many" rather than failing a list we can
+	// still serve.
 	total := -1
 	if cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
 		Query: query,
 	}); err != nil {
-		if apiErr := mapListError(err, userQuery); apiErr != nil {
-			return apiErr
-		}
 		s.log.Warn("count failed; falling back to an unknown total",
 			"query", query, "error", err)
 	} else {
@@ -183,9 +170,8 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Query:    query,
 	})
 	if err != nil {
-		if apiErr := mapListError(err, userQuery); apiErr != nil {
-			return apiErr
-		}
+		// mapStoreReadError, not mapQueryError: no worker is involved, so a
+		// timeout here must not blame one.
 		return mapStoreReadError(err)
 	}
 
@@ -193,8 +179,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	for _, e := range resp.GetExecutions() {
 		v := decodeSearchAttributes(e.GetSearchAttributes())
 
-		// Membership is the RewardsActive attribute, not ExecutionStatus:
-		// soft-deactivated customers are still Running.
+		// Membership is the RewardsActive attribute, not ExecutionStatus. The
+		// completed final run keeps Active=false, which is what puts departed
+		// customers in this list until their history is reaped.
 		status := "deactivated"
 		switch {
 		case v.Active != nil && *v.Active:
@@ -225,42 +212,24 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Limit:    ListLimit,
 		Total:    total,
 		Complete: total >= 0 && total <= ListLimit,
-		Query:    userQuery,
+		Query:    effectiveQuery,
 	})
 	return nil
-}
-
-// hasOrderBy is a plain substring test -- good enough for a friendly error.
-func hasOrderBy(q string) bool {
-	return strings.Contains(strings.ToLower(q), "order by")
 }
 
 // scopedQuery constrains the list to our workflow type and to one execution
 // per customer. The visibility store holds one document per *run*, so a
 // customer who has continued-as-new twice appears three times; excluding
-// ContinuedAsNew leaves exactly the current generation.
+// ContinuedAsNew leaves exactly the current generation -- for a departed
+// customer, the Completed run their deactivation closed.
 func scopedQuery(userQuery string) string {
 	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
 		" AND ExecutionStatus != 'ContinuedAsNew'"
 	if userQuery == "" {
 		return scope
 	}
-	// Parenthesised so an OR in the caller's filter cannot escape the scope.
+	// Parenthesised so an OR in the filter cannot escape the scope.
 	return scope + " AND (" + userQuery + ")"
-}
-
-// mapListError turns a rejected visibility query into a 400 carrying
-// Temporal's own diagnostics, and returns nil for anything else.
-func mapListError(err error, userQuery string) error {
-	var invalid *serviceerror.InvalidArgument
-	if !errors.As(err, &invalid) {
-		return nil
-	}
-	if userQuery == "" {
-		// Our own scoping clause was rejected: our bug, not the caller's.
-		return &apiError{http.StatusInternalServerError, CodeInternal, "internal error"}
-	}
-	return &apiError{http.StatusBadRequest, CodeInvalidRequest, invalid.Error()}
 }
 
 // getCustomer reads current state via the getStatus Query. Search attributes
@@ -371,8 +340,10 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // EarnsPerRun adds, so without this retry the demo looks broken roughly every
 // third click. Retrying is safe because the lost Update never ran.
 //
-// A closed run with no successor means a force-closed execution, which is
-// refused; product deactivation rejects inside the handler instead.
+// Deactivation completes the workflow, so a closed run with no successor is
+// the ordinary shape of a departed customer, and adding points to one is
+// refused. Only an add that races the deactivate into its final run is
+// rejected inside the Update handler as ErrTypeDeactivated instead.
 func (s *Server) addPointsWithRolloverRetry(
 	ctx context.Context, wfID string, req AddPointsRequest,
 ) (rewards.AddPointsResult, error) {
@@ -400,7 +371,7 @@ func (s *Server) addPointsWithRolloverRetry(
 		if !running {
 			return zero, &apiError{
 				http.StatusConflict, CodeDeactivated,
-				"customer workflow is closed; re-enroll them before adding points",
+				"customer is deactivated; deactivation is permanent",
 			}
 		}
 
@@ -423,20 +394,6 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 	}
 	return desc.GetWorkflowExecutionInfo().GetStatus() ==
 		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
-}
-
-// isActive asks the workflow itself rather than visibility: enroll reactivates
-// on false, and that decision must not rest on a store that lags writes.
-func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
-	enc, err := s.queryStatus(ctx, wfID)
-	if err != nil {
-		return false, err
-	}
-	var st rewards.CustomerStatus
-	if err := enc.Get(&st); err != nil {
-		return false, err
-	}
-	return st.Active, nil
 }
 
 // listTimeout bounds the two visibility calls, which never involve a worker.
@@ -470,28 +427,11 @@ func sendUpdate[T any](
 	return res, err
 }
 
-// reactivate sends the reactivate Update.
-func (s *Server) reactivate(ctx context.Context, wfID string) (rewards.ReactivateResult, error) {
-	res, err := sendUpdate[rewards.ReactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
-		WorkflowID: wfID,
-		UpdateName: rewards.UpdateReactivate,
-	})
-	switch {
-	case err == nil:
-		return res, nil
-	case isClosedRun(err):
-		return rewards.ReactivateResult{}, &apiError{
-			http.StatusConflict, CodeDeactivated,
-			"customer workflow is closed; enroll them again to start fresh",
-		}
-	default:
-		return rewards.ReactivateResult{}, mapUpdateError(err)
-	}
-}
-
-// deactivate soft-leaves the customer via Update. The workflow stays Running
-// with Deactivated set so re-enrollment can restore the prior balance.
-// Idempotent: a repeat DELETE completes with Changed=false.
+// deactivate ends the customer's membership via Update. One-way: the workflow
+// records the leave and then completes; there is no reactivation.
+//
+// Idempotent: repeating DELETE against a departed customer finds their run
+// already closed, and closed is exactly what deactivation leaves behind.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -515,7 +455,7 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 				"the customer's workflow rolled over while applying this request; please retry",
 			}
 		default:
-			err = nil // force-closed: already as gone as deactivation gets
+			err = nil // already closed: as deactivated as it gets, DELETE is idempotent
 		}
 	}
 	if err != nil {

@@ -56,7 +56,6 @@ type updateResult struct {
 	completed error
 	value     rewards.AddPointsResult
 	left      rewards.DeactivateResult
-	rejoined  rewards.ReactivateResult
 }
 
 func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
@@ -73,8 +72,6 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 				r.value = res
 			case rewards.DeactivateResult:
 				r.left = res
-			case rewards.ReactivateResult:
-				r.rejoined = res
 			default:
 				s.Failf("unexpected update result", "got %T", v)
 			}
@@ -101,14 +98,6 @@ func (s *RewardsSuite) deactivateAt(at time.Duration, id string) *updateResult {
 	res := &updateResult{}
 	s.env.RegisterDelayedCallback(func() {
 		s.env.UpdateWorkflow(rewards.UpdateDeactivate, id, res.callback(s))
-	}, at)
-	return res
-}
-
-func (s *RewardsSuite) reactivateAt(at time.Duration, id string) *updateResult {
-	res := &updateResult{}
-	s.env.RegisterDelayedCallback(func() {
-		s.env.UpdateWorkflow(rewards.UpdateReactivate, id, res.callback(s))
 	}, at)
 	return res
 }
@@ -337,59 +326,36 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	s.Equal("Ada Lovelace", next.Name)
 }
 
-// --- Soft deactivation -------------------------------------------------------
+// --- Deactivation ------------------------------------------------------------
 
-// The full leave/rejoin round trip: soft-deactivate keeps the workflow running
-// with the balance intact; reactivate restores membership on top of it.
-func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
+// Deactivation is one-way: the leave commits, the run drains its handlers, and
+// the workflow completes normally with the balance frozen in final state.
+func (s *RewardsSuite) Test_Deactivate_CompletesTheWorkflow() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
-	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
-	rejoin := s.reactivateAt(4*time.Minute, "rejoin")
-	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
-	after := s.addPoints(6*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(7 * time.Minute)
+	// No stopAt: the deactivate itself is what ends the run.
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
 
-	_ = s.runUntilStopped(newState())
-
+	s.Require().True(s.env.IsWorkflowCompleted())
+	s.Require().NoError(deact.rejected)
 	s.Require().NoError(deact.completed)
-	s.True(deact.left.Changed)
-	s.False(statusAfterLeave.Active, "soft leave must mark inactive")
-	s.Equal(600, statusAfterLeave.Points, "points must survive deactivation")
+	s.True(deact.left.Changed, "the leave is a real transition")
 
-	s.Require().NoError(rejoin.completed)
-	s.True(rejoin.rejoined.Changed)
-	s.True(statusAfterRejoin.Active)
-	s.Equal(600, statusAfterRejoin.Points, "re-enrollment is not a reset")
+	err := s.env.GetWorkflowError()
+	var canErr *workflow.ContinueAsNewError
+	s.False(errors.As(err, &canErr), "deactivation must complete the run, not roll it")
+	s.NoError(err, "leaving the program is a normal completion, not a failure")
 
-	s.Require().NoError(after.completed, "a rejoined customer earns again")
-	s.Equal(700, after.value.Balance)
+	enc, qerr := s.env.QueryWorkflow(rewards.QueryGetStatus)
+	s.Require().NoError(qerr)
+	var status rewards.CustomerStatus
+	s.Require().NoError(enc.Get(&status))
+	s.False(status.Active)
+	s.Equal(600, status.Points, "the balance is frozen, not erased")
 }
 
-// Both membership Updates are idempotent and say so: the API and the audit
-// timeline both depend on Changed to tell a real transition from a repeat.
-func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
-	first := s.deactivateAt(time.Minute, "leave-1")
-	second := s.deactivateAt(2*time.Minute, "leave-2")
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().NoError(first.completed)
-	s.Require().NoError(second.completed)
-	s.True(first.left.Changed, "the first leave is a real transition")
-	s.False(second.left.Changed, "the second changed nothing")
-}
-
-func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
-	s.deactivateAt(time.Minute, "leave")
-	blocked := s.addPoints(2*time.Minute, "u1", rewards.AddPointsRequest{Amount: 50, Reason: "purchase"})
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().Error(blocked.completed)
-	var app *temporal.ApplicationError
-	s.Require().True(errors.As(blocked.completed, &app))
-	s.Equal(rewards.ErrTypeDeactivated, app.Type())
-}
+// The drain-window guards -- the Changed=false answer to a duplicate
+// deactivate and the ErrTypeDeactivated rejection of an addPoints that races
+// the leave -- are deliberately untested here: the test environment applies
+// Updates one at a time and silently drops anything sent after the run
+// completes, so a test would assert on callbacks that never ran.

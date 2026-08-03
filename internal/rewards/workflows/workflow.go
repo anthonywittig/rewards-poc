@@ -23,7 +23,8 @@ import (
 
 // CustomerRewardsWorkflow is one long-lived Entity Workflow per customer. Each
 // run accepts a handful of point-adds, then continues as new carrying state
-// forward. Leaving the program is soft (a flag); the workflow keeps running.
+// forward. Leaving the program is one-way: deactivate sets the flag and the
+// run completes instead of rolling, ending the customer's workflow for good.
 func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) error {
 	logger := workflow.GetLogger(ctx)
 
@@ -55,9 +56,12 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// accumulated state (the cap) belong in the handler.
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
+			// Only reachable in the window between the deactivate committing
+			// and this run completing -- afterwards the Update finds no open
+			// run at all, and the API answers for it.
 			if state.Deactivated {
 				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
-					"customer is deactivated; re-enroll them before adding points",
+					"customer is deactivated; deactivation is permanent",
 					rewards.ErrTypeDeactivated,
 					nil,
 				)
@@ -113,14 +117,19 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("register %s update: %w", rewards.UpdateAddPoints, err)
 	}
 
+	// Setting the flag is what ends the workflow: the main coroutine below is
+	// also awaiting it, and completes the run once every handler has drained.
 	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateDeactivate,
 		func(ctx workflow.Context) (rewards.DeactivateResult, error) {
+			// A concurrent duplicate in the drain window; a repeat DELETE after
+			// the run closed never reaches this handler at all.
 			if state.Deactivated {
 				return rewards.DeactivateResult{Changed: false}, nil
 			}
 
 			// Staged on a copy and committed only once the upsert is issued, so
-			// a failed Update really did change nothing.
+			// a failed Update really did change nothing -- and completion is
+			// not reversible.
 			next := state
 			next.Deactivated = true
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
@@ -137,29 +146,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
 	}
 
-	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateReactivate,
-		func(ctx workflow.Context) (rewards.ReactivateResult, error) {
-			// Not an error: the API turns Changed=false into a duplicate-enroll 409.
-			if !state.Deactivated {
-				return rewards.ReactivateResult{Changed: false, Status: rewards.StatusOf(&state)}, nil
-			}
-
-			next := state
-			next.Deactivated = false
-			if err := upsertSearchAttributes(ctx, &next); err != nil {
-				return rewards.ReactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
-			}
-			state = next
-
-			logger.Info("customer reactivated",
-				"customerId", state.CustomerID,
-				"points", state.Points,
-				"level", rewards.Level(state.Points))
-			return rewards.ReactivateResult{Changed: true, Status: rewards.StatusOf(&state)}, nil
-		}); err != nil {
-		return fmt.Errorf("register %s update: %w", rewards.UpdateReactivate, err)
-	}
-
 	logger.Info("customer enrolled",
 		"customerId", state.CustomerID,
 		"generation", state.Generation,
@@ -169,7 +155,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// Continue-as-new after a fixed number of adds, so history per run stays
 	// bounded. Production should roll on GetContinueAsNewSuggested() instead.
 	if err := workflow.Await(ctx, func() bool {
-		return earnsThisRun >= rewards.EarnsPerRun
+		return earnsThisRun >= rewards.EarnsPerRun || state.Deactivated
 	}); err != nil {
 		return err
 	}
@@ -179,6 +165,17 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return workflow.AllHandlersFinished(ctx)
 	}); err != nil {
 		return err
+	}
+
+	// Checked after the drain, so a deactivate that lands while a due roll
+	// waits for handlers still ends the workflow rather than rolling it into a
+	// run nothing can ever wake.
+	if state.Deactivated {
+		logger.Info("customer deactivated; completing the workflow",
+			"customerId", state.CustomerID,
+			"generation", state.Generation,
+			"points", state.Points)
+		return nil
 	}
 
 	state.Generation++

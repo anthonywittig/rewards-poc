@@ -57,17 +57,6 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 	}
 }
 
-// mapStartError turns a failed ExecuteWorkflow into an HTTP status. The 409
-// depends on WorkflowExecutionErrorWhenAlreadyStarted being set on the start.
-func mapStartError(err error) error {
-	var already *serviceerror.WorkflowExecutionAlreadyStarted
-	if errors.As(err, &already) {
-		return &apiError{http.StatusConflict, CodeAlreadyExists,
-			"customer is already enrolled and active"}
-	}
-	return classifyCommon(err)
-}
-
 // mapQueryError turns a failed QueryWorkflow or Describe into an HTTP status.
 func mapQueryError(err error) error {
 	return classifyCommon(err)
@@ -75,7 +64,7 @@ func mapQueryError(err error) error {
 
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status. Business
 // rejections become 422, except Deactivated, which gets a 409 with its own
-// code so clients can offer re-enrollment.
+// code so clients can say the membership has ended for good.
 func mapUpdateError(err error) error {
 	if appErr, ok := isBusinessRejection(err); ok {
 		if appErr.Type() == rewards.ErrTypeDeactivated {
@@ -86,9 +75,9 @@ func mapUpdateError(err error) error {
 	return classifyCommon(err)
 }
 
-// mapStoreReadError classifies failures for the endpoints that read stored
-// data (the list and the audit crawl). No worker is involved there, so a
-// timeout must not blame one.
+// mapStoreReadError classifies failures for reads of stored data (the list,
+// the audit crawl, Describe). No worker is involved there, so a timeout must
+// not blame one.
 func mapStoreReadError(err error) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,

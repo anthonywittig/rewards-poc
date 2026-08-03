@@ -6,12 +6,18 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
+	enumspb "go.temporal.io/api/enums/v1"
+	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
+	updatepb "go.temporal.io/api/update/v1"
+	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 // The golden files in testdata/ are `temporal workflow show -o json` output
@@ -19,7 +25,7 @@ import (
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then a soft leave
+//	run-deactivated.json   the last run: rolled into, 1 add, then a deactivate
 //	run-rejection.json     a run containing a handler rejection at the cap
 //
 // Testing against recorded server output rather than hand-built protos is
@@ -40,6 +46,52 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 		t.Fatalf("%s decoded to zero events", name)
 	}
 	return h.GetEvents()
+}
+
+// membershipUpdate builds the Accepted/Completed pair Temporal writes for a
+// deactivate Update. Built rather than captured because the cases that matter
+// are the variations -- a raced duplicate, a failed leave; it mirrors the real
+// captured pair at the end of run-deactivated.json.
+func membershipUpdate(
+	t *testing.T, firstEventID int64, name, updateID string, result any,
+) []*historypb.HistoryEvent {
+	t.Helper()
+	payload, err := converter.GetDefaultDataConverter().ToPayloads(result)
+	if err != nil {
+		t.Fatalf("encode %s result: %v", name, err)
+	}
+	at := timestamppb.New(time.Date(2026, 7, 31, 20, 39, 43, 0, time.UTC))
+
+	return []*historypb.HistoryEvent{
+		{
+			EventId:   firstEventID,
+			EventTime: at,
+			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED,
+			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateAcceptedEventAttributes{
+				WorkflowExecutionUpdateAcceptedEventAttributes: &historypb.WorkflowExecutionUpdateAcceptedEventAttributes{
+					ProtocolInstanceId: updateID,
+					AcceptedRequest: &updatepb.Request{
+						Meta:  &updatepb.Meta{UpdateId: updateID},
+						Input: &updatepb.Input{Name: name},
+					},
+				},
+			},
+		},
+		{
+			EventId:   firstEventID + 1,
+			EventTime: at,
+			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED,
+			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateCompletedEventAttributes{
+				WorkflowExecutionUpdateCompletedEventAttributes: &historypb.WorkflowExecutionUpdateCompletedEventAttributes{
+					Meta:            &updatepb.Meta{UpdateId: updateID},
+					AcceptedEventId: firstEventID,
+					Outcome: &updatepb.Outcome{
+						Value: &updatepb.Outcome_Success{Success: payload},
+					},
+				},
+			},
+		},
+	}
 }
 
 func kinds(entries []AuditEntry) []AuditEntryKind {
@@ -116,9 +168,43 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 	}
 }
 
-// Soft-deactivate is an Update, so it appears as an Accepted/Completed pair.
+// Deactivate is an Update, so it appears as an Accepted/Completed pair rather
+// than a CancelRequested event.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
 	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+}
+
+// A deactivate that changed nothing -- a duplicate that raced the real leave
+// into the same run -- still completes and still writes history. Rendering it
+// would show the customer leaving twice.
+func TestAuditRun_NoOpDeactivateDrawsNoRow(t *testing.T) {
+	events := loadEvents(t, "run-deactivated.json")
+	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
+		rewards.DeactivateResult{Changed: false})...)
+
+	run := auditRun("run-2", events)
+
+	requireKinds(t, run.entries,
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
+}
+
+// The failure path. The handler stages its change and commits only once the
+// search attribute upsert is issued, so a failed deactivate applied nothing --
+// and unlike a failed addPoints, there is no half-state to disclose.
+func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
+	events := loadEvents(t, "run-deactivated.json")
+	pair := membershipUpdate(t, 200, rewards.UpdateDeactivate, "leave-failed",
+		rewards.DeactivateResult{Changed: true})
+	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
+		Value: &updatepb.Outcome_Failure{
+			Failure: &failurepb.Failure{Message: "upsert search attributes: boom"},
+		},
+	}
+
+	run := auditRun("run-2", append(events, pair...))
 
 	requireKinds(t, run.entries,
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)

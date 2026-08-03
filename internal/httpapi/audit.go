@@ -208,30 +208,26 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
-			// Membership changes draw a row only for a real transition --
-			// both Updates are idempotent, so history also records no-ops.
-			if p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate {
+			// The departure. Only the real transition draws a row: a raced
+			// duplicate completes with Changed=false, and a *failed* leave
+			// applied nothing (the handler stages, then commits), so neither
+			// belongs on the timeline.
+			if p.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				kind, changed := AuditDeactivated, true
-				if p.name == rewards.UpdateDeactivate {
-					var res rewards.DeactivateResult
-					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
-						changed = res.Changed
-					}
-				} else {
-					kind = AuditReactivated
-					var res rewards.ReactivateResult
-					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
-						changed = res.Changed
-					}
+				// Undecodable payload defaults to "changed": a row history
+				// clearly contains is shown rather than dropped.
+				changed := true
+				var res rewards.DeactivateResult
+				if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+					changed = res.Changed
 				}
 				if !changed {
 					continue
 				}
 				out.entries = append(out.entries, AuditEntry{
-					Kind:       kind,
+					Kind:       AuditDeactivated,
 					At:         p.at,
 					Generation: out.startState.Generation,
 					RunID:      runID,

@@ -26,9 +26,10 @@ type AddPointsRequest struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// CustomerResponse is the customer detail payload. Status comes from workflow
-// state, not from whether the execution is Running: soft-deactivated
-// customers stay Running.
+// CustomerResponse is the customer detail payload. Status needs both reads to
+// agree: a customer is active only while the execution is Running and workflow
+// state says Active. Deactivation completes the workflow, so a departed
+// customer's run is closed.
 type CustomerResponse struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
@@ -96,7 +97,8 @@ type CustomerListResponse struct {
 	Total int `json:"total"`
 	// True when Items is everything that matched.
 	Complete bool `json:"complete"`
-	// The caller's filter, echoed back.
+	// The filter the server built from the structured params, pasteable into
+	// the Temporal UI as-is.
 	Query string `json:"query,omitempty"`
 }
 
@@ -110,7 +112,6 @@ const (
 	AuditPointsRejected   AuditEntryKind = "points_rejected"
 	AuditGenerationRolled AuditEntryKind = "generation_rolled"
 	AuditDeactivated      AuditEntryKind = "deactivated"
-	AuditReactivated      AuditEntryKind = "reactivated"
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
