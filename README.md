@@ -65,7 +65,8 @@ curl localhost:8081/api/customers/c-001/audit
 
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params and echoes it in the response, **pasteable into
-the Temporal UI unchanged**:
+the Temporal UI unchanged** — plus a `queryUrl` that opens the Temporal UI
+already filtered by it:
 
 ```sh
 curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
