@@ -48,20 +48,3 @@ func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	}
 	return appErr, true
 }
-
-// isClosedRun reports whether an Update failed because the run it targeted is
-// no longer open. The same NotFound arises from continue-as-new (retry against
-// the successor) and from a closed workflow (refuse); the caller disambiguates
-// by asking what is running now.
-func isClosedRun(err error) bool {
-	if err == nil {
-		return false
-	}
-	// A business rejection is the workflow answering, not the run disappearing.
-	var appErr *temporal.ApplicationError
-	if errors.As(err, &appErr) {
-		return false
-	}
-	var notFound *serviceerror.NotFound
-	return errors.As(err, &notFound)
-}

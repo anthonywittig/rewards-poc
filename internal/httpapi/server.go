@@ -316,23 +316,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		UpdateID:   req.RequestID,
 		Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
 	}, &res)
-	if err != nil && isClosedRun(err) {
-		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
-		switch {
-		case describeErr != nil:
-			return mapQueryError(describeErr)
-		case running:
-			return &apiError{
-				http.StatusConflict, CodeRolloverRace,
-				"the customer's workflow rolled over while applying this request; please retry",
-			}
-		default:
-			return &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer is deactivated; deactivation is permanent",
-			}
-		}
-	}
 	if err != nil {
 		return mapUpdateError(err)
 	}
@@ -384,9 +367,6 @@ func sendUpdate(
 
 // deactivate ends the customer's membership via Update. One-way: the workflow
 // records the leave and then completes; there is no reactivation.
-//
-// Idempotent: repeating DELETE against a departed customer finds their run
-// already closed, and closed is exactly what deactivation leaves behind.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -398,21 +378,6 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 		WorkflowID: wfID,
 		UpdateName: rewards.UpdateDeactivate,
 	}, nil)
-	if err != nil && isClosedRun(err) {
-		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
-		switch {
-		case describeErr != nil:
-			return mapQueryError(describeErr)
-		case running:
-			// A rollover consumed the Update; report rather than retry.
-			return &apiError{
-				http.StatusConflict, CodeRolloverRace,
-				"the customer's workflow rolled over while applying this request; please retry",
-			}
-		default:
-			err = nil // already closed: as deactivated as it gets, DELETE is idempotent
-		}
-	}
 	if err != nil {
 		return mapUpdateError(err)
 	}
