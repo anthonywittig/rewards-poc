@@ -39,8 +39,7 @@ func validateEnrollment(workflowID string, state *rewards.CustomerState) error {
 			rewards.ErrTypeInvalidEnrollment, nil)
 	}
 
-	// Run numbers are 1-based: the enrollment run is run 1. A zero here means
-	// the payload was built by something that never set it.
+	// A zero here means the payload was built by something that never set it.
 	if state.RunNumber < 1 {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("runNumber must be at least 1 (the enrollment run is run 1), got %d",

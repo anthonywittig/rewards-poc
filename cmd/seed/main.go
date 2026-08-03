@@ -18,7 +18,6 @@ import (
 	"os"
 )
 
-// customer is one seeded record.
 type customer struct {
 	id, name   string
 	adds       []int
