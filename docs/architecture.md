@@ -144,24 +144,3 @@ flowchart LR
     timeline["Timeline: enrolled · points_added ·\npoints_rejected · run_rolled · deactivated\n+ 'showing 3 of 21'"]
     crawl --> timeline
 ```
-
-## Enrollment and the identity rule
-
-Name → customer ID → workflow ID, deterministically at both steps
-([`identity.go`](../internal/rewards/identity.go)). The same name always lands
-on the same workflow, which is what lets every endpoint skip a lookup table —
-and what makes `POST /api/customers` treat a repeat name as a duplicate rather
-than a second customer. The workflow ID reuse policy
-`ALLOW_DUPLICATE_FAILED_ONLY` is what makes an ID's occupancy meaningful.
-
-```mermaid
-flowchart TD
-    name["name: 'Ada Lovelace'"] -->|slugify| cid["customerId: ada-lovelace"]
-    cid -->|"prefix 'customer-'"| wfid["workflowId: customer-ada-lovelace"]
-    wfid --> occupied{"ID occupied?"}
-
-    occupied -->|"no"| start["start CustomerRewardsWorkflow — 201"]
-    occupied -->|"Running — active customer"| dup["409 duplicate"]
-    occupied -->|"Completed — departed customer,\nID retired until retention reaps it"| gone["409 deactivated"]
-    occupied -->|"Failed — enrollment the workflow refused"| retry["retry allowed:\nnew run under the same ID"]
-```
