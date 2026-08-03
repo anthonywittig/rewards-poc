@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -164,23 +165,20 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 
 	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
 	for _, e := range resp.GetExecutions() {
-		v := decodeSearchAttributes(e.GetSearchAttributes())
+		v, err := decodeSearchAttributes(e.GetSearchAttributes())
+		if err != nil {
+			return err
+		}
 
-		// Membership is the RewardsActive attribute, not ExecutionStatus. The
-		// completed final run keeps Active=false, which is what puts departed
-		// customers in this list until their history is reaped.
+		// Membership is RewardsActive, not ExecutionStatus: the completed final
+		// run keeps Active=false until history is reaped.
 		status := "deactivated"
-		if v.Active != nil && *v.Active {
+		if v.Active {
 			status = "active"
 		}
 
-		id := v.CustomerID
-		if id == "" {
-			id = strings.TrimPrefix(e.GetExecution().GetWorkflowId(), rewards.WorkflowIDPrefix)
-		}
-
 		items = append(items, CustomerListItem{
-			CustomerID: id,
+			CustomerID: v.CustomerID,
 			Name:       v.Name,
 			Points:     v.Points,
 			Level:      v.Level,
@@ -316,23 +314,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		UpdateID:   req.RequestID,
 		Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
 	}, &res)
-	if err != nil && isClosedRun(err) {
-		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
-		switch {
-		case describeErr != nil:
-			return mapQueryError(describeErr)
-		case running:
-			return &apiError{
-				http.StatusConflict, CodeRolloverRace,
-				"the customer's workflow rolled over while applying this request; please retry",
-			}
-		default:
-			return &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer is deactivated; deactivation is permanent",
-			}
-		}
-	}
 	if err != nil {
 		return mapUpdateError(err)
 	}
@@ -384,9 +365,6 @@ func sendUpdate(
 
 // deactivate ends the customer's membership via Update. One-way: the workflow
 // records the leave and then completes; there is no reactivation.
-//
-// Idempotent: repeating DELETE against a departed customer finds their run
-// already closed, and closed is exactly what deactivation leaves behind.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -398,21 +376,6 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 		WorkflowID: wfID,
 		UpdateName: rewards.UpdateDeactivate,
 	}, nil)
-	if err != nil && isClosedRun(err) {
-		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
-		switch {
-		case describeErr != nil:
-			return mapQueryError(describeErr)
-		case running:
-			// A rollover consumed the Update; report rather than retry.
-			return &apiError{
-				http.StatusConflict, CodeRolloverRace,
-				"the customer's workflow rolled over while applying this request; please retry",
-			}
-		default:
-			err = nil // already closed: as deactivated as it gets, DELETE is idempotent
-		}
-	}
 	if err != nil {
 		return mapUpdateError(err)
 	}
@@ -429,49 +392,55 @@ type searchAttrValues struct {
 	Level      string
 	EnrolledAt time.Time
 	RunNumber  int
-	Active     *bool // nil when the attribute was never upserted
+	Active     bool
 }
 
-// decodeSearchAttributes is best-effort: a missing or undecodable attribute
-// leaves its field at the zero value rather than failing the request.
-func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
-	var out searchAttrValues
-	if sa == nil {
-		return out
-	}
+// decodeSearchAttributes requires every rewards attribute to be present and
+// decodable; a partial visibility row is a hard error, not a half-filled list row.
+func decodeSearchAttributes(sa *commonpb.SearchAttributes) (searchAttrValues, error) {
 	fields := sa.GetIndexedFields()
+	if fields == nil {
+		return searchAttrValues{}, fmt.Errorf("workflow search attributes missing")
+	}
 	dc := converter.GetDefaultDataConverter()
 
-	decodeStr := func(key string, dst *string) {
-		if p, ok := fields[key]; ok {
-			_ = dc.FromPayload(p, dst)
+	get := func(key string, dst any) error {
+		p, ok := fields[key]
+		if !ok {
+			return fmt.Errorf("search attribute %q missing", key)
 		}
-	}
-	decodeInt := func(key string, dst *int) {
-		if p, ok := fields[key]; ok {
-			var v int64
-			if err := dc.FromPayload(p, &v); err == nil {
-				*dst = int(v)
-			}
+		if err := dc.FromPayload(p, dst); err != nil {
+			return fmt.Errorf("search attribute %q: %w", key, err)
 		}
+		return nil
 	}
 
-	decodeStr(rewards.KeyCustomerID.GetName(), &out.CustomerID)
-	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
-	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
-	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
-	decodeInt(rewards.KeyRunNumber.GetName(), &out.RunNumber)
-
-	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
-		_ = dc.FromPayload(p, &out.EnrolledAt)
+	var out searchAttrValues
+	var points, runNumber int64
+	if err := get(rewards.KeyCustomerID.GetName(), &out.CustomerID); err != nil {
+		return searchAttrValues{}, err
 	}
-	if p, ok := fields[rewards.KeyActive.GetName()]; ok {
-		var active bool
-		if err := dc.FromPayload(p, &active); err == nil {
-			out.Active = &active
-		}
+	if err := get(rewards.KeyCustomerName.GetName(), &out.Name); err != nil {
+		return searchAttrValues{}, err
 	}
-	return out
+	if err := get(rewards.KeyRewardsLevel.GetName(), &out.Level); err != nil {
+		return searchAttrValues{}, err
+	}
+	if err := get(rewards.KeyRewardsPoints.GetName(), &points); err != nil {
+		return searchAttrValues{}, err
+	}
+	if err := get(rewards.KeyRunNumber.GetName(), &runNumber); err != nil {
+		return searchAttrValues{}, err
+	}
+	if err := get(rewards.KeyEnrolledAt.GetName(), &out.EnrolledAt); err != nil {
+		return searchAttrValues{}, err
+	}
+	if err := get(rewards.KeyActive.GetName(), &out.Active); err != nil {
+		return searchAttrValues{}, err
+	}
+	out.Points = int(points)
+	out.RunNumber = int(runNumber)
+	return out, nil
 }
 
 func decodeJSON(r *http.Request, dst any) error {

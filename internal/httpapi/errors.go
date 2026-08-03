@@ -19,7 +19,6 @@ const (
 	CodeNotFound          = "not_found"
 	CodeRejected          = "rejected"
 	CodeWorkerUnavailable = "worker_unavailable"
-	CodeRolloverRace      = "rollover_race"
 	CodeDeactivated       = "deactivated"
 	CodeInternal          = "internal"
 )
