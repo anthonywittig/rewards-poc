@@ -173,8 +173,7 @@ func TestFromEvents_ContinuedRun(t *testing.T) {
 	}
 }
 
-// Deactivate is an Update, so it appears as an Accepted/Completed pair rather
-// than a CancelRequested event.
+// Deactivate is an Update: history has Accepted/Completed for the leave.
 func TestFromEvents_DeactivatedRun(t *testing.T) {
 	run := audit.FromEvents("run-2", loadEvents(t, "run-deactivated.json"))
 
