@@ -10,7 +10,6 @@ type (
 	RunAudit       = runAudit
 	HistoryFetcher = historyFetcher
 	APIError       = apiError
-	TemporalUI     = temporalUI
 )
 
 var (
@@ -19,7 +18,6 @@ var (
 	Assemble        = assemble
 	NameTerms       = nameTerms
 	BuildListFilter = buildListFilter
-	NewTemporalUI   = newTemporalUI
 )
 
 // MakeRunAudit builds the runAudit values Assemble is tested against.
@@ -37,8 +35,3 @@ func (r runAudit) EarnEvents() int                   { return r.earnEvents }
 
 func (e *apiError) Status() int  { return e.status }
 func (e *apiError) Code() string { return e.code }
-
-func (t temporalUI) HistoryURL(workflowID, runID string) string {
-	return t.historyURL(workflowID, runID)
-}
-func (t temporalUI) QueryURL(query string) string { return t.queryURL(query) }
