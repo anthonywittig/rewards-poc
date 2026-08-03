@@ -77,9 +77,11 @@ func Assemble(customerID string, runs []Run, truncated bool) Timeline {
 	return out
 }
 
-// pendingUpdate is an accepted Update waiting for its outcome: the request
-// carries the amount and reason, the outcome the new balance or the rejection.
-type pendingUpdate struct {
+// acceptedUpdate is the payload from a WorkflowExecutionUpdateAccepted event,
+// keyed by that accepted event id until the matching UpdateCompleted arrives.
+// Request fields (amount, reason) come from Accepted; outcome (balance or
+// failure) from Completed.
+type acceptedUpdate struct {
 	name     string
 	updateID string
 	amount   int
@@ -91,7 +93,8 @@ type pendingUpdate struct {
 // FromEvents maps one run's events to audit entries.
 func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 	out := Run{RunID: runID}
-	pending := map[int64]pendingUpdate{}
+	// Keyed by Accepted event id (same id UpdateCompleted.AcceptedEventId).
+	accepted := map[int64]acceptedUpdate{}
 	dc := converter.GetDefaultDataConverter()
 
 	for _, e := range events {
@@ -117,7 +120,7 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED:
 			a := e.GetWorkflowExecutionUpdateAcceptedEventAttributes()
 			req := a.GetAcceptedRequest()
-			p := pendingUpdate{
+			u := acceptedUpdate{
 				name:     req.GetInput().GetName(),
 				updateID: req.GetMeta().GetUpdateId(),
 				at:       e.GetEventTime().AsTime(),
@@ -125,47 +128,47 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 			}
 			var args rewards.AddPointsRequest
 			if decodeArg(dc, req.GetInput().GetArgs(), &args) {
-				p.amount, p.reason = args.Amount, args.Reason
+				u.amount, u.reason = args.Amount, args.Reason
 			}
-			pending[e.GetEventId()] = p
+			accepted[e.GetEventId()] = u
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
 			// Always paired: an Update accepted in run N completes in run N.
-			p := pending[a.GetAcceptedEventId()]
+			u := accepted[a.GetAcceptedEventId()]
 
 			// The departure. A *failed* leave applied nothing (the handler
 			// stages, then commits), so only a success draws a row.
-			if p.name == rewards.UpdateDeactivate {
+			if u.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
 				out.Entries = append(out.Entries, Entry{
 					Kind:      KindDeactivated,
-					At:        p.at,
+					At:        u.at,
 					RunNumber: out.StartState.RunNumber,
 					RunID:     runID,
-					EventID:   p.eventID,
-					RequestID: p.updateID,
+					EventID:   u.eventID,
+					RequestID: u.updateID,
 				})
 				continue
 			}
 
 			// A future Update handler must not render as a point-add.
-			if p.name != rewards.UpdateAddPoints {
+			if u.name != rewards.UpdateAddPoints {
 				continue
 			}
 
 			// Anchored to the accepted event: that is when the customer made
 			// the request.
 			entry := Entry{
-				At:        p.at,
+				At:        u.at,
 				RunNumber: out.StartState.RunNumber,
 				RunID:     runID,
-				EventID:   p.eventID,
-				Amount:    p.amount,
-				Reason:    p.reason,
-				RequestID: p.updateID,
+				EventID:   u.eventID,
+				Amount:    u.amount,
+				Reason:    u.reason,
+				RequestID: u.updateID,
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
