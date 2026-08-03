@@ -26,7 +26,10 @@ import (
 // itself as Truncated, which in this contract means "history was deleted".
 const auditTimeout = 30 * time.Second
 
-// getAudit walks the customer's run chain newest-first and renders it newest-first.
+// getAudit walks the customer's run chain newest-first -- back through
+// ContinuedExecutionRunId until it reaches enrollment or runs out of history --
+// and renders what it found, newest-first. No worker is involved, so the audit
+// page keeps working with `make worker` stopped.
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -48,23 +51,13 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 		return mapStoreReadError(err)
 	}
 
-	resp, err := s.crawl(ctx, wfID, id, desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
+	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID),
+		desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
 	if err != nil {
-		return err
+		return mapStoreReadError(err)
 	}
-	writeJSON(w, s.log, http.StatusOK, resp)
+	writeJSON(w, s.log, http.StatusOK, assemble(id, runs, truncated))
 	return nil
-}
-
-// crawl walks back through ContinuedExecutionRunId until it reaches enrollment
-// or runs out of history, then renders what it found. No worker is involved, so
-// the audit page keeps working with `make worker` stopped.
-func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (AuditResponse, error) {
-	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID), runID)
-	if err != nil {
-		return AuditResponse{}, mapStoreReadError(err)
-	}
-	return assemble(customerID, runs, truncated), nil
 }
 
 // historyFetcher reads one run's events. A function rather than a method so the
@@ -109,7 +102,9 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 		Truncated:  truncated,
 		RunsWalked: len(runs),
 	}
-	if truncated && len(runs) > 0 {
+	// walkRuns only reports truncation after reading at least one run, so the
+	// index is safe.
+	if truncated {
 		out.OldestRunID = runs[len(runs)-1].runID
 	}
 
@@ -234,7 +229,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			// API retries across continue-as-new -- and this run's events were
 			// read in full, in order, so the accepted event has been seen.
 			p := pending[a.GetAcceptedEventId()]
-			delete(pending, a.GetAcceptedEventId())
 
 			// The departure. Idempotent against a concurrent duplicate, so
 			// history can hold a completion that changed nothing -- only the
@@ -277,8 +271,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 
 			// Anchored to the *accepted* event, not this one: it is when the
-			// customer made the request, and it exists even for an update whose
-			// outcome never landed.
+			// customer made the request.
 			entry := AuditEntry{
 				At:         p.at,
 				Generation: out.startState.Generation,
