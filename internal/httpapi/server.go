@@ -45,7 +45,7 @@ func (s *Server) Routes() http.Handler {
 }
 
 // handle adapts a handler that returns an error into an http.HandlerFunc, so
-// every failure goes through one mapping path and none can leak a raw error.
+// every failure goes through one mapping path.
 func (s *Server) handle(fn func(http.ResponseWriter, *http.Request) error) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := fn(w, r); err != nil {
@@ -59,18 +59,16 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// enroll starts a customer's workflow.
-//
-// The ID is the caller's only when they send one. A signup from the UI does
-// not: it sends a name, and the server derives the ID from it
-// (rewards.CustomerIDForName).
+// enroll starts a customer's workflow. Without a customerId in the body, the
+// server derives one from the name; the same name always derives the same ID,
+// so a second signup under one name is a duplicate, never a second customer.
 //
 // Deactivation is one-way and completes the workflow, so an occupied ID means
-// one of two things: a Running execution (an active customer -- duplicate
-// signup) or a Completed one (a departed customer, whose ID stays retired
-// until their history is reaped). ALLOW_DUPLICATE_FAILED_ONLY is what retires
-// it: a *failed* execution -- an enrollment payload the workflow refused --
-// may be retried, a completed one may not be restarted.
+// either a Running execution (an active customer -- duplicate signup) or a
+// Completed one (a departed customer, whose ID stays retired until their
+// history is reaped). ALLOW_DUPLICATE_FAILED_ONLY is what retires it: a
+// *failed* execution -- an enrollment payload the workflow refused -- may be
+// retried, a completed one may not be restarted.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -81,17 +79,11 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	if strings.ContainsAny(req.CustomerID, " \t\n/") {
 		return badRequest("customerId must not contain whitespace or slashes")
 	}
-	// Required whether or not the ID is derived from it. A caller who sends
-	// their own customerId would otherwise start a nameless customer, which the
-	// workflow refuses anyway -- as a failed execution rather than this 400.
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		return badRequest("name is required")
 	}
 	if req.CustomerID == "" {
-		// Derived, not minted: the same name derives the same ID every time, so
-		// a second enrollment under one name falls into the duplicate/rejoin
-		// path below rather than starting a second customer.
 		req.CustomerID = rewards.CustomerIDForName(req.Name)
 		if req.CustomerID == "" {
 			return badRequest("name must contain letters or digits; " +
@@ -124,7 +116,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		return classifyCommon(err)
 	}
 
-	// ID is taken. Running → a duplicate signup. Closed → the customer left,
+	// ID is taken. Running -> a duplicate signup. Closed -> the customer left,
 	// and deactivation is one-way. Describe reads persistence, so neither
 	// answer needs a worker.
 	running, derr := s.hasRunningExecution(r.Context(), wfID)
@@ -139,13 +131,12 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		"this customer has been deactivated; deactivation is permanent"}
 }
 
-// listCustomers serves the customer list straight out of the visibility store.
-// Capped at ListLimit with no pagination -- see the note on ListLimit.
+// listCustomers serves the customer list straight out of the visibility store:
+// a ListWorkflow plus a CountWorkflow, no lookup table.
 //
 // Filtering is structured -- ?tier= ?status= ?name= become clauses here, see
-// buildListFilter. There is no raw-query param: every query this sends is one
-// the server built from validated values, so a rejection is our bug and
-// surfaces as a logged 500 rather than a 400 blaming the caller.
+// buildListFilter. Every query this sends is one the server built from
+// validated values, so a rejection is our bug and surfaces as a logged 500.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	params := r.URL.Query()
 
@@ -153,8 +144,8 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// The filter, echoed in the response so the UI can show the query it can
-	// paste into the Temporal UI without building it itself.
+	// Echoed in the response so the UI can show a query that pastes into the
+	// Temporal UI unchanged.
 	effectiveQuery := strings.Join(filter, " AND ")
 
 	query := scopedQuery(effectiveQuery)
@@ -163,7 +154,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	defer cancel()
 
 	// Count failures degrade to "of many" rather than failing a list we can
-	// still serve; a query rejection fails the ListWorkflow below anyway.
+	// still serve.
 	total := -1
 	if cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
 		Query: query,
@@ -179,9 +170,8 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Query:    query,
 	})
 	if err != nil {
-		// Not mapQueryError: this read never involves a worker, so a timeout
-		// here must not send anyone to go and restart one. An InvalidArgument
-		// -- the server built a bad query -- falls through to a logged 500.
+		// mapStoreReadError, not mapQueryError: no worker is involved, so a
+		// timeout here must not blame one.
 		return mapStoreReadError(err)
 	}
 
@@ -189,11 +179,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	for _, e := range resp.GetExecutions() {
 		v := decodeSearchAttributes(e.GetSearchAttributes())
 
-		// Membership is RewardsActive, not ExecutionStatus. Deactivate fails
-		// the Update if the upsert cannot land, so Active=false is present for
-		// every leave -- and the completed final run keeps it, which is what
-		// puts departed customers in this list until their history is reaped.
-		// Nil Active + Running is only the pre-deploy case.
+		// Membership is the RewardsActive attribute, not ExecutionStatus. The
+		// completed final run keeps Active=false, which is what puts departed
+		// customers in this list until their history is reaped.
 		status := "deactivated"
 		switch {
 		case v.Active != nil && *v.Active:
@@ -202,8 +190,6 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 			status = "active"
 		}
 
-		// Derive from the workflow ID if CustomerId is somehow absent -- the ID
-		// is the real identity and is always present.
 		id := v.CustomerID
 		if id == "" {
 			id = strings.TrimPrefix(e.GetExecution().GetWorkflowId(), rewards.WorkflowIDPrefix)
@@ -231,39 +217,24 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// scopedQuery constrains the list to our workflow type, and to one execution
-// per customer.
-//
-// The second half is not an optimisation, it is a correctness fix. **The
-// visibility store holds one document per Run, not per Workflow ID**, so a
-// customer who has continued-as-new twice appears three times, each with the
-// balance its generation froze:
-//
-//	WorkflowId = 'customer-dup-check'                          Total: 3
-//	WorkflowId = 'customer-dup-check' AND status != CAN        Total: 1
-//
-// Excluding ContinuedAsNew leaves exactly the current generation -- for a
-// departed customer, the Completed run their deactivation closed. Membership is
-// RewardsActive, not ExecutionStatus.
+// scopedQuery constrains the list to our workflow type and to one execution
+// per customer. The visibility store holds one document per *run*, so a
+// customer who has continued-as-new twice appears three times; excluding
+// ContinuedAsNew leaves exactly the current generation -- for a departed
+// customer, the Completed run their deactivation closed.
 func scopedQuery(userQuery string) string {
 	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
 		" AND ExecutionStatus != 'ContinuedAsNew'"
 	if userQuery == "" {
 		return scope
 	}
-	// Parenthesised so an OR in the caller's filter cannot escape the scope --
-	// "a OR b" ANDed bare would bind as "(scope AND a) OR b".
+	// Parenthesised so an OR in the filter cannot escape the scope.
 	return scope + " AND (" + userQuery + ")"
 }
 
-// getCustomer reads current state via Query. Status is active only when the
-// execution is still Running and workflow state says Active.
-//
-// The Query is the only source, including for customers who have left and for
-// closed executions. Search attributes would answer most of this without a
-// worker, but they lag writes and carry no LifetimeEarnEvents, so a page built
-// from them looks ordinary while being stale and short a field. Better to fail
-// and say which worker is missing.
+// getCustomer reads current state via the getStatus Query. Search attributes
+// could answer most of this without a worker, but they lag writes; the Query
+// reads the workflow's own state.
 func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -310,15 +281,9 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// queryStatus runs getStatus, retrying once on an unrecognised failure.
-//
-// Querying immediately after a point-add that triggered continue-as-new returns
-// "Workflow task is not scheduled yet.": the successor run exists but has
-// nothing to dispatch the query to. Transient, and reachable by ordinary use at
-// three adds per run.
-//
-// Only *unclassified* errors retry: a NotFound will not improve, and a
-// worker-unavailable is already a clean 503 whose latency should not be doubled.
+// queryStatus runs getStatus, retrying once on an unrecognised failure --
+// typically "Workflow task is not scheduled yet." right after a
+// continue-as-new, when the successor run has nothing to dispatch the query to.
 func (s *Server) queryStatus(ctx context.Context, wfID string) (converter.EncodedValue, error) {
 	const attempts = 2
 
@@ -340,8 +305,6 @@ func (s *Server) queryStatus(ctx context.Context, wfID string) (converter.Encode
 		if attempt < attempts {
 			s.log.Info("unrecognised query failure, retrying once",
 				"workflowId", wfID, "error", err)
-			// Long enough for a successor run's first workflow task to be
-			// scheduled, short enough to stay inside a page load.
 			time.Sleep(250 * time.Millisecond)
 		}
 	}
@@ -373,23 +336,14 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 }
 
 // addPointsWithRolloverRetry sends the addPoints Update, and sends it again if
-// the run it addressed closed because of continue-as-new.
+// the run it addressed closed because of continue-as-new. Rollover fires every
+// EarnsPerRun adds, so without this retry the demo looks broken roughly every
+// third click. Retrying is safe because the lost Update never ran.
 //
-// Not defensive coding for a rare event: continue-as-new fires every 3 adds, so
-// without a transparent retry the demo looks broken roughly every third click.
-// Only addPoints carries the retry -- rollover is driven by point-adds, so it
-// is the one verb that routinely races itself; a membership Update losing its
-// run needs concurrent adds in the same instant, which this single-user demo
-// never produces.
-//
-// Deactivation completes the workflow, so a closed-run NotFound with no
-// successor is the ordinary shape of a departed customer, and adding points to
-// one is refused. Only an add that races the deactivate into its final run is
+// Deactivation completes the workflow, so a closed run with no successor is
+// the ordinary shape of a departed customer, and adding points to one is
+// refused. Only an add that races the deactivate into its final run is
 // rejected inside the Update handler as ErrTypeDeactivated instead.
-//
-// Retrying is safe because the update did not run -- the run it targeted closed
-// before applying it. That safety comes from the abort semantics, not from the
-// UpdateID, which buys nothing across a run boundary.
 func (s *Server) addPointsWithRolloverRetry(
 	ctx context.Context, wfID string, req AddPointsRequest,
 ) (rewards.AddPointsResult, error) {
@@ -410,7 +364,6 @@ func (s *Server) addPointsWithRolloverRetry(
 			return zero, mapUpdateError(err)
 		}
 
-		// The run is gone. Is a successor running, or is the customer?
 		running, describeErr := s.hasRunningExecution(ctx, wfID)
 		if describeErr != nil {
 			return zero, mapQueryError(describeErr)
@@ -426,8 +379,7 @@ func (s *Server) addPointsWithRolloverRetry(
 			"workflowId", wfID, "attempt", attempt)
 	}
 
-	// Two rollovers inside one request. An honest 409 beats a retry loop that
-	// could chase a busy customer indefinitely.
+	// Two rollovers inside one request: report honestly rather than chase.
 	s.log.Warn("update lost its run twice in a row", "workflowId", wfID)
 	return zero, &apiError{
 		http.StatusConflict, CodeRolloverRace,
@@ -435,9 +387,6 @@ func (s *Server) addPointsWithRolloverRetry(
 	}
 }
 
-// hasRunningExecution reports whether the workflow ID currently has an open
-// execution. Used only to disambiguate a closed run, so its cost lands on the
-// error path alone.
 func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, error) {
 	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
 	if err != nil {
@@ -447,31 +396,17 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
 }
 
-// listTimeout bounds the two visibility calls. Generous next to queryTimeout
-// because these read Elasticsearch rather than replaying a workflow, so no
-// worker is involved and the no-poller failure mode does not apply.
+// listTimeout bounds the two visibility calls, which never involve a worker.
 const listTimeout = 10 * time.Second
 
-// queryTimeout bounds how long a Query may wait for a worker.
-//
-// Deliberately aggressive. With the worker stopped, an unanswered Query comes
-// back as any of three things depending on how long ago the worker died:
-//
-//	FailedPrecondition  "no poller seen for task queue recently"   ~9s
-//	DeadlineExceeded    "context deadline exceeded"                ~9s
-//	gRPC RST_STREAM     "stream terminated ... error code: CANCEL" ~2.5s
-//
-// The third is a bare transport error that would become a 500. Bounding at 2s
-// means our own deadline usually wins, collapsing all three into one predictable
-// 503; a healthy query answers in ~30ms.
+// queryTimeout bounds how long a Query may wait for a worker. Deliberately
+// aggressive: with the worker stopped the SDK fails in several shapes on its
+// own schedule, and bounding at 2s collapses them into one predictable 503. A
+// healthy query answers in ~30ms.
 const queryTimeout = 2 * time.Second
 
-// updateTimeout bounds how long an Update may wait for a worker.
-//
-// Load-bearing, not belt-and-braces: a Query with no poller fails fast, but an
-// Update with WaitForStage: Completed simply *blocks* -- observed still waiting
-// after two minutes. Without this bound `POST /points` hangs for as long as the
-// client holds the connection.
+// updateTimeout bounds how long an Update may wait for a worker. Load-bearing:
+// an Update with no worker does not fail, it blocks indefinitely.
 const updateTimeout = 15 * time.Second
 
 // sendUpdate sends one Update, waits for it to complete, and decodes its result.
@@ -496,11 +431,7 @@ func sendUpdate[T any](
 // records the leave and then completes; there is no reactivation.
 //
 // Idempotent: repeating DELETE against a departed customer finds their run
-// already closed, and closed is exactly what deactivation leaves behind. That
-// closed-run NotFound takes one Describe to resolve: a customer who never
-// enrolled is the Describe's own 404, and anything else closed -- the
-// deactivation that already landed, or an ops-level terminate -- leaves DELETE
-// nothing to do.
+// already closed, and closed is exactly what deactivation leaves behind.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -518,9 +449,7 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 		case describeErr != nil:
 			return mapQueryError(describeErr)
 		case running:
-			// The targeted run closed with a successor already going: a rollover
-			// consumed it, which takes concurrent point-adds this single-user
-			// demo never produces. Reported honestly rather than retried.
+			// A rollover consumed the Update; report rather than retry.
 			return &apiError{
 				http.StatusConflict, CodeRolloverRace,
 				"the customer's workflow rolled over while applying this request; please retry",
@@ -538,10 +467,6 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 }
 
 // searchAttrValues is a customer's search attributes, decoded.
-//
-// The decoding quirk that bites: CustomerName is registered as Text, and the
-// SDK's constructor for Text is NewSearchAttributeKeyString -- so "String" here
-// means the server's "Text".
 type searchAttrValues struct {
 	CustomerID string
 	Name       string
@@ -552,8 +477,8 @@ type searchAttrValues struct {
 	Active     *bool // nil when the attribute was never upserted
 }
 
-// decodeSearchAttributes is best-effort by design: a missing or undecodable
-// attribute leaves its field at the zero value rather than failing the request.
+// decodeSearchAttributes is best-effort: a missing or undecodable attribute
+// leaves its field at the zero value rather than failing the request.
 func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 	var out searchAttrValues
 	if sa == nil {
@@ -607,7 +532,7 @@ func decodeJSON(r *http.Request, dst any) error {
 	return nil
 }
 
-// ReadTimeout etc. are set by the caller; exposed so cmd/api stays declarative.
+// DefaultTimeouts is applied by cmd/api when building the http.Server.
 var DefaultTimeouts = struct{ Read, Write, Idle time.Duration }{
 	Read: 10 * time.Second, Write: 30 * time.Second, Idle: 60 * time.Second,
 }

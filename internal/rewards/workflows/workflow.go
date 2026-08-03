@@ -1,22 +1,15 @@
-// Package workflows holds the customer rewards Entity Workflow and its Update
-// and Query handlers.
+// Package workflows holds the customer rewards Entity Workflow: one long-lived
+// workflow per customer, driven by Updates and read by a Query. The rules it
+// applies live in the parent internal/rewards package as plain functions.
 //
-// Everything here runs under the workflow's determinism constraints. The rules
-// it applies live in the parent internal/rewards package as plain functions, so
-// this package is orchestration: what to await, when to roll.
+// There are deliberately no Activities: points, tier, membership and the audit
+// trail are all workflow state and Event History, which is the point of the
+// POC. A real system's side effects (say, notifying on promotion) belong in
+// Activities the workflow schedules by name.
 //
-// There are deliberately no Activities. Nothing in the rewards program needs a
-// side effect -- points, tier, membership and the audit trail are all workflow
-// state and Event History, which is rather the point of the POC. A real system
-// would notify customers on promotion; that is an Activity, and it belongs in a
-// sibling internal/rewards/activities package the workflow schedules *by name*,
-// never by import -- the Go SDK has no workflow sandbox, so a package boundary
-// is the only structural guard keeping provider SDKs out of workflow code.
-//
-// Entity workflows outlive deploys, so in production any edit that changes the
-// commands a run emits must be gated with workflow.GetVersion or it wedges
-// every execution already in flight. This POC skips that machinery and resets
-// executions instead; the replay test is what would catch such an edit.
+// Entity workflows outlive deploys. In production, any edit that changes the
+// commands a run emits must be gated with workflow.GetVersion; this POC resets
+// executions instead, and the replay test is what catches such an edit.
 package workflows
 
 import (
@@ -28,11 +21,10 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// CustomerRewardsWorkflow is one long-lived Entity Workflow per customer.
-//
-// Each run accepts a handful of point-adds, then continues as new.
-// Product leave is one-way: deactivate sets the flag and the run completes
-// instead of rolling, ending the customer's workflow for good.
+// CustomerRewardsWorkflow is one long-lived Entity Workflow per customer. Each
+// run accepts a handful of point-adds, then continues as new carrying state
+// forward. Leaving the program is one-way: deactivate sets the flag and the
+// run completes instead of rolling, ending the customer's workflow for good.
 func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) error {
 	logger := workflow.GetLogger(ctx)
 
@@ -58,6 +50,10 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return fmt.Errorf("register %s query: %w", rewards.QueryGetStatus, err)
 	}
 
+	// The validator/handler split: a validator rejection writes nothing to
+	// Event History, a handler rejection is recorded. Facts about the request
+	// (amount, reason) belong in the validator; facts about the customer's
+	// accumulated state (the cap) belong in the handler.
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
 			// Only reachable in the window between the deactivate committing
@@ -132,13 +128,8 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			}
 
 			// Staged on a copy and committed only once the upsert is issued, so
-			// a failed Update really did change nothing. Mutating first would
-			// complete the whole workflow while the caller was told the leave
-			// failed -- and completion is not reversible.
-			//
-			// The upsert has to be part of that: if visibility cannot record
-			// Active=false the list falls back to ExecutionStatus=Running and
-			// shows them active, so a leave visibility never saw is not a leave.
+			// a failed Update really did change nothing -- and completion is
+			// not reversible.
 			next := state
 			next.Deactivated = true
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
@@ -161,8 +152,8 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		"points", state.Points,
 		"deactivated", state.Deactivated)
 
-	// Production should roll on GetContinueAsNewSuggested() rather than a fixed
-	// earn count.
+	// Continue-as-new after a fixed number of adds, so history per run stays
+	// bounded. Production should roll on GetContinueAsNewSuggested() instead.
 	if err := workflow.Await(ctx, func() bool {
 		return earnsThisRun >= rewards.EarnsPerRun || state.Deactivated
 	}); err != nil {
