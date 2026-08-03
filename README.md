@@ -39,6 +39,19 @@ and `make help` lists everything.
 
 ## The HTTP API
 
+Seven routes, and each one is a thin wrapper over a single Temporal
+primitive — which is the point:
+
+| Route | Temporal call behind it |
+|---|---|
+| `POST /api/customers` | start the customer's workflow |
+| `GET /api/customers` | `ListWorkflow` + `CountWorkflow` over search attributes |
+| `GET /api/customers/{id}` | the `getStatus` Query (plus a Describe for run status) |
+| `POST /api/customers/{id}/points` | the `addPoints` Update |
+| `DELETE /api/customers/{id}` | the `deactivate` Update |
+| `GET /api/customers/{id}/audit` | an Event History crawl across the run chain |
+| `GET /healthz` | nothing — liveness only |
+
 ```sh
 # No customerId: the server derives one from the name (here, ada-lovelace).
 # The same name derives the same ID, so a second signup is a 409.
@@ -50,9 +63,9 @@ curl -XDELETE localhost:8081/api/customers/c-001
 curl localhost:8081/api/customers/c-001/audit
 ```
 
-`GET /api/customers` is a `ListWorkflow` plus a `CountWorkflow` — no lookup
-table. The server builds the visibility query from structured params and
-echoes it in the response, **pasteable into the Temporal UI unchanged**:
+The list is filterable — no lookup table. The server builds the visibility
+query from structured params and echoes it in the response, **pasteable into
+the Temporal UI unchanged**:
 
 ```sh
 curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
