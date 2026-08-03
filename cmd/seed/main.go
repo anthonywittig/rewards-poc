@@ -25,32 +25,46 @@ type customer struct {
 	why        string
 }
 
-// One customer per interesting state; six in total so the unfiltered list
-// also demonstrates the "Showing 5 of 6" cap.
+// Six customers per tier (basic < 500, gold < 1000, platinum >= 1000), which
+// fills the tier filter and pushes the unfiltered list past the list cap.
 var seedSet = []customer{
+	// --- basic ----------------------------------------------------------------
 	{
 		id: "newbie", name: "Newly Enrolled",
 		why: "enrolled, never earned -- the empty-timeline case",
-	},
-	{
-		id: "katherine", name: "Katherine Johnson", adds: []int{95},
-		why: "basic tier",
-	},
-	{
-		id: "ada", name: "Ada Lovelace",
-		adds: []int{120, 200, 180, 60, 40, 20, 20},
-		why:  "gold, a few runs in -- shows continue-as-new",
-	},
-	{
-		id: "grace", name: "Grace Hopper",
-		adds: []int{500, 500, 250, 250},
-		why:  "platinum: top tier, nextTierAt is 0",
 	},
 	{
 		id: "departed", name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
 		why: "deactivated: workflow completed, balance frozen for good",
 	},
+	{id: "katherine", name: "Katherine Johnson", adds: []int{95}, why: "basic"},
+	{id: "alan", name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},
+	{id: "margaret", name: "Margaret Hamilton", adds: []int{200, 150}, why: "basic"},
+	{id: "donald", name: "Donald Knuth", adds: []int{400, 50}, why: "basic"},
+
+	// --- gold -----------------------------------------------------------------
+	{
+		id: "ada", name: "Ada Lovelace",
+		adds: []int{120, 200, 180, 60, 40, 20, 20},
+		why:  "gold, a few runs in -- shows continue-as-new",
+	},
+	{id: "barbara", name: "Barbara Liskov", adds: []int{400, 320}, why: "gold"},
+	{id: "dennis", name: "Dennis Ritchie", adds: []int{500}, why: "gold"},
+	{id: "ken", name: "Ken Thompson", adds: []int{300, 300}, why: "gold"},
+	{id: "bjarne", name: "Bjarne Stroustrup", adds: []int{700}, why: "gold"},
+	{id: "guido", name: "Guido van Rossum", adds: []int{500, 400}, why: "gold"},
+
+	// --- platinum -------------------------------------------------------------
+	{
+		id: "grace", name: "Grace Hopper",
+		adds: []int{500, 500, 250, 250},
+		why:  "platinum: top tier, nextTierAt is 0",
+	},
+	{id: "edsger", name: "Edsger Dijkstra", adds: []int{600, 600}, why: "platinum"},
+	{id: "john", name: "John von Neumann", adds: []int{1000}, why: "platinum"},
+	{id: "claude", name: "Claude Shannon", adds: []int{800, 800}, why: "platinum"},
+	{id: "linus", name: "Linus Torvalds", adds: []int{1000, 500}, why: "platinum"},
 	{
 		id: "capped", name: "Max Capacity",
 		adds: []int{1000, 1000, 1000, 1000, 960},
