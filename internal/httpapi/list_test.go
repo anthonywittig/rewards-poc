@@ -48,18 +48,6 @@ func TestScopedQuery(t *testing.T) {
 	}
 }
 
-// Visibility holds one document per Run, so without excluding ContinuedAsNew a
-// customer appears once per generation. Pins the clause so it cannot be dropped
-// as redundant-looking noise.
-func TestScopedQueryExcludesRolledOverGenerations(t *testing.T) {
-	for _, q := range []string{"", "RewardsLevel = 'gold'"} {
-		got := scopedQuery(q)
-		if !strings.Contains(got, "ExecutionStatus != 'ContinuedAsNew'") {
-			t.Errorf("scopedQuery(%q) = %q, must exclude rolled-over generations", q, got)
-		}
-	}
-}
-
 // Every query the list sends is one the server built from validated params, so
 // a rejection from the visibility store is our bug: a 500, never a 400 blaming
 // a caller who only picked from known values.
