@@ -45,10 +45,9 @@ type Entry struct {
 type Run struct {
 	RunID         string
 	PreviousRunID string
-	// The CustomerState this run was started with.
-	StartState rewards.CustomerState
-	Entries    []Entry
-	EarnEvents int
+	StartState    rewards.CustomerState
+	Entries       []Entry
+	EarnEvents    int
 }
 
 // Timeline is the assembled audit for a customer. Truncation is part of the

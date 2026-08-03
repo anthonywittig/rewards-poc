@@ -41,7 +41,6 @@ if temporal operator namespace describe \
       | grep -o '"workflowExecutionRetentionTtl"[^,}]*' || true)"
   [ -n "${current}" ] && log "retention now: ${current}"
 else
-  # Anything under 1h fails: it is Temporal's enforced minimum.
   temporal operator namespace create \
     --address "${TEMPORAL_ADDRESS}" \
     --namespace "${NAMESPACE}" \
