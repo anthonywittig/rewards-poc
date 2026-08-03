@@ -21,16 +21,13 @@ const (
 )
 
 // Entry is one row of the customer's history, reconstructed by crawling Event
-// History. Which fields are set depends on Kind. points_rejected only covers
-// handler-side rejections: a validator rejection wrote nothing to history, so
-// it is invisible here by design.
+// History. Which fields are set depends on Kind.
 type Entry struct {
 	Kind      Kind      `json:"kind"`
 	At        time.Time `json:"at"`
 	RunNumber int       `json:"runNumber"`
 	RunID     string    `json:"runId"`
-	// History event ID, unique only within its run.
-	EventID int64 `json:"eventId"`
+	EventID   int64     `json:"eventId"`
 
 	Amount    int    `json:"amount,omitempty"`
 	Reason    string `json:"reason,omitempty"`
@@ -50,10 +47,7 @@ type Run struct {
 	EarnEvents    int
 }
 
-// Timeline is the assembled audit for a customer. Truncation is part of the
-// contract, not an error: closed runs are reaped after retention, so the crawl
-// walks back until history is gone and then says so, quantified -- the UI
-// renders "Showing 7 of 23 point events."
+// Timeline is the assembled audit for a customer.
 type Timeline struct {
 	CustomerID string `json:"customerId"`
 	// The execution the entries were crawled from.

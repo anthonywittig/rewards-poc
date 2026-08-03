@@ -26,31 +26,27 @@ type AddPointsRequest struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// CustomerResponse is the customer detail payload. Status needs both reads to
-// agree: a customer is active only while the execution is Running and workflow
-// state says Active. Deactivation completes the workflow, so a departed
-// customer's run is closed.
+// CustomerResponse is the customer detail payload.
 type CustomerResponse struct {
+	// Identity
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
+
+	// Balance and tier (level + climb brackets are derived from Points)
 	Points     int    `json:"points"`
 	Level      string `json:"level"`
+	PrevTierAt int    `json:"prevTierAt"`
+	NextTierAt int    `json:"nextTierAt"`
 
-	// The current segment of the tier climb, bracketed: the rung the customer
-	// is standing on (0 for basic) and the one they are climbing to (0 at the
-	// top). Derived by the worker from the same ladder as Level, so the UI can
-	// draw progress without holding a copy of the thresholds.
-	PrevTierAt int `json:"prevTierAt"`
-	NextTierAt int `json:"nextTierAt"`
-
+	// Membership lifecycle
 	EnrolledAt time.Time `json:"enrolledAt"`
+	Status     string    `json:"status"` // "active" | "deactivated"
 
+	// Execution bookkeeping
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	RunNumber          int `json:"runNumber"`
-
-	Status string `json:"status"` // "active" | "deactivated"
-	// Advisory: assembled from a separate read than the fields above, so it
-	// may lag by one run right after a continue-as-new.
+	// Advisory: from DescribeWorkflowExecution, not the Query; may lag by one
+	// run right after a continue-as-new.
 	RunID string `json:"runId"`
 }
 
@@ -70,14 +66,21 @@ type EnrollResponse struct {
 // CustomerListItem is one row of GET /api/customers. Narrower than
 // CustomerResponse because the list is served from search attributes only.
 type CustomerListItem struct {
-	CustomerID string    `json:"customerId"`
-	Name       string    `json:"name"`
-	Points     int       `json:"points"`
-	Level      string    `json:"level"`
+	// Identity
+	CustomerID string `json:"customerId"`
+	Name       string `json:"name"`
+
+	// Balance (no tier brackets on the list)
+	Points int    `json:"points"`
+	Level  string `json:"level"`
+
+	// Membership lifecycle
 	EnrolledAt time.Time `json:"enrolledAt"`
-	RunNumber  int       `json:"runNumber"`
 	Status     string    `json:"status"` // "active" | "deactivated"
-	RunID      string    `json:"runId"`
+
+	// Execution bookkeeping
+	RunNumber int    `json:"runNumber"`
+	RunID     string `json:"runId"`
 }
 
 // ListLimit caps GET /api/customers. There is no pagination: Temporal rejects
@@ -87,16 +90,11 @@ type CustomerListItem struct {
 const ListLimit = 5
 
 // CustomerListResponse is the body of GET /api/customers.
-//
-// Properties the UI has to respect, all consequences of the visibility store:
-// results come back in an unspecified order (rendered as-is), which rows you
-// get is unspecified, and results lag writes by a few hundred ms.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
 	// The cap that was applied, echoed so the UI does not hardcode it.
 	Limit int `json:"limit"`
-	// Customers matching Query, ignoring the limit. -1 when the count could
-	// not be obtained.
+	// Customers matching Query, ignoring the limit.
 	Total int `json:"total"`
 	// True when Items is everything that matched.
 	Complete bool `json:"complete"`

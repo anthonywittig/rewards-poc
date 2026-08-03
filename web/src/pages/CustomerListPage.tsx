@@ -98,9 +98,7 @@ export function CustomerListPage() {
 
   const incompleteNotice = useMemo(() => {
     if (!shown || shown.complete) return null
-    const of =
-      shown.total < 0 ? 'many' : String(shown.total)
-    return `Showing ${shown.items.length} of ${of} — filter to find additional results`
+    return `Showing ${shown.items.length} of ${shown.total} — filter to find additional results`
   }, [shown])
 
   return (

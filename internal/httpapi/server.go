@@ -62,16 +62,11 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// enroll starts a customer's workflow. Without a customerId in the body, the
-// server derives one from the name; the same name always derives the same ID,
-// so a second signup under one name is a duplicate, never a second customer.
+// enroll starts a customer's workflow.
 //
 // Deactivation is one-way and completes the workflow, so an occupied ID means
-// either a Running execution (an active customer -- duplicate signup) or a
-// Completed one (a departed customer, whose ID stays retired until their
-// history is reaped). ALLOW_DUPLICATE_FAILED_ONLY is what retires it: a
-// *failed* execution -- an enrollment payload the workflow refused -- may be
-// retried, a completed one may not be restarted.
+// either a Running execution (an active customer) or a Completed one (a
+// departed customer, whose ID stays retired until their history is reaped).
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -104,7 +99,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
-		RunNumber:  1, // run numbers are 1-based; the enrollment run is run 1
+		RunNumber:  1,
 	})
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
@@ -137,10 +132,6 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 
 // listCustomers serves the customer list straight out of the visibility store:
 // a ListWorkflow plus a CountWorkflow, no lookup table.
-//
-// Filtering is structured -- ?tier= ?status= ?name= become clauses here, see
-// buildListFilter. Every query this sends is one the server built from
-// validated values, so a rejection is our bug and surfaces as a logged 500.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	params := r.URL.Query()
 
@@ -148,8 +139,6 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return err
 	}
-	// Echoed in the response so the UI can show a query that pastes into the
-	// Temporal UI unchanged.
 	effectiveQuery := strings.Join(filter, " AND ")
 
 	query := scopedQuery(effectiveQuery)
@@ -157,25 +146,19 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
 	defer cancel()
 
-	// Count failures degrade to "of many" rather than failing a list we can
-	// still serve.
-	total := -1
-	if cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
+	cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
 		Query: query,
-	}); err != nil {
-		s.log.Warn("count failed; falling back to an unknown total",
-			"query", query, "error", err)
-	} else {
-		total = int(cnt.GetCount())
+	})
+	if err != nil {
+		return mapStoreReadError(err)
 	}
+	total := int(cnt.GetCount())
 
 	resp, err := s.temporal.ListWorkflow(ctx, &workflowservice.ListWorkflowExecutionsRequest{
 		PageSize: int32(ListLimit),
 		Query:    query,
 	})
 	if err != nil {
-		// mapStoreReadError, not mapQueryError: no worker is involved, so a
-		// timeout here must not blame one.
 		return mapStoreReadError(err)
 	}
 
@@ -215,7 +198,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Items:    items,
 		Limit:    ListLimit,
 		Total:    total,
-		Complete: total >= 0 && total <= ListLimit,
+		Complete: total <= ListLimit,
 		Query:    effectiveQuery,
 		QueryURL: s.ui.queryURL(effectiveQuery),
 	})
