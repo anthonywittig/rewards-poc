@@ -13,9 +13,8 @@ import (
 )
 
 func main() {
-	// The compose service sets this to temporal:7233. The default is the
-	// host-published port, for running the worker directly with `go run`, where
-	// "temporal" does not resolve.
+	// The compose service sets this to temporal:7233; the default is the
+	// host-published port, for running the worker directly with `go run`.
 	address := env("TEMPORAL_HOSTPORT", "localhost:7233")
 	namespace := env("TEMPORAL_NAMESPACE", "rewards")
 

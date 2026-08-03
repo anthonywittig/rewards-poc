@@ -2,12 +2,9 @@
 # Wipe every customer workflow in the namespace, running ones included.
 #
 # A dev affordance for when executions recorded by yesterday's workflow code
-# cannot be replayed by today's.
+# cannot be replayed by today's:
 #
 #   make reset
-#
-# NOT what `make reap` does: reap deletes only *closed* executions and spares
-# running ones. reset deletes everything, terminating running executions first.
 #
 # Deletion is asynchronous; expect ~30s before executions stop resolving.
 
@@ -36,4 +33,3 @@ temporal --address "${ADDR}" workflow delete \
 
 echo
 echo "Delete requested. Propagation takes ~30s."
-echo "Repopulate with: make seed"

@@ -1,7 +1,6 @@
 # The build context for deploy/Dockerfile is the repo root, so this is an
-# allowlist rather than a deny list: everything is excluded, then the four paths
-# the binaries actually need are added back. node_modules and .git are therefore
-# never uploaded to the daemon.
+# allowlist: everything is excluded, then the paths the worker binary needs
+# are added back. .git therefore never reaches the daemon.
 *
 !go.mod
 !go.sum

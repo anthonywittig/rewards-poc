@@ -13,13 +13,12 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 )
 
-// Replay test.
+// Replay test: the deploy rehearsal.
 //
-// A customer's workflow *will* outlive a deploy. A worker picking up a task for
-// a run started weeks ago replays that run's recorded history through today's
-// code and requires the commands to match event for event; if they do not, the
-// workflow task fails and retries forever and the customer is silently wedged.
-// Replaying a recorded history here is the rehearsal of that deploy.
+// A customer's workflow *will* outlive a deploy. A worker picking up a task
+// for a run started weeks ago replays that run's recorded history through
+// today's code and requires the commands to match event for event; if they do
+// not, the workflow task fails forever and the customer is silently wedged.
 
 func loadHistory(t *testing.T, name string) *historypb.History {
 	t.Helper()
@@ -36,12 +35,10 @@ func loadHistory(t *testing.T, name string) *historypb.History {
 
 // replay runs one history through the current workflow code.
 //
-// OriginalExecution is not optional here, whatever the SDK's doc comment says.
-// Without it the replayer invents the workflow ID "ReplayId", ValidateEnrollment
-// refuses a payload whose customerId does not match, and the workflow returns
-// before emitting a single command -- which surfaces as a nondeterminism error
-// naming whatever event came first. If this test starts failing that way after a
-// "simplification" of this helper, this is why.
+// OriginalExecution is not optional here: without it the replayer invents the
+// workflow ID "ReplayId", ValidateEnrollment refuses the payload, and the
+// workflow returns before emitting a single command -- surfacing as a
+// nondeterminism error naming whatever event came first.
 func replay(t *testing.T, h *historypb.History) error {
 	t.Helper()
 	r := worker.NewWorkflowReplayer()

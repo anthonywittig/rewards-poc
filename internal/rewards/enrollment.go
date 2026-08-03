@@ -8,12 +8,11 @@ import (
 )
 
 // ValidateEnrollment checks a starting payload against the workflow ID it was
-// started under. The workflow is the only integrity boundary in this design, so
-// this is where a bad enrollment is refused.
+// started under. The workflow is the only integrity boundary in this design --
+// there is no database schema behind it -- so this is where a bad enrollment
+// is refused.
 //
-// Every error is non-retryable: a payload that does not match its own workflow
-// ID will not match on the next attempt either, and retrying would turn a
-// rejected enrollment into a run that fails forever.
+// Every error is non-retryable: a bad payload will not become good on retry.
 func ValidateEnrollment(workflowID string, state *CustomerState) error {
 	if !strings.HasPrefix(workflowID, WorkflowIDPrefix) {
 		return temporal.NewNonRetryableApplicationError(
@@ -26,34 +25,20 @@ func ValidateEnrollment(workflowID string, state *CustomerState) error {
 				state.CustomerID, workflowID, want),
 			ErrTypeInvalidEnrollment, nil)
 	}
-	// Checked here rather than trusted from the API, for the same reason the
-	// counters below are: this is the only integrity boundary, and a customer
-	// with no name is one the list and the detail page both render as a blank
-	// row. The API 400s first, so reaching this means something started a
-	// workflow without going through it.
 	if strings.TrimSpace(state.Name) == "" {
 		return temporal.NewNonRetryableApplicationError(
 			"name is required", ErrTypeInvalidEnrollment, nil)
 	}
-
-	if state.Points < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
+	if state.Points < 0 || state.Generation < 0 {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("counters must be non-negative (points=%d lifetimeEarnEvents=%d generation=%d)",
-				state.Points, state.LifetimeEarnEvents, state.Generation),
+			fmt.Sprintf("counters must be non-negative (points=%d generation=%d)",
+				state.Points, state.Generation),
 			ErrTypeInvalidEnrollment, nil)
 	}
-
 	if state.Points > PointsCap {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("points (%d) exceeds the cap of %d", state.Points, PointsCap),
 			ErrTypeInvalidEnrollment, nil)
 	}
-
-	if state.LifetimeEarnEvents == 0 && state.Points > 0 {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("points is %d but lifetimeEarnEvents is 0", state.Points),
-			ErrTypeInvalidEnrollment, nil)
-	}
-
 	return nil
 }

@@ -1,16 +1,9 @@
-# Postgres (persistence) + Elasticsearch (visibility) + Temporal + the workflow
-# worker + the HTTP API + the Vite dev server, plus the seed one-shot behind a
-# profile. Nothing runs on the host.
+# The whole stack: Postgres (persistence) + Elasticsearch (visibility) +
+# Temporal + its UI + the workflow worker. Nothing runs on the host.
 #
-# Run via the Makefile at the repo root, which points here.
-#
-# Every value is written here literally rather than interpolated from an env
-# file. Nothing about this stack varies per checkout, so the indirection only
-# meant reading two files to learn one port. Change a port or an image by
-# editing it here; the Makefile repeats the three published ports it prints and
-# curls, and says so.
-#
-# The project name is what names the containers, network and volumes.
+# Run via the Makefile at the repo root. Every value is written here literally
+# rather than interpolated from an env file: nothing about this stack varies
+# per checkout, so change a port or an image by editing it here.
 
 name: rewards-poc
 
@@ -37,9 +30,9 @@ services:
       # 256m is the practical heap floor.
       - ES_JAVA_OPTS=-Xms256m -Xmx256m
       - xpack.security.enabled=false
-      # Absolute-byte watermarks, not percentages: with ES's default 85/90/95%
-      # thresholds a nearly-full laptop disk flips indices read-only and
-      # visibility silently stops updating while workflows keep running fine.
+      # Absolute-byte watermarks: with ES's default percentage thresholds a
+      # nearly-full laptop disk flips indices read-only and visibility
+      # silently stops updating while workflows keep running fine.
       - cluster.routing.allocation.disk.threshold_enabled=true
       - cluster.routing.allocation.disk.watermark.low=512mb
       - cluster.routing.allocation.disk.watermark.high=256mb
@@ -49,15 +42,14 @@ services:
       - xpack.monitoring.collection.enabled=false
       - xpack.watcher.enabled=false
       - indices.memory.index_buffer_size=5%
-    # Roughly 3x the heap, because of JVM overhead and Lucene off-heap use.
+    # Roughly 3x the heap, for JVM overhead and Lucene off-heap use.
     mem_limit: 768m
     ports:
       - "9200:9200"
     volumes:
       - es-data:/usr/share/elasticsearch/data
     healthcheck:
-      # yellow is fine: single node, and Temporal's index template sets
-      # number_of_replicas 0 with auto_expand_replicas 0-2.
+      # yellow is fine on a single node.
       test: ["CMD-SHELL", "curl -sf 'http://localhost:9200/_cluster/health?wait_for_status=yellow&timeout=5s' >/dev/null"]
       interval: 10s
       timeout: 10s
@@ -83,32 +75,26 @@ services:
       - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/dev.yaml
       # Ours is created by bootstrap.sh with the retention we want.
       - SKIP_DEFAULT_NAMESPACE_CREATION=true
-      # The three below are not read by the server. They are here for the
-      # scripts mounted at the bottom of this service and for `temporal` CLI
-      # commands run with `compose exec`, which all inherit this environment --
-      # so the namespace is defined once, here, rather than passed in by every
-      # caller. TEMPORAL_NAMESPACE is the name the CLI itself reads.
+      # The three below are not read by the server; they are for the scripts
+      # mounted below and for `temporal` CLI commands run with `compose exec`,
+      # which inherit this environment -- so the namespace is defined once,
+      # here. TEMPORAL_NAMESPACE is the name the CLI itself reads.
       - TEMPORAL_NAMESPACE=rewards
-      # 1h is Temporal's enforced minimum for namespace retention, not a
-      # preference. `make reap` forces truncation instead of waiting it out.
+      # 1h is Temporal's enforced minimum for namespace retention.
       - TEMPORAL_RETENTION=1h
       # Visibility index refresh, applied to the index by bootstrap.sh.
-      # Temporal's index template does not set it, so the index would otherwise
-      # inherit Elasticsearch's 1s default.
       - ES_REFRESH_INTERVAL=200ms
     ports:
       - "7233:7233"
     volumes:
       - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
       # The server image ships the `temporal` CLI, so operational scripts run
-      # here via `exec`. It has bash, curl and grep but no python3 or jq.
+      # here via `exec`.
       - ./bootstrap.sh:/bootstrap.sh:ro
-      - ./reap.sh:/reap.sh:ro
       - ./reset.sh:/reset.sh:ro
-      - ./inspect:/inspect:ro
     healthcheck:
       # The frontend binds the container's own IP, not 127.0.0.1, so localhost
-      # is refused here. `hostname -i` gives the address it actually listens on.
+      # is refused here.
       test: ["CMD-SHELL", "temporal operator cluster health --address $$(hostname -i):7233 >/dev/null 2>&1"]
       interval: 10s
       timeout: 10s
@@ -132,12 +118,10 @@ services:
   # change; `make logs SVC=worker` tails it.
   worker:
     build:
-      # The repo root: the binary needs cmd/ and internal/, which are above this
-      # file. deploy/Dockerfile has the details.
+      # The repo root: the binary needs cmd/ and internal/, which are above
+      # this file.
       context: ..
       dockerfile: deploy/Dockerfile
-      args:
-        CMD: worker
     depends_on:
       temporal:
         condition: service_healthy
@@ -146,122 +130,10 @@ services:
       # published 7233 a host-side `go run` would use.
       - TEMPORAL_HOSTPORT=temporal:7233
       - TEMPORAL_NAMESPACE=rewards
-    # Survives a Temporal restart and a laptop reboot; `make worker-stop` still
-    # holds it down, because `compose stop` is an explicit stop.
+    # Survives a Temporal restart; `make worker-stop` still holds it down,
+    # because `compose stop` is an explicit stop.
     restart: unless-stopped
-
-  # Same shape as the worker, one image apart. `make api` rebuilds and restarts
-  # it; `make logs SVC=api` tails it.
-  api:
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-      args:
-        CMD: api
-    depends_on:
-      temporal:
-        condition: service_healthy
-    environment:
-      - TEMPORAL_HOSTPORT=temporal:7233
-      - TEMPORAL_NAMESPACE=rewards
-      # What the process binds, which is separate from what the port mapping
-      # below publishes: republishing on a different host port does not change
-      # this.
-      - API_PORT=8081
-    ports:
-      - "8081:8081"
-    healthcheck:
-      # /healthz answers from the process alone -- no Temporal call -- so this
-      # reports the server being up, which is what `make up --wait` needs before
-      # `make seed` can work. Alpine has busybox wget, not curl.
-      #
-      # 127.0.0.1, not localhost: see the web service's healthcheck. Go happens
-      # to listen on both address families, so this one was never at risk, but
-      # there is no reason for the two to differ.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8081/healthz >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-    restart: unless-stopped
-
-  # The Vite dev server, with web/ bind-mounted so hot reload still works --
-  # editing the UI and watching it update is the whole point of running a dev
-  # server rather than serving a build. node_modules lives in a volume instead of
-  # the bind mount, so a host-side install and the container's never overwrite
-  # each other.
-  #
-  # No image of its own: it is node plus the repo's own source, and npm install
-  # on start is what a dev server does anyway.
-  web:
-    image: node:22-alpine
-    working_dir: /app
-    depends_on:
-      api:
-        condition: service_healthy
-    environment:
-      # Unlike the api, the container binds the published port rather than a
-      # fixed one: Vite's hot-reload socket connects back to the port the browser
-      # sees, so container and host have to agree on it.
-      - WEB_PORT=5173
-      # Vite proxies /api itself, from inside the network, so this is a service
-      # name. The Temporal UI link is followed by the browser, so that one is the
-      # published port.
-      - VITE_API_PROXY_TARGET=http://api:8081
-      - VITE_TEMPORAL_UI_URL=http://localhost:8080
-      # The UI's routes are namespaced, so a run deep-link needs this to match
-      # the namespace the api and worker are pointed at.
-      - VITE_TEMPORAL_NAMESPACE=rewards
-    volumes:
-      - ../web:/app
-      - web-node-modules:/app/node_modules
-    ports:
-      - "5173:5173"
-    # Install and serve, nothing else. This typechecked first, the way the old
-    # host-side `make web` did, but in a container that runs on every start,
-    # delays serving by a full production build, and turns a type error into a
-    # restart loop rather than a message. `make web-check` runs it on demand.
-    #
-    # --host because Vite binds loopback by default, which from outside the
-    # container is nothing at all.
-    command: sh -c "npm install && npm run dev -- --host 0.0.0.0"
-    healthcheck:
-      # 127.0.0.1, not localhost. `--host 0.0.0.0` binds IPv4 only, and Docker
-      # writes an "::1 localhost" line into /etc/hosts on hosts with IPv6
-      # enabled, so a resolver that answers ::1 first sends the probe to a port
-      # nothing is listening on. The server is up, the check fails forever, and
-      # compose reports the container as never becoming healthy.
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:5173/ >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 20
-      # A first start installs a few hundred packages over a bind mount, which is
-      # minutes on Docker Desktop. Generous, so `make ps` reads "starting" rather
-      # than "unhealthy" while that happens.
-      start_period: 180s
-    restart: unless-stopped
-
-  # A one-shot, not a service: the `tools` profile keeps `compose up` from
-  # starting it, and `make seed` runs it with `run --rm`. depends_on carries the
-  # ordering, so seeding waits for a healthy API whether it is `make up` running
-  # it or `make seed` on its own.
-  seed:
-    profiles: [tools]
-    build:
-      context: ..
-      dockerfile: deploy/Dockerfile
-      args:
-        CMD: seed
-    depends_on:
-      api:
-        condition: service_healthy
-    environment:
-      # In-network, so the container port rather than the published one.
-      - API_BASE=http://api:8081
-      # Only for the "where to look next" line it prints at the end, which has
-      # to name an address the reader can actually open.
-      - API_PUBLIC_BASE=http://localhost:8081
 
 volumes:
   postgres-data:
   es-data:
-  web-node-modules:

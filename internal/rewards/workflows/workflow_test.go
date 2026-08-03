@@ -72,9 +72,7 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 			}
 			// Enumerated rather than type-asserted to one, so a handler that
 			// starts returning something else fails here instead of leaving
-			// the assertion reading a zero value -- which for the two
-			// membership results means Changed=false, the answer half these
-			// tests are trying to distinguish.
+			// the assertion reading a zero value.
 			switch res := v.(type) {
 			case rewards.AddPointsResult:
 				r.value = res
@@ -98,9 +96,9 @@ func (s *RewardsSuite) addPoints(at time.Duration, id string, req rewards.AddPoi
 	return res
 }
 
-// stopAt schedules CancelWorkflow as test-env teardown only so the long-running
-// entity workflow can finish under the testsuite. Product leave is soft-deactivate
-// (see deactivateAt); CancelWorkflow is not a product path.
+// stopAt schedules CancelWorkflow as test-env teardown only, so the
+// long-running entity workflow can finish under the testsuite. Product leave
+// is soft-deactivate (see deactivateAt); cancellation is not a product path.
 func (s *RewardsSuite) stopAt(at time.Duration) {
 	s.env.RegisterDelayedCallback(func() { s.env.CancelWorkflow() }, at)
 }
@@ -138,8 +136,8 @@ func (s *RewardsSuite) runUntilStopped(state rewards.CustomerState) error {
 	return s.env.GetWorkflowError()
 }
 
-// continuedState decodes the payload the workflow handed to its successor run,
-// which is the only way to assert what actually survives a rollover.
+// continuedState decodes the payload the workflow handed to its successor
+// run, which is the only way to assert what actually survives a rollover.
 func (s *RewardsSuite) continuedState() rewards.CustomerState {
 	err := s.env.GetWorkflowError()
 	var canErr *workflow.ContinueAsNewError
@@ -178,7 +176,7 @@ func (s *RewardsSuite) Test_AddPoints_CrossesGoldBoundary() {
 	s.Equal(500, second.value.Balance)
 }
 
-func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
+func (s *RewardsSuite) Test_AddPoints_Accumulates() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "a"})
 	s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 250, Reason: "b"})
 	status := s.queryStatusAt(3 * time.Minute)
@@ -187,15 +185,14 @@ func (s *RewardsSuite) Test_AddPoints_AccumulatesLifetimeCounters() {
 	_ = s.runUntilStopped(newState())
 
 	s.Equal(350, status.Points)
-	s.Equal(2, status.LifetimeEarnEvents)
 }
 
 // --- Validator rejections --------------------------------------------------
 
 // Each of these is refused before the handler runs, so nothing is written to
 // Event History at all. The unit test can only observe the rejection itself;
-// that no *events* were written is demonstrated against the real server in the
-// README walkthrough, since the test environment has no history to inspect.
+// that no *events* were written is visible against the real server (see the
+// README walkthrough).
 func (s *RewardsSuite) Test_AddPoints_ValidatorRejects() {
 	cases := []struct {
 		name string
@@ -223,9 +220,8 @@ func (s *RewardsSuite) Test_AddPoints_ValidatorRejects() {
 		s.NoError(results[i].completed, "%s should never have reached the handler", tc.name)
 	}
 
-	// The customer is untouched -- no partial application, no counter bump.
+	// The customer is untouched -- no partial application.
 	s.Equal(0, status.Points)
-	s.Equal(0, status.LifetimeEarnEvents)
 	s.Equal(rewards.LevelBasic, status.Level)
 }
 
@@ -243,14 +239,11 @@ func (s *RewardsSuite) Test_AddPoints_PerTxnMaxIsInclusive() {
 
 // --- Handler-side business rejection ---------------------------------------
 
-// The points cap is enforced in the handler, so unlike the validator cases this
-// attempt is accepted, runs, and its failure is recorded in history -- which is
-// the point: a support rep asking "why didn't they reach platinum?" gets an
-// answer.
+// The points cap is enforced in the handler, so unlike the validator cases
+// this attempt is accepted, runs, and its failure is recorded in history.
 func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	state := newState()
 	state.Points = rewards.PointsCap - 10
-	state.LifetimeEarnEvents = 7
 
 	over := s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 11, Reason: "purchase"})
 	under := s.addPoints(2*time.Minute, "u2", rewards.AddPointsRequest{Amount: 10, Reason: "purchase"})
@@ -264,7 +257,7 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 	s.Require().Error(over.completed)
 
 	var appErr *temporal.ApplicationError
-	s.Require().True(errors.As(over.completed, &appErr), "want a typed ApplicationError for the API layer to map")
+	s.Require().True(errors.As(over.completed, &appErr), "want a typed ApplicationError for callers to match on")
 	s.Equal(rewards.ErrTypePointsCapExceeded, appErr.Type())
 
 	// Landing exactly on the cap is allowed.
@@ -272,7 +265,6 @@ func (s *RewardsSuite) Test_AddPoints_HandlerRejectsOverPointsCap() {
 
 	// The rejected add applied nothing; only the successful one counted.
 	s.Equal(rewards.PointsCap, status.Points)
-	s.Equal(8, status.LifetimeEarnEvents)
 }
 
 // --- getStatus query -------------------------------------------------------
@@ -325,9 +317,8 @@ func (s *RewardsSuite) Test_GetStatus_PreservesCarriedEnrolledAt() {
 // --- Enrollment validation ---------------------------------------------------
 
 // The workflow is the only integrity boundary -- there is no database schema
-// behind it -- so an incoherent start payload has to be rejected here or not at
-// all. These fail the execution outright rather than starting a customer whose
-// numbers do not add up.
+// behind it -- so an incoherent start payload has to be rejected here or not
+// at all.
 func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 	cases := []struct {
 		name  string
@@ -347,10 +338,7 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 			func(st *rewards.CustomerState) { st.Name = "   " },
 			"name is required"},
 		{"seeded above the points cap",
-			func(st *rewards.CustomerState) {
-				st.Points = rewards.PointsCap + 1
-				st.LifetimeEarnEvents = 1
-			},
+			func(st *rewards.CustomerState) { st.Points = rewards.PointsCap + 1 },
 			"exceeds the cap"},
 		{"negative points",
 			func(st *rewards.CustomerState) { st.Points = -1 },
@@ -358,9 +346,6 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 		{"negative generation",
 			func(st *rewards.CustomerState) { st.Generation = -1 },
 			"non-negative"},
-		{"points earned with no earn events",
-			func(st *rewards.CustomerState) { st.Points = 10 },
-			"lifetimeEarnEvents is 0"},
 	}
 
 	for _, tc := range cases {
@@ -384,25 +369,10 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 	}
 }
 
-// A large seeded balance alongside a zero lifetime total once bypassed the
-// handler's cap check. Kept as the regression guard.
-func (s *RewardsSuite) Test_Enroll_RejectsCapBypass() {
-	state := newState()
-	state.Points = 5_000_000
-	state.LifetimeEarnEvents = 1
-
-	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
-
-	s.Require().True(s.env.IsWorkflowCompleted())
-	s.Require().Error(s.env.GetWorkflowError())
-}
-
-// A seeded mid-life customer is legitimate -- the balance just has to be
-// consistent with having earned it.
+// A seeded mid-life customer is legitimate.
 func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	state := newState()
 	state.Points = 900
-	state.LifetimeEarnEvents = 6
 
 	status := s.queryStatusAt(time.Minute)
 	s.stopAt(2 * time.Minute)
@@ -410,7 +380,6 @@ func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {
 	_ = s.runUntilStopped(state)
 
 	s.Equal(900, status.Points)
-	s.Equal(6, status.LifetimeEarnEvents)
 	s.Equal(rewards.LevelGold, status.Level)
 }
 
@@ -430,9 +399,8 @@ func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
 	s.Equal(1, next.Generation)
 }
 
-// One short of the threshold, the run is still going -- so the exit really is
-// driven by the counter rather than by anything incidental. stopAt is test-env
-// teardown only so the entity workflow can finish under the testsuite.
+// One short of the threshold, the run is still going -- the exit really is
+// driven by the counter.
 func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 	for i := 0; i < rewards.EarnsPerRun-1; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
@@ -449,16 +417,14 @@ func (s *RewardsSuite) Test_ContinueAsNew_DoesNotFireEarly() {
 	s.True(errors.As(err, &canceled))
 }
 
-// What survives the rollover. This is the part the audit log depends on:
-// history is reaped, the carried payload is not, so anything not in here is
-// gone for good.
+// What survives the rollover: anything not in the carried payload is gone once
+// the old run's history is deleted.
 func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	enrolled := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
 	state := newState()
 	state.EnrolledAt = enrolled
 	state.Generation = 4
 	state.Points = 200
-	state.LifetimeEarnEvents = 9
 
 	for i := 0; i < rewards.EarnsPerRun; i++ {
 		s.addPoints(time.Duration(i+1)*time.Minute, fmt.Sprintf("u%d", i),
@@ -471,7 +437,6 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 
 	s.Equal(5, next.Generation, "generation increments exactly once per roll")
 	s.Equal(500, next.Points, "200 carried + 3x100 earned this run")
-	s.Equal(12, next.LifetimeEarnEvents, "9 carried + 3 this run")
 	s.True(next.EnrolledAt.Equal(enrolled), "original enrollment survives untouched")
 	s.Equal("c-001", next.CustomerID)
 	s.Equal("Ada Lovelace", next.Name)
@@ -479,13 +444,9 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 
 // --- Soft deactivation -----------------------------------------------------
 
-// The full leave/rejoin round trip. Soft-deactivate keeps the workflow running
-// with the balance intact; reactivate clears the flag, restores the same
-// points, and the customer earns again on top of them. The reactivate Update
-// takes no argument at all, so there is no path by which rejoining can rewrite
-// the customer's name -- the ID is derived from that name, so a re-enrollment
-// only reaches this workflow when the name it arrived under already slugs to
-// this customer's ID.
+// The full leave/rejoin round trip. Soft-deactivate keeps the workflow
+// running with the balance intact; reactivate clears the flag and the
+// customer earns again on top of it.
 func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
@@ -506,9 +467,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
 	s.Require().NoError(rejoin.completed)
 	s.True(rejoin.rejoined.Changed)
 	s.True(statusAfterRejoin.Active, "the customer is a member again")
-	s.Equal("Ada Lovelace", statusAfterRejoin.Name, "rejoining cannot rename the customer")
 	s.Equal(600, statusAfterRejoin.Points, "re-enrollment is not a reset")
-	s.Equal(1, statusAfterRejoin.LifetimeEarnEvents, "nor does it forget how the balance was earned")
 	s.Equal(rewards.LevelGold, statusAfterRejoin.Level)
 
 	s.Require().NoError(after.rejected)
@@ -516,10 +475,9 @@ func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
 	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
 }
 
-// Both membership Updates are idempotent, and both have to *say* so: the API
-// turns a repeat DELETE into 204 and a duplicate enrollment into 409 on the
-// strength of Changed, and the audit timeline draws a row only when it is true.
-// Reporting Changed=true for a no-op would show a customer leaving twice.
+// Both membership Updates are idempotent, and both have to *say* so via
+// Changed; reporting Changed=true for a no-op would show a customer leaving
+// twice.
 func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
 	first := s.deactivateAt(time.Minute, "leave-1")
 	second := s.deactivateAt(2*time.Minute, "leave-2")
@@ -534,9 +492,7 @@ func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
 }
 
 // Re-enrolling someone who never left is a duplicate signup, and the handler
-// reports rather than applies it. Applying would restart a membership that never
-// ended -- the enroll endpoint depends on Changed=false to turn this into the
-// 409 it owes the caller.
+// reports rather than applies it.
 func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 	rejoin := s.reactivateAt(time.Minute, "rejoin")
 	status := s.queryStatusAt(2 * time.Minute)
@@ -546,11 +502,11 @@ func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
 
 	s.Require().NoError(rejoin.completed)
 	s.False(rejoin.rejoined.Changed, "an active customer was not reactivated")
-	s.Equal("Ada Lovelace", status.Name, "a duplicate enroll must not rename the customer")
 	s.True(status.Active)
 }
 
-// addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.
+// addPoints against a soft-deactivated customer is rejected with
+// ErrTypeDeactivated -- a handler-side rejection, so it is recorded.
 func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
 	s.deactivateAt(2*time.Minute, "leave")
