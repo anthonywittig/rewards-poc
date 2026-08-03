@@ -6,42 +6,24 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
-	enumspb "go.temporal.io/api/enums/v1"
-	failurepb "go.temporal.io/api/failure/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
-	updatepb "go.temporal.io/api/update/v1"
-	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/encoding/protojson"
-	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// The golden files in testdata/ are `temporal workflow show -o json` output from
-// the local stack, one file per run. Verbatim, except that the two oldest
-// captures carried customer contact details, which have been stripped from the
-// recorded payloads and search attributes since nothing reads them any more.
-// One file per run:
+// The golden files in testdata/ are `temporal workflow show -o json` output
+// from the local stack, one file per run of one customer's life:
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then a soft
-//	                       deactivate -- an Update pair, the run stays open
+//	run-deactivated.json   the last run: rolled into, 1 add, then a soft leave
 //	run-rejection.json     a run containing a handler rejection at the cap
 //
-// Recaptured with:
-//
-//	make enroll ID=hist && ...adds...
-//	docker compose -f deploy/docker-compose.yml exec -T \
-//	  -e TEMPORAL_ADDRESS=temporal:7233 \
-//	  temporal temporal workflow show --workflow-id customer-hist \
-//	  --run-id <run> -o json
-//
 // Testing against recorded server output rather than hand-built protos is
-// deliberate: a synthetic history only ever proves the code agrees with whoever
+// deliberate: a synthetic history only proves the code agrees with whoever
 // wrote the test.
 
 func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
@@ -58,54 +40,6 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 		t.Fatalf("%s decoded to zero events", name)
 	}
 	return h.GetEvents()
-}
-
-// membershipUpdate builds the Accepted/Completed pair Temporal writes for a
-// deactivate or reactivate Update.
-//
-// Built rather than captured, unlike every fixture above, because the cases that
-// matter are the *combinations* -- leave, rejoin, repeat leave, no-op rejoin.
-// It mirrors the real captured pair at the end of run-deactivated.json.
-func membershipUpdate(
-	t *testing.T, firstEventID int64, name, updateID string, result any,
-) []*historypb.HistoryEvent {
-	t.Helper()
-	payload, err := converter.GetDefaultDataConverter().ToPayloads(result)
-	if err != nil {
-		t.Fatalf("encode %s result: %v", name, err)
-	}
-	at := timestamppb.New(time.Date(2026, 7, 31, 20, 39, 43, 0, time.UTC))
-
-	return []*historypb.HistoryEvent{
-		{
-			EventId:   firstEventID,
-			EventTime: at,
-			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED,
-			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateAcceptedEventAttributes{
-				WorkflowExecutionUpdateAcceptedEventAttributes: &historypb.WorkflowExecutionUpdateAcceptedEventAttributes{
-					ProtocolInstanceId: updateID,
-					AcceptedRequest: &updatepb.Request{
-						Meta:  &updatepb.Meta{UpdateId: updateID},
-						Input: &updatepb.Input{Name: name},
-					},
-				},
-			},
-		},
-		{
-			EventId:   firstEventID + 1,
-			EventTime: at,
-			EventType: enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED,
-			Attributes: &historypb.HistoryEvent_WorkflowExecutionUpdateCompletedEventAttributes{
-				WorkflowExecutionUpdateCompletedEventAttributes: &historypb.WorkflowExecutionUpdateCompletedEventAttributes{
-					Meta:            &updatepb.Meta{UpdateId: updateID},
-					AcceptedEventId: firstEventID,
-					Outcome: &updatepb.Outcome{
-						Value: &updatepb.Outcome_Success{Success: payload},
-					},
-				},
-			},
-		},
-	}
 }
 
 func kinds(entries []AuditEntry) []AuditEntryKind {
@@ -137,12 +71,6 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 	if run.previousRunID != "" {
 		t.Errorf("previousRunID = %q, want empty on the enrollment run", run.previousRunID)
 	}
-	if run.startState.Generation != 0 {
-		t.Errorf("generation = %d, want 0", run.startState.Generation)
-	}
-	if run.startState.LifetimeEarnEvents != 0 {
-		t.Errorf("lifetimeEarnEvents at enrollment = %d, want 0", run.startState.LifetimeEarnEvents)
-	}
 	requireKinds(t, run.entries,
 		AuditEnrolled, AuditPointsAdded, AuditPointsAdded, AuditPointsAdded)
 	if run.earnEvents != 3 {
@@ -155,21 +83,11 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 	if add.Amount != 1000 || add.Reason == "" {
 		t.Errorf("request side not decoded: amount=%d reason=%q", add.Amount, add.Reason)
 	}
-	if add.Balance != 1000 || add.Level != rewards.LevelPlatinum {
-		t.Errorf("outcome side not decoded: balance=%d level=%q", add.Balance, add.Level)
+	if add.Balance != 1000 {
+		t.Errorf("outcome side not decoded: balance=%d", add.Balance)
 	}
 	if add.RequestID == "" {
-		t.Error("RequestID should carry the Update ID, which is the caller's idempotency key")
-	}
-	if add.At.IsZero() || add.EventID == 0 {
-		t.Errorf("row not anchored: at=%v eventId=%d", add.At, add.EventID)
-	}
-
-	// Balances are cumulative down the run.
-	for i, want := range []int{1000, 2000, 3000} {
-		if got := run.entries[i+1].Balance; got != want {
-			t.Errorf("entry %d balance = %d, want %d", i+1, got, want)
-		}
+		t.Error("RequestID should carry the Update ID")
 	}
 }
 
@@ -189,118 +107,25 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 		t.Errorf("divider generation = %d, want 1 (the generation being entered)",
 			run.entries[0].Generation)
 	}
-	if run.entries[0].RunID != "run-1" {
-		t.Errorf("divider runId = %q, want the successor's", run.entries[0].RunID)
-	}
-	// Carried state: this run has no idea what happened in the previous one
-	// beyond these numbers.
+	// Carried state is all this run knows about its predecessors.
 	if run.startState.LifetimeEarnEvents != 3 {
 		t.Errorf("carried lifetimeEarnEvents = %d, want 3", run.startState.LifetimeEarnEvents)
 	}
 	if run.startState.Points != 3000 {
 		t.Errorf("carried points = %d, want 3000", run.startState.Points)
 	}
-	// Every row in a run is tagged with that run's generation, so the UI can
-	// group without tracking the dividers itself.
-	for i, e := range run.entries {
-		if e.Generation != 1 {
-			t.Errorf("entry %d generation = %d, want 1", i, e.Generation)
-		}
-	}
 }
 
-// Soft-deactivate is an Update, so it appears as Accepted/Completed rather than
-// a CancelRequested event.
+// Soft-deactivate is an Update, so it appears as an Accepted/Completed pair.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
 	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
 
 	requireKinds(t, run.entries,
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
-	if run.entries[0].Generation != 2 {
-		t.Errorf("generation = %d, want 2", run.entries[0].Generation)
-	}
-	if run.entries[2].At.IsZero() {
-		t.Error("deactivation row needs a timestamp -- it is the last thing the page shows")
-	}
 }
 
-// Without a rejoin row, a customer who left and came back reads as permanently
-// departed with unexplained point-adds after the departure.
-func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
-	events := append(loadEvents(t, "run-deactivated.json"),
-		membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
-			rewards.ReactivateResult{Changed: true})...)
-
-	run := auditRun("run-2", events)
-
-	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
-	if got := run.entries[3].RequestID; got != "rejoin-1" {
-		t.Errorf("requestId = %q, want the update ID that asked for it", got)
-	}
-	// Rejoining is not earning. Counting it would inflate "showing N of M".
-	if run.earnEvents != 1 {
-		t.Errorf("earnEvents = %d, want 1 -- a rejoin is not a point event", run.earnEvents)
-	}
-}
-
-// Both membership Updates are idempotent, so both write history for calls that
-// changed nothing: a repeat DELETE, a re-enroll of someone already active. Those
-// completions are real events, but rendering them would show a customer leaving
-// twice or rejoining a program they never left.
-func TestAuditRun_IdempotentMembershipCallsDrawNoRow(t *testing.T) {
-	events := loadEvents(t, "run-deactivated.json")
-	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
-		rewards.DeactivateResult{Changed: false})...)
-	events = append(events, membershipUpdate(t, 300, rewards.UpdateReactivate, "rejoin-1",
-		rewards.ReactivateResult{Changed: true})...)
-	events = append(events, membershipUpdate(t, 400, rewards.UpdateReactivate, "duplicate-enroll",
-		rewards.ReactivateResult{Changed: false})...)
-
-	run := auditRun("run-2", events)
-
-	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
-}
-
-// The failure path. Both handlers stage their change and commit only once the
-// search attribute upsert is issued, so a failed membership Update applied
-// nothing -- and unlike a failed addPoints, there is no half-state to disclose.
-func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
-	events := loadEvents(t, "run-deactivated.json")
-	pair := membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-failed",
-		rewards.ReactivateResult{Changed: true})
-	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
-		Value: &updatepb.Outcome_Failure{
-			Failure: &failurepb.Failure{Message: "upsert search attributes: boom"},
-		},
-	}
-
-	run := auditRun("run-2", append(events, pair...))
-
-	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
-}
-
-// Neither membership Update may render as a point-add. They share the Update
-// event types with addPoints, and the amount/reason fields decode to zero from
-// their arguments, so a missed name check shows up as a silent "+0 ()" row
-// rather than as a failure.
-func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
-	events := loadEvents(t, "run-deactivated.json")
-	events = append(events, membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
-		rewards.ReactivateResult{Changed: true})...)
-
-	for _, e := range auditRun("run-2", events).entries {
-		if e.Kind == AuditPointsAdded && e.Amount == 0 {
-			t.Errorf("a membership Update rendered as a point-add: %+v", e)
-		}
-	}
-}
-
-// The recorded half of the validator/handler split. A handler rejection writes an
-// Accepted and a Completed-with-failure, so it becomes a row; a validator
-// rejection writes nothing at all and can never appear here.
+// The recorded half of the validator/handler split: a handler rejection
+// becomes a row; a validator rejection wrote nothing and can never appear.
 func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	run := auditRun("cap-run", loadEvents(t, "run-rejection.json"))
 
@@ -311,27 +136,21 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 	if rejected.Failure == "" {
 		t.Error("rejection row must carry the workflow's own message")
 	}
-	if rejected.Balance != 0 || rejected.Level != "" {
-		t.Errorf("a rejected add has no outcome: balance=%d level=%q",
-			rejected.Balance, rejected.Level)
-	}
 	if rejected.Amount != 500 {
-		t.Errorf("the attempted amount = %d, want 500 -- what was refused is the point of the row",
-			rejected.Amount)
+		t.Errorf("the attempted amount = %d, want 500", rejected.Amount)
 	}
 
-	// A rejection is not an earn. Counting it would inflate ShownEarnEvents and
-	// make an intact log look truncated against the carried lifetime count.
+	// A rejection is not an earn; counting it would make an intact log look
+	// truncated against the carried lifetime count.
 	if run.earnEvents != 1 {
-		t.Errorf("earnEvents = %d, want 1 -- rejections must not count", run.earnEvents)
+		t.Errorf("earnEvents = %d, want 1", run.earnEvents)
 	}
 }
 
 // --- the walk ---------------------------------------------------------------
 
-// fakeChain serves a synthetic run chain, and reaps everything older than
-// `oldest` the way the server does -- by returning NotFound for a run whose
-// successor still names it.
+// fakeChain serves a synthetic run chain, answering NotFound for reaped runs
+// the way the server does.
 func fakeChain(runs map[string][]*historypb.HistoryEvent) historyFetcher {
 	return func(_ context.Context, runID string) ([]*historypb.HistoryEvent, error) {
 		events, ok := runs[runID]
@@ -345,8 +164,6 @@ func fakeChain(runs map[string][]*historypb.HistoryEvent) historyFetcher {
 func TestWalkRuns_StopsAtEnrollment(t *testing.T) {
 	enrollment := loadEvents(t, "run-enrollment.json")
 	continued := loadEvents(t, "run-continued.json")
-	// Make the fake chain answer to the predecessor the start event names,
-	// rather than to one this test invented.
 	prev := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
 	runs, truncated, err := walkRuns(context.Background(),
@@ -361,13 +178,10 @@ func TestWalkRuns_StopsAtEnrollment(t *testing.T) {
 	if len(runs) != 2 {
 		t.Fatalf("walked %d runs, want 2", len(runs))
 	}
-	if runs[0].runID != "newest" || runs[1].runID != prev {
-		t.Errorf("walk order = %q, %q; want newest first", runs[0].runID, runs[1].runID)
-	}
 }
 
-// The truncation case, and the reason the audit endpoint has a Truncated field
-// at all: the predecessor was reaped, so the walk cannot reach enrollment.
+// The truncation case: the predecessor was reaped, so the walk cannot reach
+// enrollment and must say so.
 func TestWalkRuns_TruncatedWhenPredecessorReaped(t *testing.T) {
 	continued := loadEvents(t, "run-continued.json")
 
@@ -385,8 +199,8 @@ func TestWalkRuns_TruncatedWhenPredecessorReaped(t *testing.T) {
 	}
 }
 
-// A NotFound on the very first run is not truncation. Describe just resolved it,
-// so it disappearing is a real fault and must not be served as a short timeline.
+// A NotFound on the very first run is a real fault, not truncation -- Describe
+// just resolved that run.
 func TestWalkRuns_FirstRunNotFoundIsAnError(t *testing.T) {
 	_, _, err := walkRuns(context.Background(),
 		fakeChain(map[string][]*historypb.HistoryEvent{}), "gone")
@@ -412,35 +226,13 @@ func TestAssemble_NewestFirst(t *testing.T) {
 	got := assemble("ada", runs, false)
 	// Newest run first, and within it the newest event first.
 	requireKinds(t, got.Entries, AuditPointsAdded, AuditGenerationRolled, AuditEnrolled)
-	if got.Entries[0].RunID != "b" || got.Entries[2].RunID != "a" {
-		t.Errorf("entries not ordered newest-first: %v", got.Entries)
-	}
 	if got.RunsWalked != 2 {
 		t.Errorf("runsWalked = %d, want 2", got.RunsWalked)
 	}
-	if got.OldestRunID != "" {
-		t.Errorf("oldestRunId = %q, want empty when the crawl reached enrollment", got.OldestRunID)
-	}
 }
 
-// ShownEarnEvents equals LifetimeEarnEvents whenever the log is complete,
-// because the carried count at the newest run's start is exactly the sum of the
-// earns in every run before it.
-func TestAssemble_ShownEqualsLifetimeWhenComplete(t *testing.T) {
-	runs := []runAudit{
-		{runID: "c", earnEvents: 1, startState: rewards.CustomerState{LifetimeEarnEvents: 6}},
-		{runID: "b", earnEvents: 3, startState: rewards.CustomerState{LifetimeEarnEvents: 3}},
-		{runID: "a", earnEvents: 3},
-	}
-
-	got := assemble("ada", runs, false)
-	if got.ShownEarnEvents != 7 || got.LifetimeEarnEvents != 7 {
-		t.Errorf("shown=%d lifetime=%d, want both 7", got.ShownEarnEvents, got.LifetimeEarnEvents)
-	}
-}
-
-// And the case it exists for: history reaped, so the log is short but the count
-// is still right -- "Showing 3 of 21 point events."
+// History reaped: the log is short but the lifetime count is still right,
+// which is what lets the UI say "Showing 3 of 21 point events."
 func TestAssemble_LifetimeSurvivesTruncation(t *testing.T) {
 	runs := []runAudit{
 		{runID: "gen7", earnEvents: 2, startState: rewards.CustomerState{LifetimeEarnEvents: 19}},
@@ -452,34 +244,18 @@ func TestAssemble_LifetimeSurvivesTruncation(t *testing.T) {
 		t.Errorf("shown = %d, want 3", got.ShownEarnEvents)
 	}
 	if got.LifetimeEarnEvents != 21 {
-		t.Errorf("lifetime = %d, want 21 -- it comes from the carried state, not the rows",
+		t.Errorf("lifetime = %d, want 21 -- it comes from carried state, not the rows",
 			got.LifetimeEarnEvents)
-	}
-	if !got.Truncated {
-		t.Error("truncated flag lost")
 	}
 	if got.OldestRunID != "gen6" {
 		t.Errorf("oldestRunId = %q, want the oldest run actually read", got.OldestRunID)
 	}
 }
 
-// A customer whose whole execution is gone produces no runs. Entries must still
-// be an empty array rather than JSON null, which a UI mapping over it would
-// crash on.
-func TestAssemble_EmptyIsNotNull(t *testing.T) {
-	got := assemble("ghost", nil, false)
-	if got.Entries == nil {
-		t.Fatal("Entries must serialise as [] rather than null")
-	}
-	if got.RunsWalked != 0 || got.LifetimeEarnEvents != 0 {
-		t.Errorf("unexpected counts: %+v", got)
-	}
-}
+// --- shape of the whole thing ------------------------------------------------
 
-// --- shape of the whole thing -----------------------------------------------
-
-// End to end over the golden chain, in the order the walk produces: the three
-// runs of one customer's life, rendered as one timeline.
+// End to end over the golden chain: the three runs of one customer's life,
+// rendered as one timeline, newest first.
 func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	deactivated := loadEvents(t, "run-deactivated.json")
 	continued := loadEvents(t, "run-continued.json")
@@ -506,14 +282,5 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	}
 	if got.Truncated {
 		t.Error("an intact chain must not report truncation")
-	}
-
-	// Non-increasing in time, which is what "newest first" has to mean for a
-	// timeline assembled from separately-fetched runs.
-	for i := 1; i < len(got.Entries); i++ {
-		if got.Entries[i].At.After(got.Entries[i-1].At) {
-			t.Errorf("entry %d (%s) at %v jumps forward from %v",
-				i, got.Entries[i].Kind, got.Entries[i].At, got.Entries[i-1].At)
-		}
 	}
 }

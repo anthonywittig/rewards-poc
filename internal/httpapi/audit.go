@@ -13,20 +13,16 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// The audit timeline, reconstructed by crawling Event History rather than read
-// from a store: the customer's point-adds are not saved anywhere, they are
-// derived from the events Temporal recorded in order to run the workflow at all.
+// The audit timeline is reconstructed by crawling Event History rather than
+// read from a store: point-adds are not saved anywhere else, they are derived
+// from the events Temporal recorded in order to run the workflow at all.
 
-// auditTimeout bounds the whole crawl, which is the one endpoint whose cost
-// grows with a customer's age -- one GetWorkflowHistory round trip per
-// generation, walked serially because each run only learns its predecessor from
-// the run it just read. A 34-run customer (100 adds) crawls in ~125ms.
-//
-// Deliberately not a cap on runs walked: a partial crawl would have to report
-// itself as Truncated, which in this contract means "history was deleted".
+// auditTimeout bounds the whole crawl: one GetWorkflowHistory round trip per
+// generation, walked serially because each run only learns its predecessor
+// from the run it just read.
 const auditTimeout = 30 * time.Second
 
-// getAudit walks the customer's run chain newest-first and renders it newest-first.
+// getAudit walks the customer's run chain and renders it newest-first.
 func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -37,14 +33,11 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	ctx, cancel := context.WithTimeout(r.Context(), auditTimeout)
 	defer cancel()
 
-	// Describe first, purely to learn the current run ID. The crawl has to
-	// address every run explicitly, because a failed read is how it detects that
-	// history was reaped: with an empty run ID the server helpfully resolves to
-	// the latest run instead of reporting the specific run as gone.
+	// Describe first, to learn the current run ID: the crawl addresses every
+	// run explicitly, because a failed read is how it detects that history was
+	// reaped.
 	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
 	if err != nil {
-		// mapStoreReadError, not mapQueryError: no worker is involved in the
-		// crawl, so a timeout must not blame one.
 		return mapStoreReadError(err)
 	}
 
@@ -57,8 +50,8 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 }
 
 // crawl walks back through ContinuedExecutionRunId until it reaches enrollment
-// or runs out of history, then renders what it found. No worker is involved, so
-// the audit page keeps working with `make worker` stopped.
+// or runs out of history, then renders what it found. No worker is involved,
+// so the audit page keeps working with the worker stopped.
 func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (AuditResponse, error) {
 	runs, truncated, err := walkRuns(ctx, s.fetchRun(wfID), runID)
 	if err != nil {
@@ -67,9 +60,8 @@ func (s *Server) crawl(ctx context.Context, wfID, customerID, runID string) (Aud
 	return assemble(customerID, runs, truncated), nil
 }
 
-// historyFetcher reads one run's events. A function rather than a method so the
-// walk can be driven from a synthetic run chain in tests -- including the reaped
-// case, otherwise reproducible only by running `make reap` and waiting.
+// historyFetcher reads one run's events. A function rather than a method so
+// the walk can be driven from a synthetic run chain in tests.
 type historyFetcher func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error)
 
 // walkRuns follows the chain newest-first, reporting whether it ended because
@@ -79,14 +71,10 @@ func walkRuns(ctx context.Context, fetch historyFetcher, runID string) ([]runAud
 	for runID != "" {
 		events, err := fetch(ctx, runID)
 		if err != nil {
-			// A run we were *told about* by its successor, whose history is gone.
-			// That is reaping, and it is the expected end of a long-lived
-			// customer's crawl rather than a failure.
-			//
-			// Only once we are past the first run, though: history missing for
-			// the run Describe just handed us is not truncation, it is the
-			// execution disappearing underneath the request, and reporting that
-			// as a successful empty timeline would hide a real fault.
+			// A predecessor whose history is gone: that is reaping, the
+			// expected end of a long-lived customer's crawl. But only past the
+			// first run -- the run Describe just handed us going missing is a
+			// real fault, not truncation.
 			if isHistoryGone(err) && len(runs) > 0 {
 				return runs, true, nil
 			}
@@ -113,9 +101,6 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 		out.OldestRunID = runs[len(runs)-1].runID
 	}
 
-	// The walk already produced runs newest-first; auditRun built each run's
-	// entries in history order, so only those need reversing to put the newest
-	// event of the whole timeline first.
 	for _, run := range runs {
 		for i := len(run.entries) - 1; i >= 0; i-- {
 			out.Entries = append(out.Entries, run.entries[i])
@@ -124,22 +109,19 @@ func assemble(customerID string, runs []runAudit, truncated bool) AuditResponse 
 	}
 
 	if len(runs) > 0 {
-		// The lifetime total, without a Query and without needing history we may
-		// no longer have. LifetimeEarnEvents in a run's start payload is the
-		// count as of the *start* of that run, so the newest run's starting
-		// count plus the adds inside it is the current total -- which is what
-		// lets a truncated log say "3 of 21".
+		// LifetimeEarnEvents in a run's start payload is the count as of that
+		// run's start, so the newest run's starting count plus the adds inside
+		// it is the current total -- available even when older history is gone,
+		// which is what lets a truncated log say "3 of 21".
 		newest := runs[0]
 		out.LifetimeEarnEvents = newest.startState.LifetimeEarnEvents + newest.earnEvents
 	}
 	return out
 }
 
-// fetchRun reads one run's events from the server.
-//
-// isLongPoll is false, which is load-bearing rather than a default: with it set,
-// the iterator on a *running* workflow blocks waiting for events that have not
-// happened yet, so the audit page for an active customer would hang.
+// fetchRun reads one run's events from the server. isLongPoll must be false:
+// with it set, the iterator on a running workflow blocks waiting for future
+// events and the audit page for an active customer would hang.
 func (s *Server) fetchRun(wfID string) historyFetcher {
 	return func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error) {
 		iter := s.temporal.GetWorkflowHistory(ctx, wfID, runID, false,
@@ -161,17 +143,14 @@ func (s *Server) fetchRun(wfID string) historyFetcher {
 type runAudit struct {
 	runID         string
 	previousRunID string
-	// The CustomerState this run was started with -- the enrollment payload on
-	// the first run, the carried state on every one after.
+	// The CustomerState this run was started with.
 	startState rewards.CustomerState
 	entries    []AuditEntry
 	earnEvents int
 }
 
-// pendingUpdate is an accepted Update waiting for its outcome. Acceptance and
-// completion are separate events and only together make a row: the request
-// carries the amount and reason, the outcome carries the new balance or the
-// rejection.
+// pendingUpdate is an accepted Update waiting for its outcome: the request
+// carries the amount and reason, the outcome the new balance or the rejection.
 type pendingUpdate struct {
 	name     string
 	updateID string
@@ -182,7 +161,7 @@ type pendingUpdate struct {
 }
 
 // auditRun maps one run's events to audit entries. Pure -- no client, no I/O --
-// so every case below is testable against a recorded history.
+// so it is testable against recorded histories.
 func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 	out := runAudit{runID: runID}
 	pending := map[int64]pendingUpdate{}
@@ -196,10 +175,6 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			out.previousRunID = a.GetContinuedExecutionRunId()
 			decodeArg(dc, a.GetInput(), &out.startState)
 
-			// The generation boundary is recorded on the *successor's* first
-			// event rather than the predecessor's ContinuedAsNew: only this side
-			// knows which generation is being entered, and when history has been
-			// reaped this side is the one that still exists.
 			kind := AuditEnrolled
 			if out.previousRunID != "" {
 				kind = AuditGenerationRolled
@@ -229,28 +204,16 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
-			// Always paired: an Update accepted in run N completes in run N --
-			// updates never survive a run boundary, which is the whole reason the
-			// API retries across continue-as-new -- and this run's events were
-			// read in full, in order, so the accepted event has been seen.
+			// Always paired: an Update accepted in run N completes in run N.
 			p := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
-			// Membership changes. Both are idempotent, so both write history for
-			// calls that changed nothing -- only a real transition belongs on
-			// the timeline, or a repeat DELETE reads as a second departure.
-			//
-			// A *failed* one is dropped rather than rendered as a rejection row,
-			// unlike a failed addPoints: both handlers stage their change and
-			// commit only once the upsert is issued, so a failed Update applied
-			// nothing and there is no half-state to disclose.
+			// Membership changes draw a row only for a real transition --
+			// both Updates are idempotent, so history also records no-ops.
 			if p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				// Undecodable payload defaults to "changed": a row history
-				// clearly contains is shown rather than dropped on a decoding
-				// technicality.
 				kind, changed := AuditDeactivated, true
 				if p.name == rewards.UpdateDeactivate {
 					var res rewards.DeactivateResult
@@ -283,9 +246,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 				continue
 			}
 
-			// Anchored to the *accepted* event, not this one: it is when the
-			// customer made the request, and it exists even for an update whose
-			// outcome never landed.
+			// Anchored to the accepted event: that is when the customer made
+			// the request.
 			entry := AuditEntry{
 				At:         p.at,
 				Generation: out.startState.Generation,
@@ -297,9 +259,8 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
-				// Handler rejections only. A validator rejection writes nothing
-				// to history, so it can never appear here -- which is why this
-				// timeline is not a record of every attempt.
+				// Handler rejections only: a validator rejection wrote nothing
+				// to history, so it can never appear here.
 				entry.Kind = AuditPointsRejected
 				entry.Failure = f.GetMessage()
 			} else {
@@ -317,9 +278,7 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 }
 
 // decodeArg decodes the first payload into dst, reporting whether it worked.
-// Best-effort: a row with a missing amount still tells the reader that an add
-// happened. The DataConverter is the client's default, which is why the API and
-// worker share a module.
+// Best-effort: a row with a missing amount still says an add happened.
 func decodeArg(dc converter.DataConverter, ps *commonpb.Payloads, dst any) bool {
 	if len(ps.GetPayloads()) == 0 {
 		return false

@@ -8,7 +8,8 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
-// EnrollRequest is the body of POST /api/customers.
+// EnrollRequest is the body of POST /api/customers. CustomerID is optional;
+// without it the server derives one from the name.
 type EnrollRequest struct {
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
@@ -16,25 +17,18 @@ type EnrollRequest struct {
 
 // AddPointsRequest is the body of POST /api/customers/{id}/points.
 //
-// RequestID is the caller's idempotency key and becomes the Temporal Update ID;
-// send a fresh UUID per click. Note dedup is scoped to a single Run, so a retry
-// straddling a continue-as-new can still double-apply -- adequate for points,
-// not for money.
+// RequestID is the caller's idempotency key and becomes the Temporal Update
+// ID. Dedup is scoped to a single run, so a retry straddling a
+// continue-as-new can still double-apply -- adequate for points, not money.
 type AddPointsRequest struct {
 	Amount    int    `json:"amount"`
 	Reason    string `json:"reason"`
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// CustomerResponse is the customer detail payload.
-//
-// Status comes from workflow state (Active / Deactivated), not from whether
-// the Temporal execution is Running. Soft-inactive customers stay Running.
-//
-// Assembled from two reads -- Describe for liveness, Query for state -- and a
-// continue-as-new can land between them, leaving RunID naming the predecessor
-// while Points and Generation come from the successor. Generation is the field
-// to trust for "which run"; RunID is advisory and may lag by one.
+// CustomerResponse is the customer detail payload. Status comes from workflow
+// state, not from whether the execution is Running: soft-deactivated
+// customers stay Running.
 type CustomerResponse struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
@@ -43,27 +37,20 @@ type CustomerResponse struct {
 	NextTierAt int       `json:"nextTierAt"`
 	EnrolledAt time.Time `json:"enrolledAt"`
 
-	// The whole ladder, ascending, so the UI can draw progress without holding
-	// its own copy of the thresholds. NextTierAt alone is not enough: a bar also
-	// needs the rung below the customer, and deriving that on the client means
-	// hardcoding the ladder there -- which then goes stale silently, because a
-	// wrong bar width renders perfectly.
-	//
-	// Answered by the worker, so these rungs are the ones Level and NextTierAt
-	// above were actually derived from. Basic is not in it; the span from zero
-	// to the first rung is implied. See rewards.Ladder.
+	// The whole ladder, ascending, so the UI can draw progress without its own
+	// copy of the thresholds.
 	Tiers []rewards.Tier `json:"tiers"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
 
 	Status string `json:"status"` // "active" | "deactivated"
-	// Advisory, and may lag the rest of this struct by one run -- see above.
+	// Advisory: assembled from a separate read than the fields above, so it
+	// may lag by one run right after a continue-as-new.
 	RunID string `json:"runId"`
 }
 
-// AddPointsResponse is what a successful add returns. No "promoted" flag:
-// tier-crossing detection happens inside the handler, where it is atomic.
+// AddPointsResponse is what a successful add returns.
 type AddPointsResponse struct {
 	Balance int    `json:"balance"`
 	Level   string `json:"level"`
@@ -76,11 +63,8 @@ type EnrollResponse struct {
 	RunID      string `json:"runId"`
 }
 
-// CustomerListItem is one row of GET /api/customers.
-//
-// Narrower than CustomerResponse: the list is served by ListWorkflow, which
-// returns *search attributes only*, so anything not registered as one is absent
-// by construction -- most notably LifetimeEarnEvents. Use the detail endpoint.
+// CustomerListItem is one row of GET /api/customers. Narrower than
+// CustomerResponse because the list is served from search attributes only.
 type CustomerListItem struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
@@ -94,42 +78,25 @@ type CustomerListItem struct {
 
 // ListLimit caps GET /api/customers. There is no pagination: Temporal rejects
 // ORDER BY, so "page 2" of an unordered set could overlap or skip rows. The
-// list returns a small fixed slice, says how many matched, and tells the user
-// to filter.
+// list returns a small fixed slice, says how many matched, and pushes the
+// caller to filter.
 const ListLimit = 5
 
 // CustomerListResponse is the body of GET /api/customers.
 //
-// The UI renders one of:
-//
-//	Complete            -> no notice; this is everything matching
-//	Total >= 0          -> "Showing 5 of 23 — filter to find additional results"
-//	Total < 0           -> "Showing 5 of many — filter to find additional results"
-//
-// Three properties the UI has to respect, all consequences of the visibility
-// store rather than of this API:
-//
-//   - **Results are unsorted.** Temporal rejects ORDER BY, so sorting is the
-//     client's job -- and sorting five arbitrary rows out of twenty-three sorts
-//     a sample, not the set. Only meaningful when Complete.
-//   - **Which five you get is unspecified.** No ORDER BY means no stable
-//     ordering, so the same request can return a different five.
-//   - **Results lag writes.** Elasticsearch visibility is asynchronous,
-//     ~200-300ms after tuning and never zero, so a just-created customer may be
-//     missing from both Items and Total.
+// Properties the UI has to respect, all consequences of the visibility store:
+// results are unsorted (sort client-side, and only when Complete), which rows
+// you get is unspecified, and results lag writes by a few hundred ms.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
 	// The cap that was applied, echoed so the UI does not hardcode it.
 	Limit int `json:"limit"`
-	// Customers matching Query, ignoring the limit. -1 when the count could not
-	// be obtained, which is what "of many" is for. Comes from a separate
-	// visibility query to Items, so the two can disagree by a row.
+	// Customers matching Query, ignoring the limit. -1 when the count could
+	// not be obtained.
 	Total int `json:"total"`
-	// True when Items is everything that matched, i.e. Total <= Limit. Only
-	// then is client-side sorting sorting the actual set.
+	// True when Items is everything that matched.
 	Complete bool `json:"complete"`
-	// Echoed back so the UI can show what it asked for, and so a rejected query
-	// is debuggable from the response alone.
+	// The caller's filter, echoed back.
 	Query string `json:"query,omitempty"`
 }
 
@@ -147,24 +114,15 @@ const (
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling
-// Event History.
-//
-// Which fields are populated depends on Kind:
-//
-//	enrolled           At, Generation, RunID
-//	points_added       Amount, Reason, Balance, Level, RequestID
-//	points_rejected    Amount, Reason, Failure, RequestID
-//	generation_rolled  Generation (the one being entered)
-//	deactivated        At, RunID
-//
-// Note points_rejected only ever covers *handler*-side rejections. A validator
-// rejection writes nothing to history, so it is invisible here by design.
+// Event History. Which fields are set depends on Kind. points_rejected only
+// covers handler-side rejections: a validator rejection wrote nothing to
+// history, so it is invisible here by design.
 type AuditEntry struct {
 	Kind       AuditEntryKind `json:"kind"`
 	At         time.Time      `json:"at"`
 	Generation int            `json:"generation"`
 	RunID      string         `json:"runId"`
-	// History event ID within its run. Unique only per run, so pair with RunID.
+	// History event ID, unique only within its run.
 	EventID int64 `json:"eventId"`
 
 	Amount    int    `json:"amount,omitempty"`
@@ -177,16 +135,13 @@ type AuditEntry struct {
 
 // AuditResponse is the body of GET /api/customers/{id}/audit.
 //
-// Truncation is a first-class part of this contract, not an error case. Closed
-// runs get reaped, so the crawl walks backwards until history is gone and then
-// says so; the carried CustomerState is what lets it *quantify* the gap rather
-// than silently showing less. The UI renders "Showing 7 of 23 point events."
-// from ShownEarnEvents and LifetimeEarnEvents.
+// Truncation is part of the contract, not an error: closed runs are reaped
+// after retention, so the crawl walks back until history is gone and then says
+// so, quantified -- the UI renders "Showing 7 of 23 point events."
 type AuditResponse struct {
 	CustomerID string `json:"customerId"`
-	// The execution the entries were crawled from, so the UI can deep-link a run
-	// into the Temporal UI without hardcoding rewards.WorkflowIDPrefix -- a
-	// derivation that would go stale silently, since a wrong link still renders.
+	// The execution the entries were crawled from, so the UI can deep-link
+	// into the Temporal UI.
 	WorkflowID string       `json:"workflowId"`
 	Entries    []AuditEntry `json:"entries"` // newest first
 	// True when the crawl hit a run whose history had been deleted.
@@ -202,12 +157,11 @@ type AuditResponse struct {
 }
 
 // ErrorResponse is the single error shape every failing endpoint returns.
-// Code is stable and machine-readable; Message is for humans.
 type ErrorResponse struct {
 	Error ErrorBody `json:"error"`
 }
 
-// ErrorBody carries the code and message.
+// ErrorBody carries the stable code and the human-readable message.
 type ErrorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`

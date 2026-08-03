@@ -41,8 +41,7 @@ if temporal operator namespace describe \
       | grep -o '"workflowExecutionRetentionTtl"[^,}]*' || true)"
   [ -n "${current}" ] && log "retention now: ${current}"
 else
-  # Anything under 1h fails here with "A valid retention period is not set on
-  # request". `make reap` is how we force truncation instead.
+  # Anything under 1h fails: it is Temporal's enforced minimum.
   temporal operator namespace create \
     --address "${TEMPORAL_ADDRESS}" \
     --namespace "${NAMESPACE}" \

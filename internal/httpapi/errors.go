@@ -11,8 +11,8 @@ import (
 	"go.temporal.io/api/serviceerror"
 )
 
-// Stable machine-readable error codes. Clients should switch on these rather
-// than on message text.
+// Stable machine-readable error codes. Clients switch on these, not on
+// message text.
 const (
 	CodeInvalidRequest    = "invalid_request"
 	CodeAlreadyExists     = "already_exists"
@@ -37,8 +37,8 @@ func badRequest(msg string) *apiError {
 	return &apiError{http.StatusBadRequest, CodeInvalidRequest, msg}
 }
 
-// writeError renders an apiError, mapping anything unrecognised to a 500 while
-// logging the original, so no raw gRPC string can reach a client.
+// writeError renders an apiError, mapping anything unrecognised to a logged
+// 500 so no raw gRPC string reaches a client.
 func writeError(w http.ResponseWriter, log *slog.Logger, err error) {
 	var apiErr *apiError
 	if !errors.As(err, &apiErr) {
@@ -57,11 +57,8 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 	}
 }
 
-// mapStartError turns a failed ExecuteWorkflow into an HTTP status.
-//
-// The 409 depends on the client being configured with
-// WorkflowExecutionErrorWhenAlreadyStarted -- without it the SDK returns the
-// existing run and a nil error, and there is nothing here to map.
+// mapStartError turns a failed ExecuteWorkflow into an HTTP status. The 409
+// depends on WorkflowExecutionErrorWhenAlreadyStarted being set on the start.
 func mapStartError(err error) error {
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if errors.As(err, &already) {
@@ -76,13 +73,9 @@ func mapQueryError(err error) error {
 	return classifyCommon(err)
 }
 
-// mapUpdateError turns a failed UpdateWorkflow into an HTTP status.
-//
-// Both halves of the validator/handler split surface here as a 422; what
-// matters is separating a business rejection from an infrastructure failure.
-//
-// Deactivated is the exception: a business answer, but a 409 with its own code
-// so clients can offer re-enrollment rather than treating it like a bad amount.
+// mapUpdateError turns a failed UpdateWorkflow into an HTTP status. Business
+// rejections become 422, except Deactivated, which gets a 409 with its own
+// code so clients can offer re-enrollment.
 func mapUpdateError(err error) error {
 	if appErr, ok := isBusinessRejection(err); ok {
 		if appErr.Type() == rewards.ErrTypeDeactivated {
@@ -93,14 +86,9 @@ func mapUpdateError(err error) error {
 	return classifyCommon(err)
 }
 
-// mapStoreReadError classifies failures for the two endpoints that read *stored*
-// data rather than asking a running workflow: the customer list, which reads the
-// visibility index, and the audit crawl, which reads Event History. Neither
-// involves a worker at any point, so a timeout here must not send anyone off to
-// restart one.
-//
-// The code stays CodeWorkerUnavailable, which reads oddly here, because the
-// error contract is frozen and this is the only 503 in it. Clients treat it as "backend not ready, retry".
+// mapStoreReadError classifies failures for the endpoints that read stored
+// data (the list and the audit crawl). No worker is involved there, so a
+// timeout must not blame one.
 func mapStoreReadError(err error) error {
 	if isTimeout(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
@@ -117,10 +105,8 @@ func classifyCommon(err error) error {
 			"customer not found, or their history has been deleted"}
 	}
 
-	// No worker polling is the single most common development-time failure, so
-	// the 503 leads with the fix. FailedPrecondition and a timed-out call cover
-	// more conditions than a missing poller, but pointing at the worker first is
-	// right far more often than it is wrong in development.
+	// No worker polling is the most common development-time failure, so the
+	// 503 leads with the fix.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
 			"no worker is polling the rewards task queue; is `make worker` running?"}

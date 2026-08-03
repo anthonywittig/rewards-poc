@@ -8,12 +8,11 @@ import (
 )
 
 // ValidateEnrollment checks a starting payload against the workflow ID it was
-// started under. The workflow is the only integrity boundary in this design, so
-// this is where a bad enrollment is refused.
+// started under. The workflow is the only integrity boundary in this design --
+// there is no database schema behind it -- so a bad enrollment is refused here.
 //
-// Every error is non-retryable: a payload that does not match its own workflow
-// ID will not match on the next attempt either, and retrying would turn a
-// rejected enrollment into a run that fails forever.
+// Every error is non-retryable: a payload that fails once will fail on every
+// attempt.
 func ValidateEnrollment(workflowID string, state *CustomerState) error {
 	if !strings.HasPrefix(workflowID, WorkflowIDPrefix) {
 		return temporal.NewNonRetryableApplicationError(
@@ -26,11 +25,6 @@ func ValidateEnrollment(workflowID string, state *CustomerState) error {
 				state.CustomerID, workflowID, want),
 			ErrTypeInvalidEnrollment, nil)
 	}
-	// Checked here rather than trusted from the API, for the same reason the
-	// counters below are: this is the only integrity boundary, and a customer
-	// with no name is one the list and the detail page both render as a blank
-	// row. The API 400s first, so reaching this means something started a
-	// workflow without going through it.
 	if strings.TrimSpace(state.Name) == "" {
 		return temporal.NewNonRetryableApplicationError(
 			"name is required", ErrTypeInvalidEnrollment, nil)
