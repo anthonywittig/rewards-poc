@@ -168,6 +168,8 @@ internal/rewards/   the domain: state, tiers, the Update/Query contract
 internal/audit/     Event History crawl that rebuilds the audit timeline
 internal/httpapi/   HTTP handlers over Temporal (and the audit crawl)
 web/                the React UI
+docs/               architecture diagrams (the stack, the workflow lifecycle,
+                    the run chain and audit crawl)
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
 Makefile
 ```
