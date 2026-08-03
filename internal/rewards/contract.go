@@ -4,6 +4,13 @@ import "time"
 
 // The Update/Query contract the workflow exposes and every caller speaks.
 
+// TaskQueue is the single queue every customer workflow runs on.
+const TaskQueue = "rewards"
+
+// WorkflowTypeName is how the workflow is registered and how visibility
+// queries address it. Must match the workflow function name.
+const WorkflowTypeName = "CustomerRewardsWorkflow"
+
 // Handler names, addressed by string from the API layer and the temporal CLI.
 const (
 	UpdateAddPoints  = "addPoints"
