@@ -1,13 +1,10 @@
-// Command seed fills a running stack with a demo dataset, driving the HTTP API
-// rather than the Temporal client.
+// Command seed fills a running stack with demo customers, driving the HTTP
+// API rather than the Temporal client so seeding exercises the same path a
+// user takes.
 //
-//	make up       # runs this at the end, once the API answers
-//	make seed     # to re-run it on its own
-//	make reset    # the only true clean slate
-//
-// Read-then-create, never modify: points only go up and deactivation is
-// one-way, so there is nothing an existing customer can be repaired into --
-// mismatches are reported, not fixed.
+// Idempotent: customers that already exist are left alone. Points are reached
+// by repeated adds, because that is the only way points enter the system.
+// `make reset` is the clean slate.
 package main
 
 import (
@@ -19,11 +16,9 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 )
 
-// customer is one seeded record. Points are reached by repeated adds, since
-// that is the only way points ever enter the system.
+// customer is one seeded record.
 type customer struct {
 	id, name   string
 	adds       []int
@@ -31,157 +26,88 @@ type customer struct {
 	why        string
 }
 
-// Six customers per tier (basic < 500, gold < 1000, platinum >= 1000), which
-// fills the tier filter and pushes the unfiltered list past ListLimit.
+// One customer per interesting state; six in total so the unfiltered list
+// also demonstrates the "Showing 5 of 6" cap.
 var seedSet = []customer{
-	// --- basic ----------------------------------------------------------------
 	{
 		id: "newbie", name: "Newly Enrolled",
 		why: "enrolled, never earned -- the empty-timeline case",
+	},
+	{
+		id: "katherine", name: "Katherine Johnson", adds: []int{95},
+		why: "basic tier",
+	},
+	{
+		id: "ada", name: "Ada Lovelace",
+		adds: []int{120, 200, 180, 60, 40, 20, 20},
+		why:  "gold, a few generations in -- shows continue-as-new",
+	},
+	{
+		id: "grace", name: "Grace Hopper",
+		adds: []int{500, 500, 250, 250},
+		why:  "platinum: top tier, nextTierAt is 0",
 	},
 	{
 		id: "departed", name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
 		why: "deactivated: workflow completed, balance frozen for good",
 	},
-	{id: "katherine", name: "Katherine Johnson", adds: []int{95}, why: "basic"},
-	{id: "alan", name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},
-	{id: "margaret", name: "Margaret Hamilton", adds: []int{200, 150}, why: "basic"},
-	{id: "donald", name: "Donald Knuth", adds: []int{400, 50}, why: "basic"},
-
-	// --- gold -----------------------------------------------------------------
-	{
-		id: "ada", name: "Ada Lovelace",
-		adds: []int{120, 200, 180, 60, 40, 20, 20},
-		why:  "ordinary active customer, gold, a few generations in",
-	},
-	{id: "barbara", name: "Barbara Liskov", adds: []int{400, 320}, why: "gold"},
-	{id: "dennis", name: "Dennis Ritchie", adds: []int{500}, why: "gold"},
-	{id: "ken", name: "Ken Thompson", adds: []int{300, 300}, why: "gold"},
-	{id: "bjarne", name: "Bjarne Stroustrup", adds: []int{700}, why: "gold"},
-	{id: "guido", name: "Guido van Rossum", adds: []int{500, 400}, why: "gold"},
-
-	// --- platinum -------------------------------------------------------------
-	{
-		id: "grace", name: "Grace Hopper",
-		adds: []int{500, 500, 250, 250},
-		why:  "top tier: nextTierAt is 0, which the progress bar has to survive",
-	},
-	{id: "edsger", name: "Edsger Dijkstra", adds: []int{600, 600}, why: "platinum"},
-	{id: "john", name: "John von Neumann", adds: []int{1000}, why: "platinum"},
-	{id: "claude", name: "Claude Shannon", adds: []int{800, 800}, why: "platinum"},
-	{id: "linus", name: "Linus Torvalds", adds: []int{1000, 500}, why: "platinum"},
 	{
 		id: "capped", name: "Max Capacity",
-		adds: cappedAdds(),
-		why:  "just under the points cap, so handler rejections are reachable",
+		adds: []int{1000, 1000, 1000, 1000, 960},
+		why:  "at 4960 of the 5000 cap, so any add over 40 is a handler rejection",
 	},
-}
-
-// cappedAdds takes a customer to 99,960 points: high enough that any add over
-// 40 gets a handler rejection, which -- unlike a validator rejection -- leaves
-// an audit row.
-func cappedAdds() []int {
-	adds := make([]int, 0, 100)
-	for i := 0; i < 99; i++ {
-		adds = append(adds, 1000)
-	}
-	return append(adds, 960)
 }
 
 func main() {
-	// The compose one-shot sets this to the in-network address. The default is
-	// the published port, for running this directly with `go run`.
+	// The compose one-shot sets this to the in-network address; the default is
+	// the published port for running directly with `go run`.
 	base := env("API_BASE", "http://localhost:8081")
 
 	if err := ping(base); err != nil {
 		log.Fatalf("no API at %s: %v\nis the stack up? try `make ps`, then `make up`", base, err)
 	}
 
-	set := append([]customer{}, seedSet...)
-
-	start := time.Now()
-	created, matched, wrong := 0, 0, 0
-	for _, c := range set {
-		switch status, err := ensure(base, c); {
+	created, existing, failed := 0, 0, 0
+	for _, c := range seedSet {
+		switch madeNew, err := ensure(base, c); {
 		case err != nil:
-			wrong++
+			failed++
 			log.Printf("  %-10s FAILED: %v", c.id, err)
-		case status == "":
+		case madeNew:
 			created++
-			fmt.Printf("  %-10s created   %-4d adds  %s\n", c.id, len(c.adds), c.why)
+			fmt.Printf("  %-10s created   %s\n", c.id, c.why)
 		default:
-			matched++
-			fmt.Printf("  %-10s %s\n", c.id, status)
+			existing++
+			fmt.Printf("  %-10s already exists\n", c.id)
 		}
 	}
 
-	fmt.Printf("\n%d created, %d already correct, %d wrong, of %d in %s\n",
-		created, matched, wrong, len(set), time.Since(start).Round(time.Millisecond))
-
-	if wrong > 0 {
-		fmt.Printf("\nSome customers do not match the intended dataset, and there is no way\n" +
-			"to reset them through the API. For a clean slate:\n" +
-			"  make reset && make seed\n")
+	fmt.Printf("\n%d created, %d already existed, %d failed\n", created, existing, failed)
+	if failed > 0 {
 		os.Exit(1)
 	}
 
-	// Not base: in the compose one-shot that is an address on the compose
-	// network, which is no use to whoever is reading this.
 	fmt.Printf("\n  %s/api/customers\n", env("API_PUBLIC_BASE", base))
 	fmt.Printf("  make audit ID=ada\n")
-	fmt.Printf("  make reap WF=customer-capped     # then `make audit ID=capped` for a truncated log\n")
 }
 
-// ensure creates the customer if absent, and otherwise checks the one that is
-// already there against what this dataset intends.
-//
-// Returns an empty status for "created", a description for "already correct",
-// and an error when an existing customer does not match.
-func ensure(base string, c customer) (string, error) {
-	cur, err := fetch(base, c.id)
-	switch {
-	case err == nil:
-		return check(c, cur)
-	case !isNotFound(err):
-		return "", err
+// ensure creates the customer if absent. Reports whether it created one.
+func ensure(base string, c customer) (bool, error) {
+	if err := exists(base, c.id); err == nil {
+		return false, nil
+	} else if !isNotFound(err) {
+		return false, err
 	}
 
 	if err := create(base, c); err != nil {
-		return "", err
+		return false, err
 	}
-	return "", nil
+	return true, nil
 }
 
-// check compares an existing customer with what the dataset asks for. It
-// deliberately does not repair a mismatch: points only go up.
-func check(c customer, cur customerState) (string, error) {
-	want := 0
-	for _, a := range c.adds {
-		want += a
-	}
-	wantStatus := "active"
-	if c.deactivate {
-		wantStatus = "deactivated"
-	}
-
-	if cur.Points != want || cur.Status != wantStatus {
-		return "", fmt.Errorf("exists with %d points/%s, dataset wants %d/%s",
-			cur.Points, cur.Status, want, wantStatus)
-	}
-	return fmt.Sprintf("already correct at %d points (%s)", cur.Points, cur.Status), nil
-}
-
-// customerState is the subset of CustomerResponse the seed checks against.
-type customerState struct {
-	Points int    `json:"points"`
-	Status string `json:"status"`
-}
-
-func fetch(base, id string) (customerState, error) {
-	var c customerState
-	err := do(http.MethodGet, base+"/api/customers/"+id, nil, &c)
-	return c, err
+func exists(base, id string) error {
+	return do(http.MethodGet, base+"/api/customers/"+id, nil, nil)
 }
 
 // isNotFound reports whether the API said the customer does not exist, as
@@ -259,9 +185,9 @@ func do(method, url string, body, out any) error {
 		}
 		raw, _ := io.ReadAll(resp.Body)
 		if json.Unmarshal(raw, &e) == nil && e.Error.Code != "" {
-			return &httpError{resp.StatusCode, e.Error.Code, e.Error.Message}
+			return &httpError{resp.StatusCode, e.Error.Message}
 		}
-		return &httpError{resp.StatusCode, "", string(bytes.TrimSpace(raw))}
+		return &httpError{resp.StatusCode, string(bytes.TrimSpace(raw))}
 	}
 	if out != nil {
 		return json.NewDecoder(resp.Body).Decode(out)
@@ -269,18 +195,13 @@ func do(method, url string, body, out any) error {
 	return nil
 }
 
-// httpError carries the status alongside the API's own words, so callers can
-// tell "this customer does not exist" from "the API could not answer".
+// httpError carries the status alongside the API's own words.
 type httpError struct {
 	status  int
-	code    string
 	message string
 }
 
 func (e *httpError) Error() string {
-	if e.code != "" {
-		return fmt.Sprintf("%s (%s)", e.message, e.code)
-	}
 	return fmt.Sprintf("HTTP %d: %s", e.status, e.message)
 }
 

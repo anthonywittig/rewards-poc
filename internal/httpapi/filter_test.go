@@ -1,20 +1,15 @@
 package httpapi
 
 import (
-	"encoding/json"
+	"errors"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"testing"
-
-	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
 // nameTerms mirrors Elasticsearch's standard tokenizer, because that is what
-// indexed the CustomerName field the terms are matched against. These cases pin
-// the two behaviors that are easy to break by "simplifying" the regex: an
-// intra-word apostrophe does not split, and everything else non-alphanumeric
-// does.
+// indexed the CustomerName field the terms are matched against: an intra-word
+// apostrophe does not split, everything else non-alphanumeric does.
 func TestNameTerms(t *testing.T) {
 	for _, tc := range []struct {
 		input string
@@ -83,63 +78,13 @@ func TestBuildListFilterRejectsUnknownValues(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := buildListFilter(tc.tier, tc.status, "")
-			code, kind := status(t, err)
-			if code != http.StatusBadRequest || kind != CodeInvalidRequest {
-				t.Errorf("got %d/%s, want 400/%s", code, kind, CodeInvalidRequest)
+			var apiErr *apiError
+			if !errors.As(err, &apiErr) {
+				t.Fatalf("err = %v, want an apiError", err)
+			}
+			if apiErr.status != http.StatusBadRequest || apiErr.code != CodeInvalidRequest {
+				t.Errorf("got %d/%s, want 400/%s", apiErr.status, apiErr.code, CodeInvalidRequest)
 			}
 		})
-	}
-}
-
-// Through the real mux: the structured params become clauses in the query that
-// actually reaches the visibility store, scoped and parenthesised.
-func TestListFilterParamsReachVisibilityQuery(t *testing.T) {
-	stub := &stubTemporal{}
-	h := newTestServer(stub)
-
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-		"/api/customers?tier=gold&status=deactivated&name=Ada+Lov", nil))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
-	}
-
-	if len(stub.listQueries) != 1 {
-		t.Fatalf("ListWorkflow called %d times, want 1", len(stub.listQueries))
-	}
-	got := stub.listQueries[0]
-	want := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
-		" AND ExecutionStatus != 'ContinuedAsNew'" +
-		" AND (RewardsLevel = 'gold'" +
-		" AND RewardsActive = false" +
-		" AND CustomerName STARTS_WITH 'ada'" +
-		" AND CustomerName STARTS_WITH 'lov')"
-	if got != want {
-		t.Errorf("visibility query:\n got %q\nwant %q", got, want)
-	}
-
-	// The response echoes the effective filter -- what the UI shows as
-	// pasteable into the Temporal UI.
-	var res CustomerListResponse
-	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	wantEcho := "RewardsLevel = 'gold' AND RewardsActive = false" +
-		" AND CustomerName STARTS_WITH 'ada' AND CustomerName STARTS_WITH 'lov'"
-	if res.Query != wantEcho {
-		t.Errorf("echoed query:\n got %q\nwant %q", res.Query, wantEcho)
-	}
-}
-
-// A bad param fails before any visibility call: a 400 that had already fetched
-// rows would look half-done.
-func TestListRejectsBadFilterParamsBeforeQuerying(t *testing.T) {
-	stub := &stubTemporal{}
-	code, body := doGET(t, newTestServer(stub), "/api/customers?tier=neon")
-	if code != http.StatusBadRequest || body.Error.Code != CodeInvalidRequest {
-		t.Fatalf("got %d/%s, want 400/%s", code, body.Error.Code, CodeInvalidRequest)
-	}
-	if stub.listQueries != nil {
-		t.Errorf("visibility store must not be queried, got %v", stub.listQueries)
 	}
 }

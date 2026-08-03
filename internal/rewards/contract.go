@@ -2,21 +2,17 @@ package rewards
 
 import "time"
 
-// The Update/Query contract, and the derived view the Query answers with. It
-// lives in the domain package so internal/httpapi never has to import workflow
-// code to know the shape of a request.
+// The Update/Query contract the workflow exposes and every caller speaks.
 
-// Handler names. Exported because the API layer and the `temporal` CLI both
-// address handlers by string, and a typo there is a runtime error.
+// Handler names, addressed by string from the API layer and the temporal CLI.
 const (
 	UpdateAddPoints  = "addPoints"
 	UpdateDeactivate = "deactivate"
 	QueryGetStatus   = "getStatus"
 )
 
-// Error types returned by Update handlers. The API layer maps these to HTTP
-// status codes; naming them here keeps that mapping from being a string match
-// on an error message.
+// Error types returned by Update handlers. The API maps these to HTTP status
+// codes by type, not by message text.
 const (
 	ErrTypePointsCapExceeded = "PointsCapExceeded"
 	ErrTypeInvalidEnrollment = "InvalidEnrollment"
@@ -35,8 +31,8 @@ type AddPointsResult struct {
 	Level   string `json:"level"`
 }
 
-// DeactivateResult is what deactivate returns so the audit crawl can tell a
-// real leave from an idempotent no-op (repeat DELETE).
+// DeactivateResult reports whether the Update actually changed anything, so a
+// raced duplicate is distinguishable from the real leave.
 type DeactivateResult struct {
 	Changed bool `json:"changed"`
 }
@@ -50,12 +46,8 @@ type CustomerStatus struct {
 	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
 	EnrolledAt time.Time `json:"enrolledAt"`
 
-	// The ladder Level and NextTierAt were read from. Answered by the workflow
-	// rather than assembled by the API so all three agree: the api and the
-	// worker are separate binaries and separate deploys, so an API that
-	// attached its own ladder could pair a NextTierAt from one build with rungs
-	// from another during a rollout, and draw a target that is not on the
-	// ladder beside it.
+	// The ladder Level and NextTierAt were derived from, so the UI never holds
+	// its own copy of the thresholds.
 	Tiers []Tier `json:"tiers"`
 
 	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
@@ -63,8 +55,7 @@ type CustomerStatus struct {
 	Active             bool `json:"active"`
 }
 
-// StatusOf projects state into the Query result, deriving the tier fields rather
-// than reading them from state.
+// StatusOf projects state into the Query result.
 func StatusOf(state *CustomerState) CustomerStatus {
 	nextAt, _ := NextTierAt(state.Points)
 	return CustomerStatus{

@@ -6,10 +6,8 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
-// --- Tier derivation -------------------------------------------------------
-//
-// Pure-function boundaries, asserted exhaustively. No test environment needed,
-// which is the payoff of keeping the rules out of the workflow package.
+// Tier derivation is a pure function, so no test environment is needed --
+// the payoff of keeping the rules out of the workflow package.
 
 func TestLevelBoundaries(t *testing.T) {
 	for _, tc := range []struct {

@@ -11,34 +11,20 @@ import (
 )
 
 // Error classification, derived by triggering each condition against a real
-// server rather than by reading documentation. The observed shapes:
-//
-//	condition                     Go type                                    Type()
-//	---------------------------   ----------------------------------------   ------------------
-//	missing customer              *serviceerror.NotFound                     --
-//	duplicate enrollment          *serviceerror.WorkflowExecutionAlreadyStarted  --
-//	validator rejection           *temporal.ApplicationError                 "" (empty)
-//	handler rejection             *temporal.ApplicationError                 "PointsCapExceeded"
-//	no worker polling (query)     *serviceerror.FailedPrecondition           --
-//	no worker polling (update)    <blocks forever -- see updateTimeout>
-//
-// The two useful surprises: both halves of the validator/handler split arrive as
-// ApplicationError distinguished only by Type(), and a no-worker Update does not
-// fail at all where a Query fails fast.
+// server. Notable shapes: both halves of the validator/handler split arrive as
+// *temporal.ApplicationError distinguished only by Type(), and an Update with
+// no worker does not fail -- it blocks until our own updateTimeout fires.
 
-// isWorkerUnavailable reports whether the failure is "nothing is polling the task
-// queue".
+// isWorkerUnavailable reports whether the failure means "nothing is polling
+// the task queue".
 func isWorkerUnavailable(err error) bool {
-	// FailedPrecondition covers more than a missing poller. The whole type is
-	// 503-is-retryable, but only workerUnavailableMessage decides whether to
-	// blame the worker by name.
 	var failedPre *serviceerror.FailedPrecondition
 	if errors.As(err, &failedPre) {
 		return true
 	}
 
-	// An Update with no worker does not fail -- it blocks -- so it reaches us as
-	// the deadline we imposed in updateTimeout, wrapped in the SDK's own type.
+	// An Update with no worker blocks, so it reaches us as the deadline we
+	// imposed, wrapped in the SDK's own type.
 	var updTimeout *client.WorkflowUpdateServiceTimeoutOrCanceledError
 	if errors.As(err, &updTimeout) {
 		return true
@@ -46,19 +32,16 @@ func isWorkerUnavailable(err error) bool {
 	return isTimeout(err)
 }
 
-// isTimeout reports whether a call ran out of the time we gave it. Both
-// spellings matter: the SDK surfaces a server-side deadline as its own typed
-// error, a deadline our context imposed as the stdlib sentinel. context.Canceled
-// is deliberately absent -- that is the caller hanging up.
+// isTimeout covers both spellings of a deadline: the SDK's typed error for a
+// server-side one, the stdlib sentinel for one our context imposed.
+// context.Canceled is deliberately absent -- that is the caller hanging up.
 func isTimeout(err error) bool {
 	var deadline *serviceerror.DeadlineExceeded
 	return errors.As(err, &deadline) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // isBusinessRejection reports whether the workflow itself refused the request,
-// as opposed to the request failing to reach it. Both halves of the
-// validator/handler split land here and both become 422; what matters is that
-// neither is confused with an outage.
+// as opposed to the request failing to reach it.
 func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	var appErr *temporal.ApplicationError
 	if !errors.As(err, &appErr) {
@@ -67,19 +50,10 @@ func isBusinessRejection(err error) (*temporal.ApplicationError, bool) {
 	return appErr, true
 }
 
-// isClosedRun reports whether an Update failed because the run it targeted is no
-// longer open. Observed as *serviceerror.NotFound carrying "workflow execution
-// already completed".
-//
-// Deliberately NOT called "isRolloverAbort": the same NotFound arises from two
-// situations needing opposite responses, and nothing in the error tells them
-// apart.
-//
-//	continue-as-new  -- the old run closed, a successor is running   -> retry
-//	deactivation     -- the customer left, nothing is running        -> refuse
-//
-// Resolving it requires asking the server what is running now -- see
-// updateWithRolloverRetry.
+// isClosedRun reports whether an Update failed because the run it targeted is
+// no longer open. The same NotFound arises from continue-as-new (retry against
+// the successor) and from a closed workflow (refuse); the caller disambiguates
+// by asking what is running now.
 func isClosedRun(err error) bool {
 	if err == nil {
 		return false
@@ -93,28 +67,14 @@ func isClosedRun(err error) bool {
 	return errors.As(err, &notFound)
 }
 
-// isHistoryGone reports whether a run's Event History has been deleted --
-// reaped after retention, or removed on demand by `make reap`.
+// isHistoryGone reports whether a run's Event History has been deleted after
+// retention. The audit crawl detects truncation by this error.
 //
-// The audit crawl detects truncation by *this error*, so getting it wrong turns
-// a truncated log into an unmapped 500. Measured against the real server,
-// GetWorkflowHistory answers:
-//
-//	condition                        Go type                          message
-//	------------------------------   ------------------------------   -----------------------------------
-//	run reaped                       *serviceerror.InvalidArgument    "Requested workflow history not
-//	                                                                   found, may have passed retention
-//	                                                                   period."
-//	run ID well-formed, never used   *serviceerror.InvalidArgument    (identical to the above)
-//	run ID malformed                 *serviceerror.InvalidArgument    "Invalid RunId."
-//	workflow ID never existed        *serviceerror.NotFound           "workflow not found for ID: ..."
-//
-// So the type alone cannot decide it, and this is the one place in the codebase
-// that matches on message text -- everywhere else that would be a bug.
-//
-// If a server upgrade changes that wording, truncation stops being recognised
-// and surfaces as a 500. That is the direction to fail in: a loud error beats a
-// timeline that quietly shows fewer rows than the customer has.
+// Measured against a real server, a reaped run answers *InvalidArgument* with
+// "...may have passed retention period." -- so the type alone cannot decide
+// it, and this is the one place in the codebase that matches on message text.
+// If a server upgrade changes the wording this surfaces as a loud 500 rather
+// than a quietly shorter timeline, which is the right direction to fail in.
 func isHistoryGone(err error) bool {
 	var notFound *serviceerror.NotFound
 	if errors.As(err, &notFound) {
