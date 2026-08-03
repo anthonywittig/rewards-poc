@@ -13,10 +13,13 @@ import (
 )
 
 func TestAddPoints_Sums(t *testing.T) {
+	const name = "Ada Lovelace"
+	customerID := rewards.CustomerIDForName(name)
+
 	var ts testsuite.WorkflowTestSuite
 	env := ts.NewTestWorkflowEnvironment()
 	env.SetStartWorkflowOptions(client.StartWorkflowOptions{
-		ID:        rewards.WorkflowID("c-001"),
+		ID:        rewards.WorkflowID(customerID),
 		TaskQueue: rewards.TaskQueue,
 	})
 
@@ -41,8 +44,8 @@ func TestAddPoints_Sums(t *testing.T) {
 	env.RegisterDelayedCallback(func() { env.CancelWorkflow() }, 4*time.Minute)
 
 	env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, rewards.CustomerState{
-		CustomerID: "c-001",
-		Name:       "Ada Lovelace",
+		CustomerID: customerID,
+		Name:       name,
 		RunNumber:  1,
 	})
 
