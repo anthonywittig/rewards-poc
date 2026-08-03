@@ -106,21 +106,22 @@ curl localhost:8081/api/customers/c-001/audit
 ```
 
 `GET /api/customers` is a `ListWorkflow` plus a `CountWorkflow` and nothing else — no lookup
-table, no local index. `?q=` is passed to Temporal essentially as typed, so **the same query
-works unchanged in the Temporal UI**:
+table, no local index. Filtering is via structured params — `?tier=`, `?status=`
+(`active` / `deactivated` / `any`), and `?name=` (word-prefix match, every word must match).
+The API builds the visibility query from them and echoes it back as `query` in the response,
+so **the same query works unchanged in the Temporal UI**:
 
 ```sh
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
-curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"    # Text, partial
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsActive = false"   # deactivated
+curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
+curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
+curl -sG localhost:8081/api/customers --data-urlencode "name=ada lov"    # Ada Lovelace
 ```
 
-A rejected query comes back as a 400 carrying Temporal's own diagnostics. `ORDER BY` is the one
-exception, caught before the query is sent so you get an explanation instead of a bare syntax
-error. Because there's no ordering there's no meaningful pagination either: the list returns at
-most five rows, reports how many matched, and pushes you to filter — which is what the
-visibility store is good at.
+An unknown `tier` or `status` value is a 400. For anything the params can't express, take the
+echoed `query` to the Temporal UI and refine it there. There's no ordering (Temporal rejects
+`ORDER BY`) and therefore no meaningful pagination either: the list returns at most five rows,
+reports how many matched, and pushes you to filter — which is what the visibility store is
+good at.
 
 Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 

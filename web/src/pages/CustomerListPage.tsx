@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
-import { buildListQuery, formatDate, tierLabel } from '../format'
+import { formatDate, tierLabel } from '../format'
 import type { CustomerListItem, CustomerListResponse } from '../types'
 
 type SortKey = 'points' | 'name' | 'enrolledAt' | null
@@ -14,14 +14,14 @@ const TIERS = ['basic', 'gold', 'platinum'] as const
 /** Long enough to coalesce a burst of keystrokes, short enough to feel live. */
 const SEARCH_DEBOUNCE_MS = 250
 
-/** A response tagged with the query that produced it. */
+/** A response tagged with the filters that produced it. */
 interface Loaded {
-  query: string
+  key: string
   res: CustomerListResponse
 }
 
 interface Failed {
-  query: string
+  key: string
   err: unknown
 }
 
@@ -35,10 +35,10 @@ export function CustomerListPage() {
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [failed, setFailed] = useState<Failed | null>(null)
 
-  const query = useMemo(
-    () => buildListQuery({ tier, status, name }),
-    [tier, status, name],
-  )
+  // The filters travel to the API as plain params; the visibility query is
+  // built there and comes back as `query` on the response. This key only has to
+  // identify a filter combination, not mean anything.
+  const filterKey = JSON.stringify({ tier, status, name })
 
   // Search as you type, one request per pause rather than one per keystroke.
   useEffect(() => {
@@ -46,11 +46,11 @@ export function CustomerListPage() {
     return () => window.clearTimeout(t)
   }, [search])
 
-  // Tagging responses with their query keeps "does this belong to the filter on
-  // screen?" a derived value, so rows cannot render under a query they did not
-  // match.
-  const data = loaded?.query === query ? loaded.res : null
-  const error = failed?.query === query ? failed.err : null
+  // Tagging responses with their filters keeps "does this belong to the filter
+  // on screen?" a derived value, so rows cannot render under a filter they did
+  // not match.
+  const data = loaded?.key === filterKey ? loaded.res : null
+  const error = failed?.key === filterKey ? failed.err : null
   const loading = !data && !error
 
   useEffect(() => {
@@ -58,13 +58,13 @@ export function CustomerListPage() {
 
     async function run() {
       try {
-        const res = await listCustomers(query)
+        const res = await listCustomers({ tier, status, name })
         if (cancelled) return
-        setLoaded({ query, res })
+        setLoaded({ key: filterKey, res })
         setFailed(null)
       } catch (err) {
         if (cancelled) return
-        setFailed({ query, err })
+        setFailed({ key: filterKey, err })
       }
     }
 
@@ -72,7 +72,8 @@ export function CustomerListPage() {
     return () => {
       cancelled = true
     }
-  }, [query])
+    // filterKey is derived from these three, so tagging stays consistent.
+  }, [tier, status, name])
 
   // The rows and chrome stay on the last response while the next one loads:
   // unmounting the notices shifts the table ~90px on every pause in typing, and
@@ -196,10 +197,13 @@ export function CustomerListPage() {
           />
         </div>
 
+        {/* The query is the response's echo of what the API built, so it
+            labels the rows actually on screen — during a refetch it trails the
+            chips by one response, exactly like the rows do. */}
         <p className="hint">
-          {query ? (
+          {shown?.query ? (
             <>
-              Effective query: <code>{query}</code> — paste it into the{' '}
+              Effective query: <code>{shown.query}</code> — paste it into the{' '}
               <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
                 Temporal UI
               </a>
