@@ -24,9 +24,10 @@ docker compose -f deploy/docker-compose.yml exec -T web npm run build
 
 Browser requests stay same-origin. Vite proxies `/api` to
 `VITE_API_PROXY_TARGET`, which the service sets to `http://api:8081` — the proxy
-hop happens inside the compose network, not in the browser. Links to the Temporal
-UI use `VITE_TEMPORAL_UI_URL`, which is a published address (`localhost`) because
-the browser is the one following it. The dev server's own port follows `WEB_PORT`
-(default `5173`, `strictPort`), published unchanged so Vite's hot-reload socket
-reaches the same port the browser loaded from. The Go API does not send CORS
-headers, so pointing the browser at `:8081` directly fails — use the proxy.
+hop happens inside the compose network, not in the browser. Links into the
+Temporal UI come pre-built in API responses (the API's `TEMPORAL_UI_URL`), so
+the web service holds no Temporal configuration. The dev server's own port
+follows `WEB_PORT` (default `5173`, `strictPort`), published unchanged so
+Vite's hot-reload socket reaches the same port the browser loaded from. The Go
+API does not send CORS headers, so pointing the browser at `:8081` directly
+fails — use the proxy.

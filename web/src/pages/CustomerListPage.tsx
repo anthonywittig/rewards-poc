@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { listCustomers, temporalUiUrl } from '../api'
+import { listCustomers } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
 import { formatDate, tierLabel } from '../format'
@@ -178,29 +178,31 @@ export function CustomerListPage() {
           />
         </div>
 
-        {/* The query is the response's echo of what the API built, so it
-            labels the rows actually on screen — during a refetch it trails the
-            chips by one response, exactly like the rows do. */}
-        <p className="hint">
-          {shown?.query ? (
-            <>
-              Effective query: <code>{shown.query}</code> — paste it into the{' '}
-              <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
-                Temporal UI
-              </a>
-              .
-            </>
-          ) : (
-            <>
-              No filters — listing every customer. Filters become a visibility query
-              you can paste into the{' '}
-              <a href={temporalUiUrl()} target="_blank" rel="noreferrer">
-                Temporal UI
-              </a>
-              .
-            </>
-          )}
-        </p>
+        {/* The query and its link come from the response, so they label the
+            rows actually on screen — during a refetch they trail the chips by
+            one response, exactly like the rows do. */}
+        {shown ? (
+          <p className="hint">
+            {shown.query ? (
+              <>
+                Effective query: <code>{shown.query}</code> —{' '}
+                <a href={shown.queryUrl} target="_blank" rel="noreferrer">
+                  run it in the Temporal UI
+                </a>
+                .
+              </>
+            ) : (
+              <>
+                No filters — listing every customer. Filters become a visibility
+                query you can{' '}
+                <a href={shown.queryUrl} target="_blank" rel="noreferrer">
+                  run in the Temporal UI
+                </a>
+                .
+              </>
+            )}
+          </p>
+        ) : null}
       </div>
 
       <ErrorBanner error={error} />

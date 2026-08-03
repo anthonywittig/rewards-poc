@@ -119,3 +119,16 @@ func NextTierAt(points int) (int, bool) {
 	}
 	return 0, false
 }
+
+// PrevTierAt returns the balance at which the customer's current tier began:
+// the highest rung already reached, or 0 for basic. With NextTierAt it
+// brackets the segment of the climb a progress bar draws.
+func PrevTierAt(points int) int {
+	at := 0
+	for _, t := range tiers {
+		if points >= t.MinPoints {
+			at = t.MinPoints
+		}
+	}
+	return at
+}

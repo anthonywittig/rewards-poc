@@ -49,7 +49,14 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	if err != nil {
 		return mapStoreReadError(err)
 	}
-	writeJSON(w, s.log, http.StatusOK, assemble(id, runs, truncated))
+
+	res := assemble(id, runs, truncated)
+	// Links are the handler's concern: assemble stays pure and testable
+	// against recorded histories with no UI configuration in the fixtures.
+	for i := range res.Entries {
+		res.Entries[i].HistoryURL = s.ui.historyURL(res.WorkflowID, res.Entries[i].RunID)
+	}
+	writeJSON(w, s.log, http.StatusOK, res)
 	return nil
 }
 
