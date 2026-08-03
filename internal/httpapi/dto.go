@@ -86,8 +86,8 @@ const ListLimit = 5
 // CustomerListResponse is the body of GET /api/customers.
 //
 // Properties the UI has to respect, all consequences of the visibility store:
-// results are unsorted (sort client-side, and only when Complete), which rows
-// you get is unspecified, and results lag writes by a few hundred ms.
+// results come back in an unspecified order (rendered as-is), which rows you
+// get is unspecified, and results lag writes by a few hundred ms.
 type CustomerListResponse struct {
 	Items []CustomerListItem `json:"items"`
 	// The cap that was applied, echoed so the UI does not hardcode it.

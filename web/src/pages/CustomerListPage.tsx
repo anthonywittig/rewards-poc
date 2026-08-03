@@ -4,10 +4,7 @@ import { listCustomers, temporalUiUrl } from '../api'
 import { ErrorBanner } from '../components/ErrorBanner'
 import { TierBadge } from '../components/TierBadge'
 import { formatDate, tierLabel } from '../format'
-import type { CustomerListItem, CustomerListResponse } from '../types'
-
-type SortKey = 'points' | 'name' | 'enrolledAt' | null
-type SortDir = 'asc' | 'desc'
+import type { CustomerListResponse } from '../types'
 
 const TIERS = ['basic', 'gold', 'platinum'] as const
 
@@ -30,8 +27,6 @@ export function CustomerListPage() {
   const [status, setStatus] = useState<'active' | 'deactivated' | 'any'>('active')
   const [search, setSearch] = useState('')
   const [name, setName] = useState('')
-  const [sortKey, setSortKey] = useState<SortKey>(null)
-  const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [loaded, setLoaded] = useState<Loaded | null>(null)
   const [failed, setFailed] = useState<Failed | null>(null)
 
@@ -82,13 +77,9 @@ export function CustomerListPage() {
   // visibility lag itself, worth seeing rather than papering over.
   const shown = data ?? (loading ? loaded?.res ?? null : null)
 
-  const items = useMemo(() => {
-    let rows = shown?.items ?? []
-    if (shown?.complete && sortKey) {
-      rows = [...rows].sort((a, b) => compare(a, b, sortKey, sortDir))
-    }
-    return rows
-  }, [shown, sortKey, sortDir])
+  // Rendered in the order Temporal returned them, which is unspecified — the
+  // honest presentation of an index with no ORDER BY.
+  const items = shown?.items ?? []
 
   // Whether to say "nothing matched". True when the rows are empty *because the
   // response was* — the notice stays on screen across a refetch rather than
@@ -111,16 +102,6 @@ export function CustomerListPage() {
       shown.total < 0 ? 'many' : String(shown.total)
     return `Showing ${shown.items.length} of ${of} — filter to find additional results`
   }, [shown])
-
-  function toggleSort(key: SortKey) {
-    if (!shown?.complete || !key) return
-    if (sortKey === key) {
-      setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))
-    } else {
-      setSortKey(key)
-      setSortDir(key === 'name' ? 'asc' : 'desc')
-    }
-  }
 
   return (
     <>
@@ -225,40 +206,16 @@ export function CustomerListPage() {
       <ErrorBanner error={error} />
 
       {incompleteNotice ? <p className="notice">{incompleteNotice}</p> : null}
-      {shown && !shown.complete ? (
-        <p className="hint" style={{ marginTop: '-0.5rem', marginBottom: '1rem' }}>
-          Sorting is disabled until the result set fits in one page — sorting five
-          arbitrary rows of a larger match would look authoritative and be wrong.
-        </p>
-      ) : null}
 
       <div className="table-wrap" aria-busy={loading}>
         <table>
           <thead>
             <tr>
-              <SortableTh
-                label="Name"
-                active={sortKey === 'name'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('name')}
-              />
+              <th>Name</th>
               <th>Tier</th>
-              <SortableTh
-                label="Points"
-                active={sortKey === 'points'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('points')}
-              />
+              <th>Points</th>
               <th>Status</th>
-              <SortableTh
-                label="Enrolled"
-                active={sortKey === 'enrolledAt'}
-                dir={sortDir}
-                enabled={!!shown?.complete}
-                onClick={() => toggleSort('enrolledAt')}
-              />
+              <th>Enrolled</th>
               <th>Run</th>
             </tr>
           </thead>
@@ -309,43 +266,4 @@ export function CustomerListPage() {
       </div>
     </>
   )
-}
-
-function SortableTh({
-  label,
-  active,
-  dir,
-  enabled,
-  onClick,
-}: {
-  label: string
-  active: boolean
-  dir: SortDir
-  enabled: boolean
-  onClick: () => void
-}) {
-  return (
-    <th
-      className="sortable"
-      aria-disabled={!enabled}
-      onClick={onClick}
-      title={enabled ? 'Sort' : 'Sorting only when the full result set fits one page'}
-    >
-      {label}
-      {active ? (dir === 'asc' ? ' ↑' : ' ↓') : null}
-    </th>
-  )
-}
-
-function compare(
-  a: CustomerListItem,
-  b: CustomerListItem,
-  key: Exclude<SortKey, null>,
-  dir: SortDir,
-): number {
-  let cmp = 0
-  if (key === 'points') cmp = a.points - b.points
-  else if (key === 'name') cmp = a.name.localeCompare(b.name)
-  else cmp = a.enrolledAt.localeCompare(b.enrolledAt)
-  return dir === 'asc' ? cmp : -cmp
 }
