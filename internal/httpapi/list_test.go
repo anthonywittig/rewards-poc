@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"errors"
 	"reflect"
 	"runtime"
 	"strings"
@@ -49,50 +48,15 @@ func TestScopedQuery(t *testing.T) {
 	}
 }
 
-// ORDER BY is intercepted before the query is sent, purely so the error is
-// useful: Temporal's own "ORDER BY clause is not supported" is destroyed by our
-// parenthesising, which turns it into a bare syntax error.
-func TestHasOrderBy(t *testing.T) {
-	for _, tc := range []struct {
-		query string
-		want  bool
-	}{
-		{"RewardsLevel = 'gold' ORDER BY RewardsPoints DESC", true},
-		{"order by points", true},
-		{"RewardsLevel = 'gold' Order By RewardsPoints", true},
-		{"RewardsLevel = 'gold'", false},
-		{"", false},
-	} {
-		if got := hasOrderBy(tc.query); got != tc.want {
-			t.Errorf("hasOrderBy(%q) = %v, want %v", tc.query, got, tc.want)
-		}
+// Every query the list sends is one the server built from validated params, so
+// a rejection from the visibility store is our bug: a 500, never a 400 blaming
+// a caller who only picked from known values.
+func TestRejectedListQueryIsOurBug(t *testing.T) {
+	stub := &stubTemporal{
+		listErr: serviceerror.NewInvalidArgument("invalid search attribute: NoSuchAttribute"),
 	}
-}
-
-// A rejected query is the caller's fault and carries Temporal's diagnostics; a
-// rejection with no caller query is ours, and must not be blamed on them.
-func TestMapListError(t *testing.T) {
-	invalid := serviceerror.NewInvalidArgument("invalid search attribute: NoSuchAttribute")
-
-	mapped := mapListError(invalid, "NoSuchAttribute = 'x'")
-	gotCode, gotKind := status(t, mapped)
-	if gotCode != 400 || gotKind != CodeInvalidRequest {
-		t.Fatalf("got %d/%s, want 400/%s", gotCode, gotKind, CodeInvalidRequest)
-	}
-	var apiErr *apiError
-	errors.As(mapped, &apiErr)
-	if !strings.Contains(apiErr.message, "NoSuchAttribute") {
-		t.Errorf("server diagnostics should reach the caller, got %q", apiErr.message)
-	}
-
-	// Our own scoping clause was rejected: a 400 would blame the wrong party.
-	gotCode, _ = status(t, mapListError(invalid, ""))
-	if gotCode != 500 {
-		t.Errorf("rejection with no caller query = %d, want 500", gotCode)
-	}
-
-	// Anything not a rejected query is left for the common classifier.
-	if mapListError(serviceerror.NewUnavailable("connection refused"), "q") != nil {
-		t.Error("non-InvalidArgument must fall through to the common classifier")
+	code, body := doGET(t, newTestServer(stub), "/api/customers?tier=gold")
+	if code != 500 || body.Error.Code != CodeInternal {
+		t.Errorf("got %d/%s, want 500/%s", code, body.Error.Code, CodeInternal)
 	}
 }

@@ -75,10 +75,26 @@ export function temporalRunUrl(workflowId: string, runId: string): string {
   )}/${encodeURIComponent(runId)}/history`
 }
 
-export function listCustomers(query?: string): Promise<CustomerListResponse> {
-  const q = query?.trim()
-  const qs = q ? `?q=${encodeURIComponent(q)}` : ''
-  return request<CustomerListResponse>(`/api/customers${qs}`)
+/** The list filters, as the UI chips and search box hold them. */
+export interface ListFilter {
+  tier: string | null
+  status: 'active' | 'deactivated' | 'any'
+  name: string
+}
+
+/**
+ * Filters travel as plain params — the API builds the visibility query from
+ * them and echoes it back as `query` in the response. Defaults are omitted, so
+ * no filters means a bare GET.
+ */
+export function listCustomers(filter: ListFilter): Promise<CustomerListResponse> {
+  const params = new URLSearchParams()
+  if (filter.tier) params.set('tier', filter.tier)
+  if (filter.status !== 'any') params.set('status', filter.status)
+  const name = filter.name.trim()
+  if (name) params.set('name', name)
+  const qs = params.toString()
+  return request<CustomerListResponse>(`/api/customers${qs ? `?${qs}` : ''}`)
 }
 
 export function getCustomer(id: string): Promise<CustomerResponse> {

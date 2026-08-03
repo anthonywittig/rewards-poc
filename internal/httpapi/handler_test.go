@@ -55,6 +55,10 @@ type stubTemporal struct {
 	// Workflow IDs passed to ExecuteWorkflow, in order.
 	startIDs []string
 
+	// Queries passed to ListWorkflow, in order. Nil means the visibility
+	// store was never reached -- the assertion for rejected filter params.
+	listQueries []string
+
 	// Update names sent, in order. Nil means none -- which is the assertion
 	// for the paths that must never reach the workflow at all.
 	updates []string
@@ -133,8 +137,9 @@ func (s *stubTemporal) GetWorkflowHistory(
 }
 
 func (s *stubTemporal) ListWorkflow(
-	context.Context, *workflowservice.ListWorkflowExecutionsRequest,
+	_ context.Context, req *workflowservice.ListWorkflowExecutionsRequest,
 ) (*workflowservice.ListWorkflowExecutionsResponse, error) {
+	s.listQueries = append(s.listQueries, req.GetQuery())
 	if s.listErr != nil {
 		return nil, s.listErr
 	}
