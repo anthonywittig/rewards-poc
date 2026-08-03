@@ -16,9 +16,6 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// Fetcher reads one run's events.
-type Fetcher func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error)
-
 type Run struct {
 	RunID         string
 	PreviousRunID string
@@ -26,6 +23,15 @@ type Run struct {
 	StartState rewards.CustomerState
 	Entries    []Entry
 	EarnEvents int
+}
+
+// Build walks the run chain from runID and assembles the customer's Timeline.
+func Build(ctx context.Context, fetch Fetcher, customerID, runID string) (Timeline, error) {
+	runs, truncated, err := Walk(ctx, fetch, runID)
+	if err != nil {
+		return Timeline{}, err
+	}
+	return Assemble(customerID, runs, truncated), nil
 }
 
 // Walk follows the chain newest-first. truncated is true when a predecessor's
