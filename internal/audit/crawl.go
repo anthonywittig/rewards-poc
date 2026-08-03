@@ -13,11 +13,43 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/converter"
 )
 
 // Fetcher reads one run's events.
 type Fetcher func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error)
+
+// HistorySource is the GetWorkflowHistory half of a Temporal client.
+type HistorySource interface {
+	GetWorkflowHistory(
+		ctx context.Context,
+		workflowID string,
+		runID string,
+		isLongPoll bool,
+		filterType enumspb.HistoryEventFilterType,
+	) client.HistoryEventIterator
+}
+
+// NewFetcher reads runs of workflowID via the Temporal client.
+// isLongPoll is always false so a live workflow does not hang the crawl
+// waiting for future events.
+func NewFetcher(src HistorySource, workflowID string) Fetcher {
+	return func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error) {
+		iter := src.GetWorkflowHistory(ctx, workflowID, runID, false,
+			enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
+
+		var events []*historypb.HistoryEvent
+		for iter.HasNext() {
+			e, err := iter.Next()
+			if err != nil {
+				return nil, err
+			}
+			events = append(events, e)
+		}
+		return events, nil
+	}
+}
 
 type Run struct {
 	RunID         string
@@ -26,6 +58,15 @@ type Run struct {
 	StartState rewards.CustomerState
 	Entries    []Entry
 	EarnEvents int
+}
+
+// Build walks the run chain from runID and assembles the customer's Timeline.
+func Build(ctx context.Context, fetch Fetcher, customerID, runID string) (Timeline, error) {
+	runs, truncated, err := Walk(ctx, fetch, runID)
+	if err != nil {
+		return Timeline{}, err
+	}
+	return Assemble(customerID, runs, truncated), nil
 }
 
 // Walk follows the chain newest-first. truncated is true when a predecessor's

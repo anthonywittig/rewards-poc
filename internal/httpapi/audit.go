@@ -7,9 +7,6 @@ import (
 
 	"github.com/anthonywittig/rewards-poc/internal/audit"
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
-
-	enumspb "go.temporal.io/api/enums/v1"
-	historypb "go.temporal.io/api/history/v1"
 )
 
 // auditTimeout bounds the whole crawl: one GetWorkflowHistory round trip per
@@ -39,13 +36,16 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 		return mapStoreReadError(err)
 	}
 
-	runs, truncated, err := audit.Walk(ctx, s.fetchRun(wfID),
-		desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
+	crawled, err := audit.Build(
+		ctx,
+		audit.NewFetcher(s.temporal, wfID),
+		id,
+		desc.GetWorkflowExecutionInfo().GetExecution().GetRunId(),
+	)
 	if err != nil {
 		return mapStoreReadError(err)
 	}
 
-	crawled := audit.Assemble(id, runs, truncated)
 	// Links stay here: the crawl does not know where the Temporal UI lives.
 	res := AuditResponse{
 		Timeline: crawled,
@@ -59,24 +59,4 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	}
 	writeJSON(w, s.log, http.StatusOK, res)
 	return nil
-}
-
-// fetchRun reads one run's events from the server. isLongPoll must be false:
-// with it set, the iterator on a running workflow blocks waiting for future
-// events and the audit page for an active customer would hang.
-func (s *Server) fetchRun(wfID string) audit.Fetcher {
-	return func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error) {
-		iter := s.temporal.GetWorkflowHistory(ctx, wfID, runID, false,
-			enumspb.HISTORY_EVENT_FILTER_TYPE_ALL_EVENT)
-
-		var events []*historypb.HistoryEvent
-		for iter.HasNext() {
-			e, err := iter.Next()
-			if err != nil {
-				return nil, err
-			}
-			events = append(events, e)
-		}
-		return events, nil
-	}
 }
