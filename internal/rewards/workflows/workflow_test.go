@@ -46,6 +46,7 @@ func newState() rewards.CustomerState {
 	return rewards.CustomerState{
 		CustomerID: testCustomerID,
 		Name:       "Ada Lovelace",
+		RunNumber:  1,
 	}
 }
 
@@ -258,6 +259,9 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 		{"negative points",
 			func(st *rewards.CustomerState) { st.Points = -1 },
 			"non-negative"},
+		{"zero runNumber",
+			func(st *rewards.CustomerState) { st.RunNumber = 0 },
+			"at least 1"},
 		{"points earned with no earn events",
 			func(st *rewards.CustomerState) { st.Points = 10 },
 			"lifetimeEarnEvents is 0"},
@@ -296,7 +300,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_FiresOnTheNthAdd() {
 
 	s.Require().True(s.env.IsWorkflowCompleted())
 	next := s.continuedState()
-	s.Equal(1, next.Generation)
+	s.Equal(2, next.RunNumber)
 }
 
 // What survives the rollover. History is reaped after retention; the carried
@@ -305,7 +309,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	enrolled := time.Date(2021, 6, 7, 8, 9, 10, 0, time.UTC)
 	state := newState()
 	state.EnrolledAt = enrolled
-	state.Generation = 4
+	state.RunNumber = 4
 	state.Points = 200
 	state.LifetimeEarnEvents = 9
 
@@ -318,7 +322,7 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	s.Require().True(s.env.IsWorkflowCompleted())
 	next := s.continuedState()
 
-	s.Equal(5, next.Generation, "generation increments exactly once per roll")
+	s.Equal(5, next.RunNumber, "the run number increments exactly once per roll")
 	s.Equal(500, next.Points, "200 carried + 3x100 earned this run")
 	s.Equal(12, next.LifetimeEarnEvents, "9 carried + 3 this run")
 	s.True(next.EnrolledAt.Equal(enrolled), "original enrollment survives untouched")

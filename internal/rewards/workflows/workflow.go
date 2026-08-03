@@ -148,7 +148,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 	logger.Info("customer enrolled",
 		"customerId", state.CustomerID,
-		"generation", state.Generation,
+		"runNumber", state.RunNumber,
 		"points", state.Points,
 		"deactivated", state.Deactivated)
 
@@ -173,16 +173,16 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	if state.Deactivated {
 		logger.Info("customer deactivated; completing the workflow",
 			"customerId", state.CustomerID,
-			"generation", state.Generation,
+			"runNumber", state.RunNumber,
 			"points", state.Points)
 		return nil
 	}
 
-	state.Generation++
+	state.RunNumber++
 
 	logger.Info("continuing as new",
 		"customerId", state.CustomerID,
-		"generation", state.Generation,
+		"runNumber", state.RunNumber,
 		"earnsThisRun", earnsThisRun,
 		"points", state.Points)
 
@@ -196,7 +196,7 @@ func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) 
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),
 		rewards.KeyEnrolledAt.ValueSet(state.EnrolledAt),
-		rewards.KeyGeneration.ValueSet(int64(state.Generation)),
+		rewards.KeyRunNumber.ValueSet(int64(state.RunNumber)),
 		rewards.KeyActive.ValueSet(!state.Deactivated),
 	)
 }

@@ -24,7 +24,7 @@ export interface CustomerListItem {
   points: number
   level: string
   enrolledAt: string
-  generation: number
+  runNumber: number
   status: CustomerStatus
   runId: string
 }
@@ -56,7 +56,7 @@ export interface CustomerResponse {
   tiers: Tier[]
   enrolledAt: string
   lifetimeEarnEvents: number
-  generation: number
+  runNumber: number
   status: CustomerStatus
   runId: string
 }
@@ -91,13 +91,13 @@ export type AuditEntryKind =
   | 'enrolled'
   | 'points_added'
   | 'points_rejected'
-  | 'generation_rolled'
+  | 'run_rolled'
   | 'deactivated'
 
 export interface AuditEntry {
   kind: AuditEntryKind
   at: string
-  generation: number
+  runNumber: number
   runId: string
   eventId: number
   amount?: number

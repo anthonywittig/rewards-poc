@@ -101,6 +101,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
+		RunNumber:  1, // run numbers are 1-based; the enrollment run is run 1
 	})
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
@@ -201,7 +202,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 			Points:     v.Points,
 			Level:      v.Level,
 			EnrolledAt: v.EnrolledAt,
-			Generation: v.Generation,
+			RunNumber:  v.RunNumber,
 			Status:     status,
 			RunID:      e.GetExecution().GetRunId(),
 		})
@@ -220,7 +221,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 // scopedQuery constrains the list to our workflow type and to one execution
 // per customer. The visibility store holds one document per *run*, so a
 // customer who has continued-as-new twice appears three times; excluding
-// ContinuedAsNew leaves exactly the current generation -- for a departed
+// ContinuedAsNew leaves exactly the current run -- for a departed
 // customer, the Completed run their deactivation closed.
 func scopedQuery(userQuery string) string {
 	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
@@ -272,7 +273,7 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	out.Tiers = st.Tiers
 	out.EnrolledAt = st.EnrolledAt
 	out.LifetimeEarnEvents = st.LifetimeEarnEvents
-	out.Generation = st.Generation
+	out.RunNumber = st.RunNumber
 	if running && st.Active {
 		out.Status = "active"
 	}
@@ -473,7 +474,7 @@ type searchAttrValues struct {
 	Points     int
 	Level      string
 	EnrolledAt time.Time
-	Generation int
+	RunNumber  int
 	Active     *bool // nil when the attribute was never upserted
 }
 
@@ -505,7 +506,7 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
 	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
 	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
-	decodeInt(rewards.KeyGeneration.GetName(), &out.Generation)
+	decodeInt(rewards.KeyRunNumber.GetName(), &out.RunNumber)
 
 	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
 		_ = dc.FromPayload(p, &out.EnrolledAt)

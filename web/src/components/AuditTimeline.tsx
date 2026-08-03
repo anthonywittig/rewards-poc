@@ -16,14 +16,14 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
           {audit.entries.map((e) => {
             const key = `${e.runId}-${e.eventId}-${e.kind}`
 
-            if (e.kind === 'generation_rolled') {
+            if (e.kind === 'run_rolled') {
               return (
                 <RunStartDivider key={key} e={e} workflowId={audit.workflowId} />
               )
             }
 
             // Enrollment is two rows from one event: the membership fact, and
-            // under it the same run-start divider every other generation gets.
+            // under it the same run-start divider every other run gets.
             // Both name the WorkflowExecutionStarted event whose input is the
             // enrollment payload -- which is what makes the link worth having.
             if (e.kind === 'enrolled') {
@@ -76,8 +76,8 @@ function RunStartDivider({ e, workflowId }: { e: AuditEntry; workflowId: string 
           target="_blank"
           rel="noreferrer"
         >
-          Generation {e.generation} —{' '}
-          {e.kind === 'generation_rolled' ? 'continue-as-new workflow' : 'workflow'}{' '}
+          Run {e.runNumber} —{' '}
+          {e.kind === 'run_rolled' ? 'continue-as-new workflow' : 'workflow'}{' '}
           started
         </a>
       </div>

@@ -259,7 +259,7 @@ export function CustomerListPage() {
                 enabled={!!shown?.complete}
                 onClick={() => toggleSort('enrolledAt')}
               />
-              <th>Gen</th>
+              <th>Run</th>
             </tr>
           </thead>
           <tbody>
@@ -287,7 +287,7 @@ export function CustomerListPage() {
                   <span className={`status-pill status-${c.status}`}>{c.status}</span>
                 </td>
                 <td>{formatDate(c.enrolledAt)}</td>
-                <td>{c.generation}</td>
+                <td>{c.runNumber}</td>
               </tr>
             ))}
             {Array.from({ length: placeholders }, (_, i) => (

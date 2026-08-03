@@ -30,10 +30,19 @@ func ValidateEnrollment(workflowID string, state *CustomerState) error {
 			"name is required", ErrTypeInvalidEnrollment, nil)
 	}
 
-	if state.Points < 0 || state.LifetimeEarnEvents < 0 || state.Generation < 0 {
+	if state.Points < 0 || state.LifetimeEarnEvents < 0 {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("counters must be non-negative (points=%d lifetimeEarnEvents=%d generation=%d)",
-				state.Points, state.LifetimeEarnEvents, state.Generation),
+			fmt.Sprintf("counters must be non-negative (points=%d lifetimeEarnEvents=%d)",
+				state.Points, state.LifetimeEarnEvents),
+			ErrTypeInvalidEnrollment, nil)
+	}
+
+	// Run numbers are 1-based: the enrollment run is run 1. A zero here means
+	// the payload was built by something that never set it.
+	if state.RunNumber < 1 {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("runNumber must be at least 1 (the enrollment run is run 1), got %d",
+				state.RunNumber),
 			ErrTypeInvalidEnrollment, nil)
 	}
 
