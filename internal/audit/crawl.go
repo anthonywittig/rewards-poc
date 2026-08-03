@@ -92,7 +92,7 @@ type acceptedUpdate struct {
 
 // FromEvents maps one run's events to audit entries.
 func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
-	out := Run{RunID: runID}
+	run := Run{RunID: runID}
 	// Keyed by Accepted event id (same id UpdateCompleted.AcceptedEventId).
 	accepted := map[int64]acceptedUpdate{}
 	dc := converter.GetDefaultDataConverter()
@@ -102,17 +102,17 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
 			a := e.GetWorkflowExecutionStartedEventAttributes()
-			out.PreviousRunID = a.GetContinuedExecutionRunId()
-			decodeArg(dc, a.GetInput(), &out.StartState)
+			run.PreviousRunID = a.GetContinuedExecutionRunId()
+			decodeArg(dc, a.GetInput(), &run.StartState)
 
 			kind := KindEnrolled
-			if out.PreviousRunID != "" {
+			if run.PreviousRunID != "" {
 				kind = KindRunRolled
 			}
-			out.Entries = append(out.Entries, Entry{
+			run.Entries = append(run.Entries, Entry{
 				Kind:      kind,
 				At:        e.GetEventTime().AsTime(),
-				RunNumber: out.StartState.RunNumber,
+				RunNumber: run.StartState.RunNumber,
 				RunID:     runID,
 				EventID:   e.GetEventId(),
 			})
@@ -120,7 +120,7 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED:
 			a := e.GetWorkflowExecutionUpdateAcceptedEventAttributes()
 			req := a.GetAcceptedRequest()
-			u := acceptedUpdate{
+			acc := acceptedUpdate{
 				name:     req.GetInput().GetName(),
 				updateID: req.GetMeta().GetUpdateId(),
 				at:       e.GetEventTime().AsTime(),
@@ -128,47 +128,42 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 			}
 			var args rewards.AddPointsRequest
 			if decodeArg(dc, req.GetInput().GetArgs(), &args) {
-				u.amount, u.reason = args.Amount, args.Reason
+				acc.amount, acc.reason = args.Amount, args.Reason
 			}
-			accepted[e.GetEventId()] = u
+			accepted[e.GetEventId()] = acc
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
 			// Always paired: an Update accepted in run N completes in run N.
-			u := accepted[a.GetAcceptedEventId()]
+			acc := accepted[a.GetAcceptedEventId()]
 
 			// The departure. A *failed* leave applied nothing (the handler
 			// stages, then commits), so only a success draws a row.
-			if u.name == rewards.UpdateDeactivate {
+			if acc.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				out.Entries = append(out.Entries, Entry{
+				run.Entries = append(run.Entries, Entry{
 					Kind:      KindDeactivated,
-					At:        u.at,
-					RunNumber: out.StartState.RunNumber,
+					At:        acc.at,
+					RunNumber: run.StartState.RunNumber,
 					RunID:     runID,
-					EventID:   u.eventID,
-					RequestID: u.updateID,
+					EventID:   acc.eventID,
+					RequestID: acc.updateID,
 				})
-				continue
-			}
-
-			// A future Update handler must not render as a point-add.
-			if u.name != rewards.UpdateAddPoints {
 				continue
 			}
 
 			// Anchored to the accepted event: that is when the customer made
 			// the request.
 			entry := Entry{
-				At:        u.at,
-				RunNumber: out.StartState.RunNumber,
+				At:        acc.at,
+				RunNumber: run.StartState.RunNumber,
 				RunID:     runID,
-				EventID:   u.eventID,
-				Amount:    u.amount,
-				Reason:    u.reason,
-				RequestID: u.updateID,
+				EventID:   acc.eventID,
+				Amount:    acc.amount,
+				Reason:    acc.reason,
+				RequestID: acc.updateID,
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
@@ -182,12 +177,12 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 				entry.Kind = KindPointsAdded
 				entry.Balance = res.Balance
 				entry.Level = res.Level
-				out.EarnEvents++
+				run.EarnEvents++
 			}
-			out.Entries = append(out.Entries, entry)
+			run.Entries = append(run.Entries, entry)
 		}
 	}
-	return out
+	return run
 }
 
 // decodeArg decodes the first payload into dst, reporting whether it worked.
