@@ -61,10 +61,10 @@ one is a thin wrapper over a single Temporal primitive, which is the point:
 # The same name derives the same ID, so a second signup is a 409.
 curl -XPOST localhost:8081/api/customers -d '{"name":"Ada Lovelace"}'
 
-curl localhost:8081/api/customers/c-001
-curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":500,"reason":"purchase"}'
-curl -XDELETE localhost:8081/api/customers/c-001
-curl localhost:8081/api/customers/c-001/audit
+curl localhost:8081/api/customers/ada-lovelace
+curl -XPOST localhost:8081/api/customers/ada-lovelace/points -d '{"amount":500,"reason":"purchase"}'
+curl localhost:8081/api/customers/ada-lovelace/audit
+curl -XDELETE localhost:8081/api/customers/ada-lovelace
 ```
 
 The list is filterable — no lookup table. The server builds the visibility
@@ -115,7 +115,7 @@ trace:
 
 ```sh
 # validator: writes no history at all
-curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":-50,"reason":"oops"}'
+curl -XPOST localhost:8081/api/customers/ada/points -d '{"amount":-50,"reason":"oops"}'
 # handler: recorded, shows as points_rejected (seeded customer `capped` is at 4960)
 curl -XPOST localhost:8081/api/customers/capped/points -d '{"amount":100,"reason":"over cap"}'
 ```
