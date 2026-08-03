@@ -3,7 +3,6 @@ package httpapi
 import (
 	"context"
 	"errors"
-	"strings"
 
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
@@ -65,24 +64,4 @@ func isClosedRun(err error) bool {
 	}
 	var notFound *serviceerror.NotFound
 	return errors.As(err, &notFound)
-}
-
-// isHistoryGone reports whether a run's Event History has been deleted after
-// retention. The audit crawl detects truncation by this error.
-//
-// Measured against a real server, a reaped run answers *InvalidArgument* with
-// "...may have passed retention period." -- so the type alone cannot decide
-// it, and this is the one place in the codebase that matches on message text.
-// If a server upgrade changes the wording this surfaces as a loud 500 rather
-// than a quietly shorter timeline, which is the right direction to fail in.
-func isHistoryGone(err error) bool {
-	var notFound *serviceerror.NotFound
-	if errors.As(err, &notFound) {
-		return true
-	}
-	var invalid *serviceerror.InvalidArgument
-	if !errors.As(err, &invalid) {
-		return false
-	}
-	return strings.Contains(strings.ToLower(invalid.Error()), "retention period")
 }

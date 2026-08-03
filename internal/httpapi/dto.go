@@ -104,63 +104,6 @@ type CustomerListResponse struct {
 	QueryURL string `json:"queryUrl"`
 }
 
-// AuditEntryKind tags a row of the audit timeline. Stable strings: the UI
-// narrows on these.
-type AuditEntryKind string
-
-const (
-	AuditEnrolled       AuditEntryKind = "enrolled"
-	AuditPointsAdded    AuditEntryKind = "points_added"
-	AuditPointsRejected AuditEntryKind = "points_rejected"
-	AuditRunRolled      AuditEntryKind = "run_rolled"
-	AuditDeactivated    AuditEntryKind = "deactivated"
-)
-
-// AuditEntry is one row of the customer's history, reconstructed by crawling
-// Event History. Which fields are set depends on Kind. points_rejected only
-// covers handler-side rejections: a validator rejection wrote nothing to
-// history, so it is invisible here by design.
-type AuditEntry struct {
-	Kind      AuditEntryKind `json:"kind"`
-	At        time.Time      `json:"at"`
-	RunNumber int            `json:"runNumber"`
-	RunID     string         `json:"runId"`
-	// History event ID, unique only within its run.
-	EventID int64 `json:"eventId"`
-	// Deep link to this entry's run in the Temporal UI, filled in by the
-	// handler -- the crawl itself does not know where the UI lives.
-	HistoryURL string `json:"historyUrl"`
-
-	Amount    int    `json:"amount,omitempty"`
-	Reason    string `json:"reason,omitempty"`
-	Balance   int    `json:"balance,omitempty"`
-	Level     string `json:"level,omitempty"`
-	Failure   string `json:"failure,omitempty"`
-	RequestID string `json:"requestId,omitempty"`
-}
-
-// AuditResponse is the body of GET /api/customers/{id}/audit.
-//
-// Truncation is part of the contract, not an error: closed runs are reaped
-// after retention, so the crawl walks back until history is gone and then says
-// so, quantified -- the UI renders "Showing 7 of 23 point events."
-type AuditResponse struct {
-	CustomerID string `json:"customerId"`
-	// The execution the entries were crawled from.
-	WorkflowID string       `json:"workflowId"`
-	Entries    []AuditEntry `json:"entries"` // newest first
-	// True when the crawl hit a run whose history had been deleted.
-	Truncated bool `json:"truncated"`
-	// Point-add rows actually reconstructed, versus the lifetime count carried
-	// in workflow state. Equal when Truncated is false.
-	ShownEarnEvents    int `json:"shownEarnEvents"`
-	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
-	// The oldest run the crawl could read. Empty when it reached enrollment.
-	OldestRunID string `json:"oldestRunId,omitempty"`
-	// How many runs were walked, for the run dividers.
-	RunsWalked int `json:"runsWalked"`
-}
-
 // ErrorResponse is the single error shape every failing endpoint returns.
 type ErrorResponse struct {
 	Error ErrorBody `json:"error"`
