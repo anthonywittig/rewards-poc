@@ -1,10 +1,12 @@
-package httpapi
+package httpapi_test
 
 import (
 	"errors"
 	"net/http"
 	"reflect"
 	"testing"
+
+	"github.com/anthonywittig/rewards-poc/internal/httpapi"
 )
 
 // nameTerms mirrors Elasticsearch's standard tokenizer, because that is what
@@ -26,7 +28,7 @@ func TestNameTerms(t *testing.T) {
 		{"  --  ", nil},
 		{"'''", nil},
 	} {
-		if got := nameTerms(tc.input); !reflect.DeepEqual(got, tc.want) {
+		if got := httpapi.NameTerms(tc.input); !reflect.DeepEqual(got, tc.want) {
 			t.Errorf("nameTerms(%q) = %v, want %v", tc.input, got, tc.want)
 		}
 	}
@@ -54,7 +56,7 @@ func TestBuildListFilter(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := buildListFilter(tc.tier, tc.status, tc.q)
+			got, err := httpapi.BuildListFilter(tc.tier, tc.status, tc.q)
 			if err != nil {
 				t.Fatalf("buildListFilter: %v", err)
 			}
@@ -77,13 +79,13 @@ func TestBuildListFilterRejectsUnknownValues(t *testing.T) {
 		{"tier injection", "gold' OR RewardsLevel != '", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := buildListFilter(tc.tier, tc.status, "")
-			var apiErr *apiError
+			_, err := httpapi.BuildListFilter(tc.tier, tc.status, "")
+			var apiErr *httpapi.APIError
 			if !errors.As(err, &apiErr) {
 				t.Fatalf("err = %v, want an apiError", err)
 			}
-			if apiErr.status != http.StatusBadRequest || apiErr.code != CodeInvalidRequest {
-				t.Errorf("got %d/%s, want 400/%s", apiErr.status, apiErr.code, CodeInvalidRequest)
+			if apiErr.Status() != http.StatusBadRequest || apiErr.Code() != httpapi.CodeInvalidRequest {
+				t.Errorf("got %d/%s, want 400/%s", apiErr.Status(), apiErr.Code(), httpapi.CodeInvalidRequest)
 			}
 		})
 	}
