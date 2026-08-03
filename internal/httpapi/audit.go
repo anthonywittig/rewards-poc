@@ -46,7 +46,6 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 		return mapStoreReadError(err)
 	}
 
-	// Links stay here: the crawl does not know where the Temporal UI lives.
 	res := AuditResponse{
 		Timeline: crawled,
 		Entries:  make([]AuditEntry, 0, len(crawled.Entries)),

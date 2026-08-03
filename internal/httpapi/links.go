@@ -5,11 +5,6 @@ import (
 	"strings"
 )
 
-// Deep links into the Temporal UI, built server-side: the API knows its
-// namespace and is told where the UI lives (TEMPORAL_UI_URL), so the client
-// carries no Temporal configuration -- previously two env vars on the web
-// service that had to be kept in sync with the api and worker by hand.
-
 // temporalUI builds the links. Zero value yields relative-ish garbage, so the
 // server always constructs one via newTemporalUI.
 type temporalUI struct {
