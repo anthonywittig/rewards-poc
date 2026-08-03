@@ -12,7 +12,8 @@ and history of point-earning events live entirely in one long-lived workflow
 - current state is a Query (`getStatus`),
 - the customer list is a visibility query over custom search attributes,
 - the audit log is reconstructed by crawling Event History,
-- the workflow continues-as-new every few updates to keep history bounded.
+- the workflow continues-as-new to keep history bounded (after every 3
+  updates here — unrealistically often, so the rollover is easy to watch).
 
 The API holds a Temporal client and nothing else — no database, no cache, no
 ORM.
