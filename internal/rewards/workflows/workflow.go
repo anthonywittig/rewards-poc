@@ -59,7 +59,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
 			// Only reachable in the window between the deactivate committing
 			// and this run completing -- afterwards the Update finds no open
-			// run at all, and the API answers for it.
+			// run at all and fails as not found.
 			if state.Deactivated {
 				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					"customer is deactivated; deactivation is permanent",
