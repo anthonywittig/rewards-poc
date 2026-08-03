@@ -16,7 +16,6 @@ import (
 	historypb "go.temporal.io/api/history/v1"
 	"go.temporal.io/api/serviceerror"
 	updatepb "go.temporal.io/api/update/v1"
-	"go.temporal.io/sdk/converter"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -52,18 +51,15 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 	return h.GetEvents()
 }
 
-// membershipUpdate builds the Accepted/Completed pair Temporal writes for a
-// deactivate Update. Built rather than captured because the cases that matter
-// are the variations -- a raced duplicate, a failed leave; it mirrors the real
-// captured pair at the end of run-deactivated.json.
-func membershipUpdate(
-	t *testing.T, firstEventID int64, name, updateID string, result any,
+// failedMembershipUpdate builds the Accepted/Completed pair Temporal writes
+// for a deactivate Update whose handler failed. Built rather than captured
+// because the failure never happens in the healthy demo stack; it mirrors the
+// real captured pair at the end of run-deactivated.json, with the outcome
+// swapped for a failure.
+func failedMembershipUpdate(
+	t *testing.T, firstEventID int64, name, updateID, message string,
 ) []*historypb.HistoryEvent {
 	t.Helper()
-	payload, err := converter.GetDefaultDataConverter().ToPayloads(result)
-	if err != nil {
-		t.Fatalf("encode %s result: %v", name, err)
-	}
 	at := timestamppb.New(time.Date(2026, 7, 31, 20, 39, 43, 0, time.UTC))
 
 	return []*historypb.HistoryEvent{
@@ -90,7 +86,9 @@ func membershipUpdate(
 					Meta:            &updatepb.Meta{UpdateId: updateID},
 					AcceptedEventId: firstEventID,
 					Outcome: &updatepb.Outcome{
-						Value: &updatepb.Outcome_Success{Success: payload},
+						Value: &updatepb.Outcome_Failure{
+							Failure: &failurepb.Failure{Message: message},
+						},
 					},
 				},
 			},
@@ -184,32 +182,13 @@ func TestFromEvents_DeactivatedRun(t *testing.T) {
 		audit.KindRunRolled, audit.KindPointsAdded, audit.KindDeactivated)
 }
 
-// A deactivate that changed nothing -- a duplicate that raced the real leave
-// into the same run -- still completes and still writes history. Rendering it
-// would show the customer leaving twice.
-func TestFromEvents_NoOpDeactivateDrawsNoRow(t *testing.T) {
-	events := loadEvents(t, "run-deactivated.json")
-	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
-		rewards.DeactivateResult{Changed: false})...)
-
-	run := audit.FromEvents("run-2", events)
-
-	requireKinds(t, run.Entries,
-		audit.KindRunRolled, audit.KindPointsAdded, audit.KindDeactivated)
-}
-
 // The failure path. The handler stages its change and commits only once the
 // search attribute upsert is issued, so a failed deactivate applied nothing --
 // and unlike a failed addPoints, there is no half-state to disclose.
 func TestFromEvents_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
-	pair := membershipUpdate(t, 200, rewards.UpdateDeactivate, "leave-failed",
-		rewards.DeactivateResult{Changed: true})
-	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
-		Value: &updatepb.Outcome_Failure{
-			Failure: &failurepb.Failure{Message: "upsert search attributes: boom"},
-		},
-	}
+	pair := failedMembershipUpdate(t, 200, rewards.UpdateDeactivate, "leave-failed",
+		"upsert search attributes: boom")
 
 	run := audit.FromEvents("run-2", append(events, pair...))
 

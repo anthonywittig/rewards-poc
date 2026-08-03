@@ -137,22 +137,10 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 			// Always paired: an Update accepted in run N completes in run N.
 			p := pending[a.GetAcceptedEventId()]
 
-			// The departure. Only the real transition draws a row: a raced
-			// duplicate completes with Changed=false, and a *failed* leave
-			// applied nothing (the handler stages, then commits), so neither
-			// belongs on the timeline.
+			// The departure. A *failed* leave applied nothing (the handler
+			// stages, then commits), so only a success draws a row.
 			if p.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
-					continue
-				}
-				// Undecodable payload defaults to "changed": a row history
-				// clearly contains is shown rather than dropped.
-				changed := true
-				var res rewards.DeactivateResult
-				if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
-					changed = res.Changed
-				}
-				if !changed {
 					continue
 				}
 				out.Entries = append(out.Entries, Entry{

@@ -38,12 +38,6 @@ type AddPointsResult struct {
 	Level   string `json:"level"`
 }
 
-// DeactivateResult reports whether the Update actually changed anything, so a
-// raced duplicate is distinguishable from the real leave.
-type DeactivateResult struct {
-	Changed bool `json:"changed"`
-}
-
 // CustomerStatus is the getStatus Query result.
 //
 // PrevTierAt and NextTierAt bracket the current segment of the tier climb --
