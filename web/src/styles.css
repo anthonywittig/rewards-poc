@@ -362,20 +362,6 @@ th {
   font-weight: 500;
 }
 
-th.sortable {
-  cursor: pointer;
-  user-select: none;
-}
-
-th.sortable:hover {
-  color: var(--paper);
-}
-
-th.sortable[aria-disabled='true'] {
-  cursor: default;
-  opacity: 0.55;
-}
-
 tbody tr {
   transition: background 0.15s ease;
 }
