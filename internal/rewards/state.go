@@ -24,6 +24,7 @@ func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID
 
 // Tier thresholds. Tiers are derived from points, never stored.
 const (
+	BasicThreshold    = 0
 	GoldThreshold     = 500
 	PlatinumThreshold = 1000
 )
@@ -44,8 +45,9 @@ type Tier struct {
 }
 
 // tiers is the ladder, ordered by MinPoints ascending. LevelBasic is the
-// floor, not a rung.
+// bottom rung: its MinPoints of 0 means every balance stands on some rung.
 var tiers = []Tier{
+	{Level: LevelBasic, MinPoints: BasicThreshold},
 	{Level: LevelGold, MinPoints: GoldThreshold},
 	{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
 }
@@ -98,9 +100,10 @@ type CustomerState struct {
 	Deactivated bool `json:"deactivated,omitempty"`
 }
 
-// Level derives the tier from a balance: the highest rung reached, or basic.
+// Level derives the tier from a balance: the highest rung reached. The bottom
+// rung starts at 0, so every balance reaches at least one.
 func Level(points int) string {
-	level := LevelBasic
+	level := tiers[0].Level
 	for _, t := range tiers {
 		if points >= t.MinPoints {
 			level = t.Level
@@ -121,10 +124,10 @@ func NextTierAt(points int) (int, bool) {
 }
 
 // PrevTierAt returns the balance at which the customer's current tier began:
-// the highest rung already reached, or 0 for basic. With NextTierAt it
-// brackets the segment of the climb a progress bar draws.
+// the MinPoints of the highest rung reached. With NextTierAt it brackets the
+// segment of the climb a progress bar draws.
 func PrevTierAt(points int) int {
-	at := 0
+	at := tiers[0].MinPoints
 	for _, t := range tiers {
 		if points >= t.MinPoints {
 			at = t.MinPoints

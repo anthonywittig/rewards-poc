@@ -42,8 +42,7 @@ func TestBuildListFilter(t *testing.T) {
 	}{
 		{"no params", "", "", "", nil},
 		{"tier only", "gold", "", "", []string{"RewardsLevel = 'gold'"}},
-		// The floor is filterable even though it is not a ladder rung.
-		{"floor tier", "basic", "", "", []string{"RewardsLevel = 'basic'"}},
+		{"bottom rung", "basic", "", "", []string{"RewardsLevel = 'basic'"}},
 		{"active", "", "active", "", []string{"RewardsActive = true"}},
 		{"deactivated", "", "deactivated", "", []string{"RewardsActive = false"}},
 		{"any status is no clause", "", "any", "", nil},

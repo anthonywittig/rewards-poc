@@ -77,7 +77,7 @@ func nameTerms(input string) []string {
 	return terms
 }
 
-// validTier reports whether the value names a rung of the ladder, or the floor.
+// validTier reports whether the value names a rung of the ladder.
 func validTier(tier string) bool {
 	for _, name := range tierNames() {
 		if tier == name {
@@ -87,11 +87,11 @@ func validTier(tier string) bool {
 	return false
 }
 
-// tierNames is the floor plus the ladder, in climbing order, for the tier
-// filter and its error message. Derived from rewards.Ladder rather than listed
-// here so a new rung is filterable without touching this package.
+// tierNames is the ladder in climbing order, for the tier filter and its
+// error message. Derived from rewards.Ladder rather than listed here so a new
+// rung is filterable without touching this package.
 func tierNames() []string {
-	names := []string{rewards.LevelBasic}
+	var names []string
 	for _, t := range rewards.Ladder() {
 		names = append(names, t.Level)
 	}
