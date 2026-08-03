@@ -1,6 +1,7 @@
 // Package workflows holds the customer rewards Entity Workflow: one long-lived
-// workflow per customer, driven by Updates and read by a Query. The rules it
-// applies live in the parent internal/rewards package as plain functions.
+// workflow per customer, driven by Updates and read by a Query. The tier rules
+// and limits it applies live in the parent internal/rewards package as plain
+// functions; enrollment validation lives here, since only the workflow runs it.
 //
 // There are deliberately no Activities: points, tier, membership and the audit
 // trail are all workflow state and Event History, which is the point of the
@@ -29,7 +30,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	logger := workflow.GetLogger(ctx)
 
 	wfID := workflow.GetInfo(ctx).WorkflowExecution.ID
-	if err := rewards.ValidateEnrollment(wfID, &state); err != nil {
+	if err := validateEnrollment(wfID, &state); err != nil {
 		logger.Error("rejecting enrollment", "workflowId", wfID, "error", err)
 		return err
 	}

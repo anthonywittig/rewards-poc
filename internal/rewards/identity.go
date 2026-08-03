@@ -2,6 +2,17 @@ package rewards
 
 import "strings"
 
+// The identity rule: name -> customer ID -> workflow ID, with nothing random
+// at either step. The same name always lands on the same workflow, which is
+// what lets every operation skip a lookup table and the enroll endpoint treat
+// a repeat name as a duplicate.
+
+// WorkflowIDPrefix makes the workflow ID derivable from the customer ID alone.
+const WorkflowIDPrefix = "customer-"
+
+// WorkflowID returns the deterministic workflow ID for a customer.
+func WorkflowID(customerID string) string { return WorkflowIDPrefix + customerID }
+
 // idSlugLimit keeps the readable half from dominating the workflow ID.
 const idSlugLimit = 32
 
@@ -9,10 +20,6 @@ const idSlugLimit = 32
 // digits, runs of anything else collapsed to a single hyphen, truncated to
 // idSlugLimit. "Ada Lovelace" becomes "ada-lovelace", so the workflow ID is
 // "customer-ada-lovelace" -- readable in the Temporal UI.
-//
-// Nothing random goes in, so the derivation is also the identity rule: a
-// second enrollment under the same name lands on the same workflow ID, which
-// the enroll endpoint treats as a duplicate (409).
 //
 // Returns "" when the name has nothing to build an ID from.
 func CustomerIDForName(name string) string {
