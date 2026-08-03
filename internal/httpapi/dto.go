@@ -2,7 +2,11 @@
 // Temporal Client and nothing else -- no database, no cache, no ORM.
 package httpapi
 
-import "time"
+import (
+	"time"
+
+	"github.com/anthonywittig/rewards-poc/internal/audit"
+)
 
 // EnrollRequest is the body of POST /api/customers. CustomerID is optional;
 // without it the server derives one from the name.
@@ -113,4 +117,18 @@ type ErrorResponse struct {
 type ErrorBody struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
+}
+
+// AuditEntry is an audit.Entry with a Temporal UI deep link. embedding flattens
+// into the same JSON shape the UI already expects.
+type AuditEntry struct {
+	audit.Entry
+	HistoryURL string `json:"historyUrl"`
+}
+
+// AuditResponse is GET /api/customers/{id}/audit. Crawl fields come from
+// audit.Timeline; Entries are the same rows with HistoryURL filled in.
+type AuditResponse struct {
+	audit.Timeline
+	Entries []AuditEntry `json:"entries"`
 }
