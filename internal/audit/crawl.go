@@ -92,7 +92,7 @@ type acceptedUpdate struct {
 
 // FromEvents maps one run's events to audit entries.
 func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
-	out := Run{RunID: runID}
+	run := Run{RunID: runID}
 	// Keyed by Accepted event id (same id UpdateCompleted.AcceptedEventId).
 	accepted := map[int64]acceptedUpdate{}
 	dc := converter.GetDefaultDataConverter()
@@ -102,17 +102,17 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_STARTED:
 			a := e.GetWorkflowExecutionStartedEventAttributes()
-			out.PreviousRunID = a.GetContinuedExecutionRunId()
-			decodeArg(dc, a.GetInput(), &out.StartState)
+			run.PreviousRunID = a.GetContinuedExecutionRunId()
+			decodeArg(dc, a.GetInput(), &run.StartState)
 
 			kind := KindEnrolled
-			if out.PreviousRunID != "" {
+			if run.PreviousRunID != "" {
 				kind = KindRunRolled
 			}
-			out.Entries = append(out.Entries, Entry{
+			run.Entries = append(run.Entries, Entry{
 				Kind:      kind,
 				At:        e.GetEventTime().AsTime(),
-				RunNumber: out.StartState.RunNumber,
+				RunNumber: run.StartState.RunNumber,
 				RunID:     runID,
 				EventID:   e.GetEventId(),
 			})
@@ -143,10 +143,10 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
-				out.Entries = append(out.Entries, Entry{
+				run.Entries = append(run.Entries, Entry{
 					Kind:      KindDeactivated,
 					At:        acc.at,
-					RunNumber: out.StartState.RunNumber,
+					RunNumber: run.StartState.RunNumber,
 					RunID:     runID,
 					EventID:   acc.eventID,
 					RequestID: acc.updateID,
@@ -158,7 +158,7 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 			// the request.
 			entry := Entry{
 				At:        acc.at,
-				RunNumber: out.StartState.RunNumber,
+				RunNumber: run.StartState.RunNumber,
 				RunID:     runID,
 				EventID:   acc.eventID,
 				Amount:    acc.amount,
@@ -177,12 +177,12 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 				entry.Kind = KindPointsAdded
 				entry.Balance = res.Balance
 				entry.Level = res.Level
-				out.EarnEvents++
+				run.EarnEvents++
 			}
-			out.Entries = append(out.Entries, entry)
+			run.Entries = append(run.Entries, entry)
 		}
 	}
-	return out
+	return run
 }
 
 // decodeArg decodes the first payload into dst, reporting whether it worked.
