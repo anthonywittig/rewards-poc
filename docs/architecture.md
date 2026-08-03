@@ -57,9 +57,9 @@ stateDiagram-v2
     Failed --> [*] : run Failed (the ID may be retried)
 
     Validating --> Accepting : handlers registered, search attributes upserted
-    Accepting --> Accepting : addPoints accepted (earnsThisRun++)
+    Accepting : each accepted addPoints increments earnsThisRun
     Accepting --> Draining : earnsThisRun reaches 3, or deactivate committed
-    Draining --> Draining : await AllHandlersFinished
+    Draining : awaits AllHandlersFinished
 
     Draining --> Completed : deactivated (checked after the drain)
     Completed --> [*] : run Completed — permanent, balance frozen
