@@ -145,17 +145,6 @@ flowchart LR
     crawl --> timeline
 ```
 
-## Tier ladder
-
-Tiers are derived from points, never stored
-([`level.go`](../internal/rewards/level.go)) — and since points only go up,
-the ladder is only ever climbed.
-
-```mermaid
-flowchart LR
-    basic["basic\n0+"] -->|"at 500 points"| gold["gold\n500+"] -->|"at 1000 points"| platinum["platinum\n1000+ (cap 5000)"]
-```
-
 ## Enrollment and the identity rule
 
 Name → customer ID → workflow ID, deterministically at both steps
