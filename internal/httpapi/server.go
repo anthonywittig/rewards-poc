@@ -296,9 +296,7 @@ func (s *Server) queryStatus(ctx context.Context, wfID string) (converter.Encode
 	return nil, mapQueryError(lastErr)
 }
 
-// addPoints applies the addPoints Update once. A closed-run miss means either
-// a departed customer (no successor) or a rare continue-as-new race (still
-// Running); both report and stop rather than re-send.
+// addPoints applies an Update.
 func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -315,7 +313,7 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	err := sendUpdate(r.Context(), s.temporal, client.UpdateWorkflowOptions{
 		WorkflowID: wfID,
 		UpdateName: rewards.UpdateAddPoints,
-		UpdateID:   req.RequestID, // empty means the SDK generates one
+		UpdateID:   req.RequestID,
 		Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
 	}, &res)
 	if err != nil && isClosedRun(err) {
