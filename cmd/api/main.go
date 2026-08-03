@@ -15,6 +15,9 @@ import (
 func main() {
 	address := env("TEMPORAL_HOSTPORT", "localhost:7233")
 	namespace := env("TEMPORAL_NAMESPACE", "rewards")
+	// Browser-facing: this base URL ends up in response deep links, so it is
+	// the published address, not the compose-internal one.
+	temporalUI := env("TEMPORAL_UI_URL", "http://localhost:8080")
 	addr := ":" + env("API_PORT", "8081")
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
@@ -32,7 +35,7 @@ func main() {
 
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      httpapi.New(c, logger).Routes(),
+		Handler:      httpapi.New(c, logger, temporalUI, namespace).Routes(),
 		ReadTimeout:  httpapi.DefaultTimeouts.Read,
 		WriteTimeout: httpapi.DefaultTimeouts.Write,
 		IdleTimeout:  httpapi.DefaultTimeouts.Idle,

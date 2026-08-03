@@ -38,17 +38,19 @@ type DeactivateResult struct {
 }
 
 // CustomerStatus is the getStatus Query result.
+//
+// PrevTierAt and NextTierAt bracket the current segment of the tier climb --
+// the rung the customer is standing on (0 for basic) and the one they are
+// climbing to (0 at the top). Derived here from the same ladder as Level, so
+// the UI can draw progress without holding a copy of the thresholds.
 type CustomerStatus struct {
 	CustomerID string    `json:"customerId"`
 	Name       string    `json:"name"`
 	Points     int       `json:"points"`
 	Level      string    `json:"level"`
-	NextTierAt int       `json:"nextTierAt"` // 0 when already at the top tier
+	PrevTierAt int       `json:"prevTierAt"`
+	NextTierAt int       `json:"nextTierAt"`
 	EnrolledAt time.Time `json:"enrolledAt"`
-
-	// The ladder Level and NextTierAt were derived from, so the UI never holds
-	// its own copy of the thresholds.
-	Tiers []Tier `json:"tiers"`
 
 	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
 	RunNumber          int  `json:"runNumber"`
@@ -63,8 +65,8 @@ func StatusOf(state *CustomerState) CustomerStatus {
 		Name:               state.Name,
 		Points:             state.Points,
 		Level:              Level(state.Points),
+		PrevTierAt:         PrevTierAt(state.Points),
 		NextTierAt:         nextAt,
-		Tiers:              Ladder(),
 		EnrolledAt:         state.EnrolledAt,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
 		RunNumber:          state.RunNumber,

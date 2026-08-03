@@ -2,11 +2,7 @@
 // Temporal Client and nothing else -- no database, no cache, no ORM.
 package httpapi
 
-import (
-	"time"
-
-	"github.com/anthonywittig/rewards-poc/internal/rewards"
-)
+import "time"
 
 // EnrollRequest is the body of POST /api/customers. CustomerID is optional;
 // without it the server derives one from the name.
@@ -31,16 +27,19 @@ type AddPointsRequest struct {
 // state says Active. Deactivation completes the workflow, so a departed
 // customer's run is closed.
 type CustomerResponse struct {
-	CustomerID string    `json:"customerId"`
-	Name       string    `json:"name"`
-	Points     int       `json:"points"`
-	Level      string    `json:"level"`
-	NextTierAt int       `json:"nextTierAt"`
-	EnrolledAt time.Time `json:"enrolledAt"`
+	CustomerID string `json:"customerId"`
+	Name       string `json:"name"`
+	Points     int    `json:"points"`
+	Level      string `json:"level"`
 
-	// The whole ladder, ascending, so the UI can draw progress without its own
-	// copy of the thresholds.
-	Tiers []rewards.Tier `json:"tiers"`
+	// The current segment of the tier climb, bracketed: the rung the customer
+	// is standing on (0 for basic) and the one they are climbing to (0 at the
+	// top). Derived by the worker from the same ladder as Level, so the UI can
+	// draw progress without holding a copy of the thresholds.
+	PrevTierAt int `json:"prevTierAt"`
+	NextTierAt int `json:"nextTierAt"`
+
+	EnrolledAt time.Time `json:"enrolledAt"`
 
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	RunNumber          int `json:"runNumber"`
@@ -100,6 +99,9 @@ type CustomerListResponse struct {
 	// The filter the server built from the structured params, pasteable into
 	// the Temporal UI as-is.
 	Query string `json:"query,omitempty"`
+	// A link opening the Temporal UI's workflow list pre-filled with Query,
+	// built here so the client needs no Temporal UI configuration of its own.
+	QueryURL string `json:"queryUrl"`
 }
 
 // AuditEntryKind tags a row of the audit timeline. Stable strings: the UI
@@ -125,6 +127,9 @@ type AuditEntry struct {
 	RunID     string         `json:"runId"`
 	// History event ID, unique only within its run.
 	EventID int64 `json:"eventId"`
+	// Deep link to this entry's run in the Temporal UI, filled in by the
+	// handler -- the crawl itself does not know where the UI lives.
+	HistoryURL string `json:"historyUrl"`
 
 	Amount    int    `json:"amount,omitempty"`
 	Reason    string `json:"reason,omitempty"`
@@ -141,8 +146,7 @@ type AuditEntry struct {
 // so, quantified -- the UI renders "Showing 7 of 23 point events."
 type AuditResponse struct {
 	CustomerID string `json:"customerId"`
-	// The execution the entries were crawled from, so the UI can deep-link
-	// into the Temporal UI.
+	// The execution the entries were crawled from.
 	WorkflowID string       `json:"workflowId"`
 	Entries    []AuditEntry `json:"entries"` // newest first
 	// True when the crawl hit a run whose history had been deleted.

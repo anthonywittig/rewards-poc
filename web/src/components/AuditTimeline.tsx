@@ -1,5 +1,4 @@
 import { Fragment } from 'react'
-import { temporalRunUrl } from '../api'
 import type { AuditEntry, AuditResponse } from '../types'
 import { formatWhen, tierLabel } from '../format'
 
@@ -17,9 +16,7 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
             const key = `${e.runId}-${e.eventId}-${e.kind}`
 
             if (e.kind === 'run_rolled') {
-              return (
-                <RunStartDivider key={key} e={e} workflowId={audit.workflowId} />
-              )
+              return <RunStartDivider key={key} e={e} />
             }
 
             // Enrollment is two rows from one event: the membership fact, and
@@ -33,7 +30,7 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
                     <div className="when">{formatWhen(e.at)}</div>
                     <div className="body">Enrolled</div>
                   </div>
-                  <RunStartDivider e={e} workflowId={audit.workflowId} />
+                  <RunStartDivider e={e} />
                 </Fragment>
               )
             }
@@ -65,17 +62,13 @@ export function AuditTimeline({ audit }: { audit: AuditResponse }) {
 }
 
 /** The run boundary, linked to that run's history in the Temporal UI. */
-function RunStartDivider({ e, workflowId }: { e: AuditEntry; workflowId: string }) {
+function RunStartDivider({ e }: { e: AuditEntry }) {
   return (
     <div className="timeline-item divider">
       <div className="when">{formatWhen(e.at)}</div>
       <div className="body">
         [debug]{' '}
-        <a
-          href={temporalRunUrl(workflowId, e.runId)}
-          target="_blank"
-          rel="noreferrer"
-        >
+        <a href={e.historyUrl} target="_blank" rel="noreferrer">
           Run {e.runNumber} —{' '}
           {e.kind === 'run_rolled' ? 'continue-as-new workflow' : 'workflow'}{' '}
           started
