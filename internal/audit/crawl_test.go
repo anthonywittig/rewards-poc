@@ -1,4 +1,4 @@
-package httpapi_test
+package audit_test
 
 import (
 	"context"
@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anthonywittig/rewards-poc/internal/httpapi"
+	"github.com/anthonywittig/rewards-poc/internal/audit"
 	"github.com/anthonywittig/rewards-poc/internal/rewards"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -98,15 +98,15 @@ func membershipUpdate(
 	}
 }
 
-func kinds(entries []httpapi.AuditEntry) []httpapi.AuditEntryKind {
-	out := make([]httpapi.AuditEntryKind, len(entries))
+func kinds(entries []audit.Entry) []audit.Kind {
+	out := make([]audit.Kind, len(entries))
 	for i, e := range entries {
 		out[i] = e.Kind
 	}
 	return out
 }
 
-func requireKinds(t *testing.T, got []httpapi.AuditEntry, want ...httpapi.AuditEntryKind) {
+func requireKinds(t *testing.T, got []audit.Entry, want ...audit.Kind) {
 	t.Helper()
 	g := kinds(got)
 	if len(g) != len(want) {
@@ -121,24 +121,24 @@ func requireKinds(t *testing.T, got []httpapi.AuditEntry, want ...httpapi.AuditE
 
 // The first run of a customer's life: the only one whose start event has no
 // predecessor, and therefore the only one that renders as an enrollment.
-func TestAuditRun_EnrollmentRun(t *testing.T) {
-	run := httpapi.AuditRun("run-0", loadEvents(t, "run-enrollment.json"))
+func TestFromEvents_EnrollmentRun(t *testing.T) {
+	run := audit.FromEvents("run-0", loadEvents(t, "run-enrollment.json"))
 
-	if run.PreviousRunID() != "" {
-		t.Errorf("previousRunID = %q, want empty on the enrollment run", run.PreviousRunID())
+	if run.PreviousRunID != "" {
+		t.Errorf("PreviousRunID = %q, want empty on the enrollment run", run.PreviousRunID)
 	}
-	if run.StartState().RunNumber != 1 {
-		t.Errorf("runNumber = %d, want 1 (the enrollment run)", run.StartState().RunNumber)
+	if run.StartState.RunNumber != 1 {
+		t.Errorf("runNumber = %d, want 1 (the enrollment run)", run.StartState.RunNumber)
 	}
-	requireKinds(t, run.Entries(),
-		httpapi.AuditEnrolled, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded)
-	if run.EarnEvents() != 3 {
-		t.Errorf("earnEvents = %d, want 3 (EarnsPerRun)", run.EarnEvents())
+	requireKinds(t, run.Entries,
+		audit.KindEnrolled, audit.KindPointsAdded, audit.KindPointsAdded, audit.KindPointsAdded)
+	if run.EarnEvents != 3 {
+		t.Errorf("EarnEvents = %d, want 3 (EarnsPerRun)", run.EarnEvents)
 	}
 
 	// The request half of the row comes from the accepted event, the outcome
 	// half from the completed one.
-	add := run.Entries()[1]
+	add := run.Entries[1]
 	if add.Amount != 1000 || add.Reason == "" {
 		t.Errorf("request side not decoded: amount=%d reason=%q", add.Amount, add.Reason)
 	}
@@ -153,55 +153,55 @@ func TestAuditRun_EnrollmentRun(t *testing.T) {
 // A run that was rolled into. The run divider is recorded here rather
 // than on the predecessor's ContinuedAsNew event, so it survives the
 // predecessor being reaped.
-func TestAuditRun_ContinuedRun(t *testing.T) {
-	run := httpapi.AuditRun("run-1", loadEvents(t, "run-continued.json"))
+func TestFromEvents_ContinuedRun(t *testing.T) {
+	run := audit.FromEvents("run-1", loadEvents(t, "run-continued.json"))
 
-	if run.PreviousRunID() == "" {
-		t.Fatal("previousRunID should name the predecessor run")
+	if run.PreviousRunID == "" {
+		t.Fatal("PreviousRunID should name the predecessor run")
 	}
-	requireKinds(t, run.Entries(),
-		httpapi.AuditRunRolled, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded)
+	requireKinds(t, run.Entries,
+		audit.KindRunRolled, audit.KindPointsAdded, audit.KindPointsAdded, audit.KindPointsAdded)
 
-	if run.Entries()[0].RunNumber != 2 {
+	if run.Entries[0].RunNumber != 2 {
 		t.Errorf("divider runNumber = %d, want 2 (the run being entered)",
-			run.Entries()[0].RunNumber)
+			run.Entries[0].RunNumber)
 	}
 	// Carried state is all this run knows about its predecessors.
-	if run.StartState().LifetimeEarnEvents != 3 {
-		t.Errorf("carried lifetimeEarnEvents = %d, want 3", run.StartState().LifetimeEarnEvents)
+	if run.StartState.LifetimeEarnEvents != 3 {
+		t.Errorf("carried lifetimeEarnEvents = %d, want 3", run.StartState.LifetimeEarnEvents)
 	}
-	if run.StartState().Points != 3000 {
-		t.Errorf("carried points = %d, want 3000", run.StartState().Points)
+	if run.StartState.Points != 3000 {
+		t.Errorf("carried points = %d, want 3000", run.StartState.Points)
 	}
 }
 
 // Deactivate is an Update, so it appears as an Accepted/Completed pair rather
 // than a CancelRequested event.
-func TestAuditRun_DeactivatedRun(t *testing.T) {
-	run := httpapi.AuditRun("run-2", loadEvents(t, "run-deactivated.json"))
+func TestFromEvents_DeactivatedRun(t *testing.T) {
+	run := audit.FromEvents("run-2", loadEvents(t, "run-deactivated.json"))
 
-	requireKinds(t, run.Entries(),
-		httpapi.AuditRunRolled, httpapi.AuditPointsAdded, httpapi.AuditDeactivated)
+	requireKinds(t, run.Entries,
+		audit.KindRunRolled, audit.KindPointsAdded, audit.KindDeactivated)
 }
 
 // A deactivate that changed nothing -- a duplicate that raced the real leave
 // into the same run -- still completes and still writes history. Rendering it
 // would show the customer leaving twice.
-func TestAuditRun_NoOpDeactivateDrawsNoRow(t *testing.T) {
+func TestFromEvents_NoOpDeactivateDrawsNoRow(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
 	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
 		rewards.DeactivateResult{Changed: false})...)
 
-	run := httpapi.AuditRun("run-2", events)
+	run := audit.FromEvents("run-2", events)
 
-	requireKinds(t, run.Entries(),
-		httpapi.AuditRunRolled, httpapi.AuditPointsAdded, httpapi.AuditDeactivated)
+	requireKinds(t, run.Entries,
+		audit.KindRunRolled, audit.KindPointsAdded, audit.KindDeactivated)
 }
 
 // The failure path. The handler stages its change and commits only once the
 // search attribute upsert is issued, so a failed deactivate applied nothing --
 // and unlike a failed addPoints, there is no half-state to disclose.
-func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
+func TestFromEvents_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
 	pair := membershipUpdate(t, 200, rewards.UpdateDeactivate, "leave-failed",
 		rewards.DeactivateResult{Changed: true})
@@ -211,21 +211,21 @@ func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 		},
 	}
 
-	run := httpapi.AuditRun("run-2", append(events, pair...))
+	run := audit.FromEvents("run-2", append(events, pair...))
 
-	requireKinds(t, run.Entries(),
-		httpapi.AuditRunRolled, httpapi.AuditPointsAdded, httpapi.AuditDeactivated)
+	requireKinds(t, run.Entries,
+		audit.KindRunRolled, audit.KindPointsAdded, audit.KindDeactivated)
 }
 
 // The recorded half of the validator/handler split: a handler rejection
 // becomes a row; a validator rejection wrote nothing and can never appear.
-func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
-	run := httpapi.AuditRun("cap-run", loadEvents(t, "run-rejection.json"))
+func TestFromEvents_HandlerRejectionIsRecorded(t *testing.T) {
+	run := audit.FromEvents("cap-run", loadEvents(t, "run-rejection.json"))
 
-	requireKinds(t, run.Entries(),
-		httpapi.AuditRunRolled, httpapi.AuditPointsAdded, httpapi.AuditPointsRejected)
+	requireKinds(t, run.Entries,
+		audit.KindRunRolled, audit.KindPointsAdded, audit.KindPointsRejected)
 
-	rejected := run.Entries()[2]
+	rejected := run.Entries[2]
 	if rejected.Failure == "" {
 		t.Error("rejection row must carry the workflow's own message")
 	}
@@ -235,8 +235,8 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 
 	// A rejection is not an earn; counting it would make an intact log look
 	// truncated against the carried lifetime count.
-	if run.EarnEvents() != 1 {
-		t.Errorf("earnEvents = %d, want 1", run.EarnEvents())
+	if run.EarnEvents != 1 {
+		t.Errorf("EarnEvents = %d, want 1", run.EarnEvents)
 	}
 }
 
@@ -244,7 +244,7 @@ func TestAuditRun_HandlerRejectionIsRecorded(t *testing.T) {
 
 // fakeChain serves a synthetic run chain, answering NotFound for reaped runs
 // the way the server does.
-func fakeChain(runs map[string][]*historypb.HistoryEvent) httpapi.HistoryFetcher {
+func fakeChain(runs map[string][]*historypb.HistoryEvent) audit.Fetcher {
 	return func(_ context.Context, runID string) ([]*historypb.HistoryEvent, error) {
 		events, ok := runs[runID]
 		if !ok {
@@ -254,12 +254,12 @@ func fakeChain(runs map[string][]*historypb.HistoryEvent) httpapi.HistoryFetcher
 	}
 }
 
-func TestWalkRuns_StopsAtEnrollment(t *testing.T) {
+func TestWalk_StopsAtEnrollment(t *testing.T) {
 	enrollment := loadEvents(t, "run-enrollment.json")
 	continued := loadEvents(t, "run-continued.json")
 	prev := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
-	runs, truncated, err := httpapi.WalkRuns(context.Background(),
+	runs, truncated, err := audit.Walk(context.Background(),
 		fakeChain(map[string][]*historypb.HistoryEvent{"newest": continued, prev: enrollment}),
 		"newest")
 	if err != nil {
@@ -275,10 +275,10 @@ func TestWalkRuns_StopsAtEnrollment(t *testing.T) {
 
 // The truncation case: the predecessor was reaped, so the walk cannot reach
 // enrollment and must say so.
-func TestWalkRuns_TruncatedWhenPredecessorReaped(t *testing.T) {
+func TestWalk_TruncatedWhenPredecessorReaped(t *testing.T) {
 	continued := loadEvents(t, "run-continued.json")
 
-	runs, truncated, err := httpapi.WalkRuns(context.Background(),
+	runs, truncated, err := audit.Walk(context.Background(),
 		fakeChain(map[string][]*historypb.HistoryEvent{"newest": continued}), // predecessor absent
 		"newest")
 	if err != nil {
@@ -294,8 +294,8 @@ func TestWalkRuns_TruncatedWhenPredecessorReaped(t *testing.T) {
 
 // A NotFound on the very first run is a real fault, not truncation -- Describe
 // just resolved that run.
-func TestWalkRuns_FirstRunNotFoundIsAnError(t *testing.T) {
-	_, _, err := httpapi.WalkRuns(context.Background(),
+func TestWalk_FirstRunNotFoundIsAnError(t *testing.T) {
+	_, _, err := audit.Walk(context.Background(),
 		fakeChain(map[string][]*historypb.HistoryEvent{}), "gone")
 
 	var notFound *serviceerror.NotFound
@@ -307,19 +307,28 @@ func TestWalkRuns_FirstRunNotFoundIsAnError(t *testing.T) {
 // --- assembly ---------------------------------------------------------------
 
 func TestAssemble_NewestFirst(t *testing.T) {
-	runs := []httpapi.RunAudit{ // newest first, as the walk produces them
-		httpapi.MakeRunAudit("b", []httpapi.AuditEntry{
-			{Kind: httpapi.AuditRunRolled, RunID: "b"},
-			{Kind: httpapi.AuditPointsAdded, RunID: "b"},
-		}, 1, rewards.CustomerState{LifetimeEarnEvents: 2}),
-		httpapi.MakeRunAudit("a", []httpapi.AuditEntry{
-			{Kind: httpapi.AuditEnrolled, RunID: "a"},
-		}, 2, rewards.CustomerState{}),
+	runs := []audit.Run{ // newest first, as the walk produces them
+		{
+			RunID: "b",
+			Entries: []audit.Entry{
+				{Kind: audit.KindRunRolled, RunID: "b"},
+				{Kind: audit.KindPointsAdded, RunID: "b"},
+			},
+			EarnEvents: 1,
+			StartState: rewards.CustomerState{LifetimeEarnEvents: 2},
+		},
+		{
+			RunID: "a",
+			Entries: []audit.Entry{
+				{Kind: audit.KindEnrolled, RunID: "a"},
+			},
+			EarnEvents: 2,
+		},
 	}
 
-	got := httpapi.Assemble("ada", runs, false)
+	got := audit.Assemble("ada", runs, false)
 	// Newest run first, and within it the newest event first.
-	requireKinds(t, got.Entries, httpapi.AuditPointsAdded, httpapi.AuditRunRolled, httpapi.AuditEnrolled)
+	requireKinds(t, got.Entries, audit.KindPointsAdded, audit.KindRunRolled, audit.KindEnrolled)
 	if got.RunsWalked != 2 {
 		t.Errorf("runsWalked = %d, want 2", got.RunsWalked)
 	}
@@ -328,12 +337,12 @@ func TestAssemble_NewestFirst(t *testing.T) {
 // History reaped: the log is short but the lifetime count is still right,
 // which is what lets the UI say "Showing 3 of 21 point events."
 func TestAssemble_LifetimeSurvivesTruncation(t *testing.T) {
-	runs := []httpapi.RunAudit{
-		httpapi.MakeRunAudit("run7", nil, 2, rewards.CustomerState{LifetimeEarnEvents: 19}),
-		httpapi.MakeRunAudit("run6", nil, 1, rewards.CustomerState{LifetimeEarnEvents: 18}),
+	runs := []audit.Run{
+		{RunID: "run7", EarnEvents: 2, StartState: rewards.CustomerState{LifetimeEarnEvents: 19}},
+		{RunID: "run6", EarnEvents: 1, StartState: rewards.CustomerState{LifetimeEarnEvents: 18}},
 	}
 
-	got := httpapi.Assemble("grace", runs, true)
+	got := audit.Assemble("grace", runs, true)
 	if got.ShownEarnEvents != 3 {
 		t.Errorf("shown = %d, want 3", got.ShownEarnEvents)
 	}
@@ -358,18 +367,18 @@ func TestCrawlShape_WholeCustomerLife(t *testing.T) {
 	run2 := deactivated[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 	run1 := continued[0].GetWorkflowExecutionStartedEventAttributes().GetContinuedExecutionRunId()
 
-	runs, truncated, err := httpapi.WalkRuns(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
+	runs, truncated, err := audit.Walk(context.Background(), fakeChain(map[string][]*historypb.HistoryEvent{
 		"run3": deactivated, run2: continued, run1: enrollment,
 	}), "run3")
 	if err != nil {
 		t.Fatalf("walk: %v", err)
 	}
 
-	got := httpapi.Assemble("hist", runs, truncated)
+	got := audit.Assemble("hist", runs, truncated)
 	requireKinds(t, got.Entries,
-		httpapi.AuditDeactivated, httpapi.AuditPointsAdded, httpapi.AuditRunRolled,
-		httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditRunRolled,
-		httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditPointsAdded, httpapi.AuditEnrolled)
+		audit.KindDeactivated, audit.KindPointsAdded, audit.KindRunRolled,
+		audit.KindPointsAdded, audit.KindPointsAdded, audit.KindPointsAdded, audit.KindRunRolled,
+		audit.KindPointsAdded, audit.KindPointsAdded, audit.KindPointsAdded, audit.KindEnrolled)
 
 	if got.ShownEarnEvents != 7 || got.LifetimeEarnEvents != 7 {
 		t.Errorf("shown=%d lifetime=%d, want both 7", got.ShownEarnEvents, got.LifetimeEarnEvents)

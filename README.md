@@ -24,7 +24,8 @@ ORM.
 
 The only prerequisite is **Docker** with Compose v2 — every process runs in
 [the stack](deploy/docker-compose.yml). (Go 1.25.4+ is needed only for
-`go test`.)
+`go test`.) Tests are intentionally light: nothing that does not teach
+something about the pattern.
 
 ```sh
 make up   # the whole stack; a couple of minutes the first time
@@ -104,7 +105,7 @@ Three is a demo number chosen to be watchable
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
 history; `GET /api/customers/<id>/audit` walks back through the run chain
-([`audit.go`](internal/httpapi/audit.go)) and reads the events Temporal
+([`audit`](internal/audit/)) and reads the events Temporal
 recorded anyway. Closed runs are deleted after
 retention (1 hour here, Temporal's minimum), so the response reports
 truncation — "showing 3 of 21" — rather than quietly showing less.
@@ -163,8 +164,9 @@ on promotion, and that is what an Activity is for.
 ```
 cmd/                worker, api, and seed (demo data) processes
 internal/rewards/   the domain: state, tiers, the Update/Query contract
-  workflows/        CustomerRewardsWorkflow and its unit test
-internal/httpapi/   HTTP handlers, visibility-query building, the audit crawl
+  workflows/        CustomerRewardsWorkflow
+internal/audit/     Event History crawl that rebuilds the audit timeline
+internal/httpapi/   HTTP handlers over Temporal (and the audit crawl)
 web/                the React UI
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
 Makefile
