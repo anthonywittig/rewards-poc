@@ -120,21 +120,20 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 	// Setting the flag is what ends the workflow: the main coroutine below is
 	// also awaiting it, and completes the run once every handler has drained.
+	//
+	// There is no already-deactivated guard: a repeat DELETE finds the run
+	// closed and never reaches this handler, and a concurrent duplicate landing
+	// in the drain window is assumed not to happen. If one did, it would re-set
+	// the flag (same state) and record the leave a second time.
 	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateDeactivate,
-		func(ctx workflow.Context) (rewards.DeactivateResult, error) {
-			// A concurrent duplicate in the drain window; a repeat DELETE after
-			// the run closed never reaches this handler at all.
-			if state.Deactivated {
-				return rewards.DeactivateResult{Changed: false}, nil
-			}
-
+		func(ctx workflow.Context) error {
 			// Staged on a copy and committed only once the upsert is issued, so
 			// a failed Update really did change nothing -- and completion is
 			// not reversible.
 			next := state
 			next.Deactivated = true
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
-				return rewards.DeactivateResult{}, fmt.Errorf("upsert search attributes: %w", err)
+				return fmt.Errorf("upsert search attributes: %w", err)
 			}
 			state = next
 
@@ -142,7 +141,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"customerId", state.CustomerID,
 				"points", state.Points,
 				"level", rewards.Level(state.Points))
-			return rewards.DeactivateResult{Changed: true}, nil
+			return nil
 		}); err != nil {
 		return fmt.Errorf("register %s update: %w", rewards.UpdateDeactivate, err)
 	}

@@ -356,12 +356,13 @@ func (s *Server) addPointsWithRolloverRetry(
 	const attempts = 2
 
 	for attempt := 1; attempt <= attempts; attempt++ {
-		res, err := sendUpdate[rewards.AddPointsResult](ctx, s.temporal, client.UpdateWorkflowOptions{
+		var res rewards.AddPointsResult
+		err := sendUpdate(ctx, s.temporal, client.UpdateWorkflowOptions{
 			WorkflowID: wfID,
 			UpdateName: rewards.UpdateAddPoints,
 			UpdateID:   req.RequestID, // empty means the SDK generates one
 			Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
-		})
+		}, &res)
 		if err == nil {
 			return res, nil
 		}
@@ -414,22 +415,20 @@ const queryTimeout = 2 * time.Second
 // an Update with no worker does not fail, it blocks indefinitely.
 const updateTimeout = 15 * time.Second
 
-// sendUpdate sends one Update, waits for it to complete, and decodes its result.
-func sendUpdate[T any](
-	ctx context.Context, c client.Client, opts client.UpdateWorkflowOptions,
-) (T, error) {
-	var res T
-
+// sendUpdate sends one Update, waits for it to complete, and decodes its
+// result into valuePtr (nil when the Update returns nothing).
+func sendUpdate(
+	ctx context.Context, c client.Client, opts client.UpdateWorkflowOptions, valuePtr any,
+) error {
 	ctx, cancel := context.WithTimeout(ctx, updateTimeout)
 	defer cancel()
 
 	opts.WaitForStage = client.WorkflowUpdateStageCompleted
 	handle, err := c.UpdateWorkflow(ctx, opts)
 	if err != nil {
-		return res, err
+		return err
 	}
-	err = handle.Get(ctx, &res)
-	return res, err
+	return handle.Get(ctx, valuePtr)
 }
 
 // deactivate ends the customer's membership via Update. One-way: the workflow
@@ -444,10 +443,10 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	}
 	wfID := rewards.WorkflowID(id)
 
-	_, err := sendUpdate[rewards.DeactivateResult](r.Context(), s.temporal, client.UpdateWorkflowOptions{
+	err := sendUpdate(r.Context(), s.temporal, client.UpdateWorkflowOptions{
 		WorkflowID: wfID,
 		UpdateName: rewards.UpdateDeactivate,
-	})
+	}, nil)
 	if err != nil && isClosedRun(err) {
 		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
 		switch {
