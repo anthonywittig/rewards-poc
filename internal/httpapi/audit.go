@@ -36,13 +36,15 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 	// reaped.
 	desc, err := s.temporal.DescribeWorkflowExecution(ctx, wfID, "")
 	if err != nil {
-		return mapStoreReadError(err)
+		// Unmapped: store-read failures, an unknown customer included, are
+		// logged 500s (see classifyCommon).
+		return err
 	}
 
 	runs, truncated, err := audit.Walk(ctx, s.fetchRun(wfID),
 		desc.GetWorkflowExecutionInfo().GetExecution().GetRunId())
 	if err != nil {
-		return mapStoreReadError(err)
+		return err
 	}
 
 	crawled := audit.Assemble(id, runs, truncated)

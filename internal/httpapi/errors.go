@@ -75,18 +75,11 @@ func mapUpdateError(err error) error {
 	return classifyCommon(err)
 }
 
-// mapStoreReadError classifies failures for reads of stored data (the list,
-// the audit crawl, Describe). No worker is involved there, so a timeout must
-// not blame one.
-func mapStoreReadError(err error) error {
-	if isTimeout(err) {
-		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
-			"the read did not finish in time; temporal is slow or unreachable"}
-	}
-	return classifyCommon(err)
-}
-
-// classifyCommon handles the failures every endpoint shares.
+// classifyCommon handles the failures every endpoint shares. Reads of stored
+// data (the list, the audit crawl, Describe) skip mapping entirely and return
+// their errors raw -- every failure there, timeouts and unknown customers
+// alike, becomes a logged 500. The POC trades those distinctions for one code
+// path.
 func classifyCommon(err error) error {
 	var notFound *serviceerror.NotFound
 	if errors.As(err, &notFound) {

@@ -125,7 +125,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	// answer needs a worker.
 	running, derr := s.hasRunningExecution(r.Context(), wfID)
 	if derr != nil {
-		return mapStoreReadError(derr)
+		return derr
 	}
 	if running {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
@@ -174,9 +174,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Query:    query,
 	})
 	if err != nil {
-		// mapStoreReadError, not mapQueryError: no worker is involved, so a
-		// timeout here must not blame one.
-		return mapStoreReadError(err)
+		return err
 	}
 
 	items := make([]CustomerListItem, 0, len(resp.GetExecutions()))
