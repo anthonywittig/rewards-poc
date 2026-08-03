@@ -26,7 +26,7 @@ declare -A SEARCH_ATTRS=(
   [RewardsLevel]=Keyword
   [RewardsPoints]=Int
   [RewardsEnrolledAt]=Datetime
-  [RewardsGeneration]=Int
+  [RewardsRunNumber]=Int
   [RewardsActive]=Bool
 )
 

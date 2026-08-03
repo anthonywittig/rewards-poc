@@ -95,10 +95,10 @@ and starts a fresh one carrying state forward:
 ```sh
 make enroll ID=roll NAME="Rolly Poly"
 for i in 1 2 3 4 5 6 7; do make add ID=roll AMOUNT=100 REASON="add $i"; done
-make status ID=roll     # generation 2, points 700
+make status ID=roll     # runNumber 3, points 700
 ```
 
-The balance accumulates across the boundary while `generation` ticks up, and
+The balance accumulates across the boundary while `runNumber` ticks up, and
 each run's history stays small. Three is a demo number chosen to be watchable;
 production should ask `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
 

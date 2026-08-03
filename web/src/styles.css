@@ -650,9 +650,9 @@ tbody tr:last-child td {
   background: var(--danger);
 }
 
-/* The divider marks where a generation began. Newest first puts it under that
-   generation's events, so the gap separating it from the older generation
-   below is the bottom one. */
+/* The divider marks where a run began. Newest first puts it under that
+   run's events, so the gap separating it from the older run below is the
+   bottom one. */
 .timeline-item.divider {
   border-left-style: dashed;
   padding-top: 0.4rem;

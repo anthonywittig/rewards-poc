@@ -15,6 +15,6 @@ var (
 	KeyRewardsLevel  = temporal.NewSearchAttributeKeyKeyword("RewardsLevel")
 	KeyRewardsPoints = temporal.NewSearchAttributeKeyInt64("RewardsPoints")
 	KeyEnrolledAt    = temporal.NewSearchAttributeKeyTime("RewardsEnrolledAt")
-	KeyGeneration    = temporal.NewSearchAttributeKeyInt64("RewardsGeneration")
+	KeyRunNumber     = temporal.NewSearchAttributeKeyInt64("RewardsRunNumber")
 	KeyActive        = temporal.NewSearchAttributeKeyBool("RewardsActive")
 )

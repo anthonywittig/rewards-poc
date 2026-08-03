@@ -51,7 +51,7 @@ type CustomerStatus struct {
 	Tiers []Tier `json:"tiers"`
 
 	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
-	Generation         int  `json:"generation"`
+	RunNumber          int  `json:"runNumber"`
 	Active             bool `json:"active"`
 }
 
@@ -67,7 +67,7 @@ func StatusOf(state *CustomerState) CustomerStatus {
 		Tiers:              Ladder(),
 		EnrolledAt:         state.EnrolledAt,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
-		Generation:         state.Generation,
+		RunNumber:          state.RunNumber,
 		Active:             !state.Deactivated,
 	}
 }
