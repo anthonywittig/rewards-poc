@@ -118,10 +118,11 @@ type CustomerState struct {
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	Generation         int `json:"generation"`
 
-	// Set when the customer leaves; cleared on re-enrollment. Deliberately not
-	// an Active bool: the zero value has to mean active, or continue-as-new
-	// payloads written before this field existed would decode every rolled-over
-	// customer as inactive on deploy.
+	// Set when the customer leaves, and never cleared: deactivation is one-way,
+	// and the run completes once the flag is set. Deliberately not an Active
+	// bool: the zero value has to mean active, or continue-as-new payloads
+	// written before this field existed would decode every rolled-over customer
+	// as inactive on deploy.
 	Deactivated bool `json:"deactivated,omitempty"`
 }
 

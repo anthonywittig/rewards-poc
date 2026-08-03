@@ -182,10 +182,11 @@ make inspect-es Q=customer ID=inspect  # only the Running doc survives
 ES does not decide to delete those documents on its own — they go because the
 source executions in Postgres went. Projection relationship, made concrete.
 
-Note this demo uses **rolled-over generations**, not a departed customer.
-Deactivation is soft: the execution stays `Running` with `RewardsActive: false`,
-so it is neither closed nor reapable. Only an ops-level cancel or terminate
-produces a closed run for a customer who left.
+Note this demo uses **rolled-over generations**, but a departed customer works
+the same way: deactivation completes the execution, so their final run — still
+carrying `RewardsActive: false` — is closed and reapable like any
+`ContinuedAsNew` run. Reaping it is what finally removes the departed customer
+from the list.
 
 **Caveat:** `_cat/indices` `docs.count` (shown by `make es`) can stay inflated
 after deletes until Lucene merges drop soft-deleted docs. Prefer `_search` /

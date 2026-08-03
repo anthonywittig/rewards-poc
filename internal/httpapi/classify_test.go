@@ -27,37 +27,6 @@ func status(t *testing.T, err error) (int, string) {
 	return apiErr.status, apiErr.code
 }
 
-func TestMapStartError(t *testing.T) {
-	cases := []struct {
-		name     string
-		err      error
-		wantCode int
-		wantKind string
-	}{
-		{
-			// Observed: "Workflow execution is already running. WorkflowId: ..."
-			name:     "duplicate enrollment",
-			err:      serviceerror.NewWorkflowExecutionAlreadyStarted("already running", "id", "run"),
-			wantCode: http.StatusConflict,
-			wantKind: CodeAlreadyExists,
-		},
-		{
-			name:     "unknown failure falls through to 500",
-			err:      errors.New("something nobody anticipated"),
-			wantCode: http.StatusInternalServerError,
-			wantKind: CodeInternal,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotCode, gotKind := status(t, mapStartError(tc.err))
-			if gotCode != tc.wantCode || gotKind != tc.wantKind {
-				t.Errorf("got %d/%s, want %d/%s", gotCode, gotKind, tc.wantCode, tc.wantKind)
-			}
-		})
-	}
-}
-
 func TestMapQueryError(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -159,12 +128,13 @@ func TestMapUpdateError_BothRejectionPathsAre422(t *testing.T) {
 	}
 }
 
-// Deactivated is the one rejection that does not become a 422, because the
-// caller can act on it. The UI branches on the code, so collapsing it back into
-// CodeRejected would silently remove the re-enroll prompt.
+// Deactivated is the one rejection that does not become a 422, because it is
+// not about this request: the membership has ended for good. The UI branches on
+// the code, so collapsing it back into CodeRejected would present a permanent
+// state as a fixable amount.
 func TestMapUpdateError_DeactivatedIs409(t *testing.T) {
 	err := temporal.NewNonRetryableApplicationError(
-		"customer is deactivated; re-enroll them before adding points",
+		"customer is deactivated; deactivation is permanent",
 		rewards.ErrTypeDeactivated, nil)
 
 	mapped := mapUpdateError(err)
@@ -176,7 +146,7 @@ func TestMapUpdateError_DeactivatedIs409(t *testing.T) {
 	// Still the workflow's own words, like every other business rejection.
 	var apiErr *apiError
 	errors.As(mapped, &apiErr)
-	if apiErr.message != "customer is deactivated; re-enroll them before adding points" {
+	if apiErr.message != "customer is deactivated; deactivation is permanent" {
 		t.Errorf("message = %q, want the workflow's own words", apiErr.message)
 	}
 }

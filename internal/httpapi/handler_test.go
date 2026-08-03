@@ -42,15 +42,15 @@ type stubTemporal struct {
 	listErr     error
 	countErr    error
 
-	// Soft-deactivation surface (membership_test.go), all opt-in: a zero
-	// stubTemporal behaves as though none of it existed.
+	// Membership surface (membership_test.go), all opt-in: a zero stubTemporal
+	// behaves as though none of it existed.
 	describeInfo *workflowpb.WorkflowExecutionInfo
 	executions   []*workflowpb.WorkflowExecutionInfo
 	startErr     error
 	queryStatus  *rewards.CustomerStatus
 	queryErr     error
 	deactivate   *rewards.DeactivateResult
-	reactivate   *rewards.ReactivateResult
+	updateErr    error
 
 	// Workflow IDs passed to ExecuteWorkflow, in order.
 	startIDs []string
@@ -114,17 +114,14 @@ func (s *stubTemporal) UpdateWorkflow(
 	_ context.Context, opts client.UpdateWorkflowOptions,
 ) (client.WorkflowUpdateHandle, error) {
 	s.updates = append(s.updates, opts.UpdateName)
-	switch opts.UpdateName {
-	case rewards.UpdateDeactivate:
+	if s.updateErr != nil {
+		return nil, s.updateErr
+	}
+	if opts.UpdateName == rewards.UpdateDeactivate {
 		if s.deactivate == nil {
 			return &stubHandle{result: rewards.DeactivateResult{Changed: true}}, nil
 		}
 		return &stubHandle{result: *s.deactivate}, nil
-	case rewards.UpdateReactivate:
-		if s.reactivate == nil {
-			return &stubHandle{result: rewards.ReactivateResult{Changed: true}}, nil
-		}
-		return &stubHandle{result: *s.reactivate}, nil
 	}
 	return nil, serviceerror.NewNotFound("no stub for update " + opts.UpdateName)
 }

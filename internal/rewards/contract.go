@@ -11,7 +11,6 @@ import "time"
 const (
 	UpdateAddPoints  = "addPoints"
 	UpdateDeactivate = "deactivate"
-	UpdateReactivate = "reactivate"
 	QueryGetStatus   = "getStatus"
 )
 
@@ -40,14 +39,6 @@ type AddPointsResult struct {
 // real leave from an idempotent no-op (repeat DELETE).
 type DeactivateResult struct {
 	Changed bool `json:"changed"`
-}
-
-// ReactivateResult mirrors DeactivateResult: Changed distinguishes a real
-// re-enrollment from a no-op against a customer who was already active. The API
-// tells a restore (200) from a duplicate enrollment (409) by it.
-type ReactivateResult struct {
-	Changed bool           `json:"changed"`
-	Status  CustomerStatus `json:"status"`
 }
 
 // CustomerStatus is the getStatus Query result.

@@ -3,7 +3,6 @@ import { Link, useParams } from 'react-router-dom'
 import {
   addPoints,
   deactivateCustomer,
-  enrollCustomer,
   getAudit,
   getCustomer,
   newRequestId,
@@ -33,9 +32,6 @@ export function CustomerDetailPage() {
   const [confirmLeave, setConfirmLeave] = useState(false)
   const [leaveBusy, setLeaveBusy] = useState(false)
   const [leaveError, setLeaveError] = useState<unknown>(null)
-
-  const [rejoinBusy, setRejoinBusy] = useState(false)
-  const [rejoinError, setRejoinError] = useState<unknown>(null)
 
   // Bumped by the action handlers to reload after a successful write. The rows
   // on screen stay put while the reload runs; only an id change blanks them.
@@ -107,30 +103,6 @@ export function CustomerDetailPage() {
       if (err instanceof ApiError && err.code === 'rejected') refresh()
     } finally {
       setPointsBusy(false)
-    }
-  }
-
-  // Re-enrollment is the same POST /api/customers a new signup uses: the server
-  // sees the ID is taken and inactive, and reactivates instead of starting.
-  //
-  // The reactivate Update itself takes no argument, but the name still goes on
-  // the request: if this customer's workflow has been reaped the ID is free
-  // again, and the endpoint starts a fresh one rather than reactivating. Without
-  // a name that start would create a nameless customer.
-  async function onReactivate() {
-    if (!customer) return
-    setRejoinBusy(true)
-    setRejoinError(null)
-    try {
-      await enrollCustomer({
-        customerId: customer.customerId,
-        name: customer.name,
-      })
-      refresh()
-    } catch (err) {
-      setRejoinError(err)
-    } finally {
-      setRejoinBusy(false)
     }
   }
 
@@ -276,21 +248,12 @@ export function CustomerDetailPage() {
             <section className="panel">
               <h2>Deactivated</h2>
               <p className="warn-copy">
-                This customer has left the program. Points cannot be added.
-                Re-enrolling restores their {customer.points.toLocaleString()}{' '}
-                point balance — the workflow is still running, so nothing was lost.
+                This customer has left the program for good. Their workflow has
+                completed, freezing the balance at{' '}
+                {customer.points.toLocaleString()} points — deactivation is
+                one-way, so points cannot be added and the membership cannot be
+                restored.
               </p>
-              <div className="form-actions">
-                <button
-                  type="button"
-                  className="btn btn-primary"
-                  disabled={rejoinBusy}
-                  onClick={() => void onReactivate()}
-                >
-                  {rejoinBusy ? 'Re-enrolling…' : 'Re-enroll'}
-                </button>
-              </div>
-              <ErrorBanner error={rejoinError} />
             </section>
           )}
 
@@ -308,8 +271,10 @@ export function CustomerDetailPage() {
               ) : (
                 <>
                   <p className="warn-copy">
-                    Soft-deactivate this customer. Their points are kept, and
-                    re-enrolling later restores them.
+                    Deactivation is permanent: it completes this customer's
+                    workflow and ends their membership. Their{' '}
+                    {customer.points.toLocaleString()} points stay on record but
+                    can never grow again.
                   </p>
                   <div className="form-actions">
                     <button

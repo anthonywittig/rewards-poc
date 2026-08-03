@@ -58,7 +58,6 @@ type updateResult struct {
 	completed error
 	value     rewards.AddPointsResult
 	left      rewards.DeactivateResult
-	rejoined  rewards.ReactivateResult
 }
 
 func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
@@ -72,16 +71,14 @@ func (r *updateResult) callback(s *RewardsSuite) *testsuite.TestUpdateCallback {
 			}
 			// Enumerated rather than type-asserted to one, so a handler that
 			// starts returning something else fails here instead of leaving
-			// the assertion reading a zero value -- which for the two
-			// membership results means Changed=false, the answer half these
-			// tests are trying to distinguish.
+			// the assertion reading a zero value -- which for DeactivateResult
+			// means Changed=false, the answer half these tests are trying to
+			// distinguish.
 			switch res := v.(type) {
 			case rewards.AddPointsResult:
 				r.value = res
 			case rewards.DeactivateResult:
 				r.left = res
-			case rewards.ReactivateResult:
-				r.rejoined = res
 			default:
 				s.Failf("unexpected update result", "got %T", v)
 			}
@@ -99,7 +96,7 @@ func (s *RewardsSuite) addPoints(at time.Duration, id string, req rewards.AddPoi
 }
 
 // stopAt schedules CancelWorkflow as test-env teardown only so the long-running
-// entity workflow can finish under the testsuite. Product leave is soft-deactivate
+// entity workflow can finish under the testsuite. Product leave is deactivate
 // (see deactivateAt); CancelWorkflow is not a product path.
 func (s *RewardsSuite) stopAt(at time.Duration) {
 	s.env.RegisterDelayedCallback(func() { s.env.CancelWorkflow() }, at)
@@ -109,14 +106,6 @@ func (s *RewardsSuite) deactivateAt(at time.Duration, id string) *updateResult {
 	res := &updateResult{}
 	s.env.RegisterDelayedCallback(func() {
 		s.env.UpdateWorkflow(rewards.UpdateDeactivate, id, res.callback(s))
-	}, at)
-	return res
-}
-
-func (s *RewardsSuite) reactivateAt(at time.Duration, id string) *updateResult {
-	res := &updateResult{}
-	s.env.RegisterDelayedCallback(func() {
-		s.env.UpdateWorkflow(rewards.UpdateReactivate, id, res.callback(s))
 	}, at)
 	return res
 }
@@ -477,90 +466,42 @@ func (s *RewardsSuite) Test_ContinueAsNew_CarriesStateForward() {
 	s.Equal("Ada Lovelace", next.Name)
 }
 
-// --- Soft deactivation -----------------------------------------------------
+// --- One-way deactivation ----------------------------------------------------
 
-// The full leave/rejoin round trip. Soft-deactivate keeps the workflow running
-// with the balance intact; reactivate clears the flag, restores the same
-// points, and the customer earns again on top of them. The reactivate Update
-// takes no argument at all, so there is no path by which rejoining can rewrite
-// the customer's name -- the ID is derived from that name, so a re-enrollment
-// only reaches this workflow when the name it arrived under already slugs to
-// this customer's ID.
-func (s *RewardsSuite) Test_SoftDeactivate_ThenReactivate_RestoresEverything() {
+// Deactivation is one-way: the Update records the leave and the workflow
+// completes -- a normal completion, not a cancellation and not a roll. The
+// balance is frozen rather than erased, and the final state is still there for
+// the Query the detail page runs against the closed run.
+func (s *RewardsSuite) Test_Deactivate_CompletesTheWorkflow() {
 	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 600, Reason: "purchase"})
 	deact := s.deactivateAt(2*time.Minute, "leave")
-	statusAfterLeave := s.queryStatusAt(3 * time.Minute)
-	rejoin := s.reactivateAt(4*time.Minute, "rejoin")
-	statusAfterRejoin := s.queryStatusAt(5 * time.Minute)
-	after := s.addPoints(6*time.Minute, "u2", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.stopAt(7 * time.Minute)
+	// No stopAt: the deactivate itself is what ends the run.
+	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, newState())
 
-	_ = s.runUntilStopped(newState())
-
+	s.Require().True(s.env.IsWorkflowCompleted())
 	s.Require().NoError(deact.rejected)
 	s.Require().NoError(deact.completed)
-	s.True(deact.left.Changed, "the first leave is a real transition")
-	s.False(statusAfterLeave.Active, "soft leave must mark inactive")
-	s.Equal(600, statusAfterLeave.Points, "points must survive deactivation")
+	s.True(deact.left.Changed, "the leave is a real transition")
 
-	s.Require().NoError(rejoin.completed)
-	s.True(rejoin.rejoined.Changed)
-	s.True(statusAfterRejoin.Active, "the customer is a member again")
-	s.Equal("Ada Lovelace", statusAfterRejoin.Name, "rejoining cannot rename the customer")
-	s.Equal(600, statusAfterRejoin.Points, "re-enrollment is not a reset")
-	s.Equal(1, statusAfterRejoin.LifetimeEarnEvents, "nor does it forget how the balance was earned")
-	s.Equal(rewards.LevelGold, statusAfterRejoin.Level)
+	err := s.env.GetWorkflowError()
+	var canErr *workflow.ContinueAsNewError
+	s.False(errors.As(err, &canErr), "deactivation must complete the run, not roll it")
+	s.NoError(err, "leaving the program is a normal completion, not a failure")
 
-	s.Require().NoError(after.rejected)
-	s.Require().NoError(after.completed, "a rejoined customer must be able to earn again")
-	s.Equal(700, after.value.Balance, "and they earn on top of the restored balance")
+	enc, qerr := s.env.QueryWorkflow(rewards.QueryGetStatus)
+	s.Require().NoError(qerr)
+	var status rewards.CustomerStatus
+	s.Require().NoError(enc.Get(&status))
+	s.False(status.Active)
+	s.Equal(600, status.Points, "the balance is frozen, not erased")
 }
 
-// Both membership Updates are idempotent, and both have to *say* so: the API
-// turns a repeat DELETE into 204 and a duplicate enrollment into 409 on the
-// strength of Changed, and the audit timeline draws a row only when it is true.
-// Reporting Changed=true for a no-op would show a customer leaving twice.
-func (s *RewardsSuite) Test_SoftDeactivate_RepeatIsANoOp() {
-	first := s.deactivateAt(time.Minute, "leave-1")
-	second := s.deactivateAt(2*time.Minute, "leave-2")
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().NoError(first.completed)
-	s.Require().NoError(second.completed)
-	s.True(first.left.Changed, "the first leave is a real transition")
-	s.False(second.left.Changed, "the second changed nothing")
-}
-
-// Re-enrolling someone who never left is a duplicate signup, and the handler
-// reports rather than applies it. Applying would restart a membership that never
-// ended -- the enroll endpoint depends on Changed=false to turn this into the
-// 409 it owes the caller.
-func (s *RewardsSuite) Test_Reactivate_OnAnActiveCustomerChangesNothing() {
-	rejoin := s.reactivateAt(time.Minute, "rejoin")
-	status := s.queryStatusAt(2 * time.Minute)
-	s.stopAt(3 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().NoError(rejoin.completed)
-	s.False(rejoin.rejoined.Changed, "an active customer was not reactivated")
-	s.Equal("Ada Lovelace", status.Name, "a duplicate enroll must not rename the customer")
-	s.True(status.Active)
-}
-
-// addPoints against a soft-deactivated customer is rejected with ErrTypeDeactivated.
-func (s *RewardsSuite) Test_SoftDeactivate_RejectsAddPoints() {
-	s.addPoints(time.Minute, "u1", rewards.AddPointsRequest{Amount: 100, Reason: "purchase"})
-	s.deactivateAt(2*time.Minute, "leave")
-	blocked := s.addPoints(3*time.Minute, "u2", rewards.AddPointsRequest{Amount: 50, Reason: "purchase"})
-	s.stopAt(4 * time.Minute)
-
-	_ = s.runUntilStopped(newState())
-
-	s.Require().Error(blocked.completed)
-	var app *temporal.ApplicationError
-	s.Require().True(errors.As(blocked.completed, &app))
-	s.Equal(rewards.ErrTypeDeactivated, app.Type())
-}
+// The drain-window guards -- the Changed=false answer to a duplicate deactivate
+// and the ErrTypeDeactivated rejection of an addPoints that races the leave --
+// have no test here, deliberately rather than by oversight. They fire only when
+// a real server batches a second Update into the final run's last workflow
+// task; the test environment applies Updates strictly one at a time and drops
+// anything sent after the run completes, silently -- a test against it asserts
+// on callbacks that never ran and passes whatever the handler does. The
+// mapping of ErrTypeDeactivated itself is covered in the API layer's
+// classify_test.go.

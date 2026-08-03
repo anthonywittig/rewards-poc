@@ -11,8 +11,8 @@ import "strings"
 //
 // Nothing random goes into it, so the derivation is the identity rule too: a
 // second enrollment under the same name lands on the same workflow ID, which
-// the enroll handler already treats as a duplicate (409) or a rejoin. Two
-// people with one name are one customer here.
+// the enroll handler already treats as a duplicate (409). Two people with one
+// name are one customer here.
 
 // idSlugLimit keeps the readable half from dominating the workflow ID.
 const idSlugLimit = 32

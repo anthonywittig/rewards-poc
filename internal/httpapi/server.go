@@ -59,16 +59,18 @@ func (s *Server) health(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// enroll starts a customer's workflow, or reactivates a soft-deactivated one.
+// enroll starts a customer's workflow.
 //
 // The ID is the caller's only when they send one. A signup from the UI does
 // not: it sends a name, and the server derives the ID from it
 // (rewards.CustomerIDForName).
 //
-// Re-enrollment keeps the existing balance: the workflow ID is still occupied,
-// so we Update rather than Start, and Deactivated flips back to false with
-// Points untouched. That path needs the ID, which is why the endpoint still
-// takes one -- the detail page's Rejoin button sends the ID it is looking at.
+// Deactivation is one-way and completes the workflow, so an occupied ID means
+// one of two things: a Running execution (an active customer -- duplicate
+// signup) or a Completed one (a departed customer, whose ID stays retired
+// until their history is reaped). ALLOW_DUPLICATE_FAILED_ONLY is what retires
+// it: a *failed* execution -- an enrollment payload the workflow refused --
+// may be retried, a completed one may not be restarted.
 func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	var req EnrollRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -101,6 +103,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
 		ID:                                       wfID,
 		TaskQueue:                                rewards.TaskQueue,
+		WorkflowIDReusePolicy:                    enumspb.WORKFLOW_ID_REUSE_POLICY_ALLOW_DUPLICATE_FAILED_ONLY,
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
@@ -118,48 +121,22 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 
 	var already *serviceerror.WorkflowExecutionAlreadyStarted
 	if !errors.As(err, &already) {
-		return mapStartError(err)
+		return classifyCommon(err)
 	}
 
-	// ID is taken. Active → 409. Soft-deactivated → reactivate and restore.
-	active, aerr := s.isActive(r.Context(), wfID)
-	if aerr != nil {
-		return aerr
+	// ID is taken. Running → a duplicate signup. Closed → the customer left,
+	// and deactivation is one-way. Describe reads persistence, so neither
+	// answer needs a worker.
+	running, derr := s.hasRunningExecution(r.Context(), wfID)
+	if derr != nil {
+		return mapStoreReadError(derr)
 	}
-	if active {
+	if running {
 		return &apiError{http.StatusConflict, CodeAlreadyExists,
 			"customer is already enrolled and active"}
 	}
-
-	res, err := s.reactivate(r.Context(), wfID)
-	if err != nil {
-		return err
-	}
-	// The customer went active between the check above and the Update -- a
-	// concurrent enroll won. The handler reports that rather than restarting a
-	// membership that never ended, so this is still the duplicate 409.
-	if !res.Changed {
-		return &apiError{http.StatusConflict, CodeAlreadyExists,
-			"customer is already enrolled and active"}
-	}
-
-	desc, derr := s.temporal.DescribeWorkflowExecution(r.Context(), wfID, "")
-	runID := ""
-	if derr == nil {
-		runID = desc.GetWorkflowExecutionInfo().GetExecution().GetRunId()
-	} else {
-		// Not fatal: the reactivation landed, and the run ID is a convenience
-		// rather than part of the outcome.
-		s.log.Warn("reactivated, but describe failed so the response carries no runId",
-			"workflowId", wfID, "error", derr)
-	}
-
-	writeJSON(w, s.log, http.StatusOK, EnrollResponse{
-		CustomerID: req.CustomerID,
-		WorkflowID: wfID,
-		RunID:      runID,
-	})
-	return nil
+	return &apiError{http.StatusConflict, CodeDeactivated,
+		"this customer has been deactivated; deactivation is permanent"}
 }
 
 // listCustomers serves the customer list straight out of the visibility store.
@@ -214,9 +191,11 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	for _, e := range resp.GetExecutions() {
 		v := decodeSearchAttributes(e.GetSearchAttributes())
 
-		// Soft-inactive: membership is RewardsActive. Deactivate fails the
-		// Update if the upsert cannot land, so Active=false is present for
-		// every soft leave. Nil Active + Running is only the pre-deploy case.
+		// Membership is RewardsActive, not ExecutionStatus. Deactivate fails
+		// the Update if the upsert cannot land, so Active=false is present for
+		// every leave -- and the completed final run keeps it, which is what
+		// puts departed customers in this list until their history is reaped.
+		// Nil Active + Running is only the pre-deploy case.
 		status := "deactivated"
 		switch {
 		case v.Active != nil && *v.Active:
@@ -273,8 +252,9 @@ func hasOrderBy(q string) bool {
 //	WorkflowId = 'customer-dup-check'                          Total: 3
 //	WorkflowId = 'customer-dup-check' AND status != CAN        Total: 1
 //
-// Excluding ContinuedAsNew leaves exactly the current generation. Soft-inactive
-// customers are still Running; membership is RewardsActive, not ExecutionStatus.
+// Excluding ContinuedAsNew leaves exactly the current generation -- for a
+// departed customer, the Completed run their deactivation closed. Membership is
+// RewardsActive, not ExecutionStatus.
 func scopedQuery(userQuery string) string {
 	scope := "WorkflowType = '" + rewards.WorkflowTypeName + "'" +
 		" AND ExecutionStatus != 'ContinuedAsNew'"
@@ -311,7 +291,7 @@ func mapListError(err error, userQuery string) error {
 }
 
 // getCustomer reads current state via Query. Status is active only when the
-// execution is still Running and soft-inactive says Active.
+// execution is still Running and workflow state says Active.
 //
 // The Query is the only source, including for customers who have left and for
 // closed executions. Search attributes would answer most of this without a
@@ -436,10 +416,10 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 // run needs concurrent adds in the same instant, which this single-user demo
 // never produces.
 //
-// Soft-inactive customers stay Running, so a closed-run NotFound with no
-// successor means a force-closed execution, and adding points to it is refused.
-// Product deactivation rejects inside the Update handler as ErrTypeDeactivated
-// instead.
+// Deactivation completes the workflow, so a closed-run NotFound with no
+// successor is the ordinary shape of a departed customer, and adding points to
+// one is refused. Only an add that races the deactivate into its final run is
+// rejected inside the Update handler as ErrTypeDeactivated instead.
 //
 // Retrying is safe because the update did not run -- the run it targeted closed
 // before applying it. That safety comes from the abort semantics, not from the
@@ -472,7 +452,7 @@ func (s *Server) addPointsWithRolloverRetry(
 		if !running {
 			return zero, &apiError{
 				http.StatusConflict, CodeDeactivated,
-				"customer workflow is closed; re-enroll them before adding points",
+				"customer is deactivated; deactivation is permanent",
 			}
 		}
 
@@ -499,26 +479,6 @@ func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, er
 	}
 	return desc.GetWorkflowExecutionInfo().GetStatus() ==
 		enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING, nil
-}
-
-// isActive answers "is this customer currently enrolled and active", from the
-// workflow's own word and nothing else.
-//
-// Deliberately not answerable from visibility, however tempting: enroll
-// *reactivates* on a false, rewriting a live customer's name, so this
-// is the question here whose wrong answer is destructive and the last one to
-// settle from a store that lags writes. An error the caller cannot act on is
-// both the honest answer and the safe one.
-func (s *Server) isActive(ctx context.Context, wfID string) (bool, error) {
-	enc, err := s.queryStatus(ctx, wfID)
-	if err != nil {
-		return false, err
-	}
-	var st rewards.CustomerStatus
-	if err := enc.Get(&st); err != nil {
-		return false, err
-	}
-	return st.Active, nil
 }
 
 // listTimeout bounds the two visibility calls. Generous next to queryTimeout
@@ -566,36 +526,15 @@ func sendUpdate[T any](
 	return res, err
 }
 
-// reactivate sends the reactivate Update. No rollover retry: enroll only calls
-// this after ExecuteWorkflow reported a running execution, so a closed-run
-// NotFound means the workflow closed in the instant since -- there is nothing
-// left to update, and the honest answer is "enroll again".
-func (s *Server) reactivate(ctx context.Context, wfID string) (rewards.ReactivateResult, error) {
-	res, err := sendUpdate[rewards.ReactivateResult](ctx, s.temporal, client.UpdateWorkflowOptions{
-		WorkflowID: wfID,
-		UpdateName: rewards.UpdateReactivate,
-	})
-	switch {
-	case err == nil:
-		return res, nil
-	case isClosedRun(err):
-		return rewards.ReactivateResult{}, &apiError{
-			http.StatusConflict, CodeDeactivated,
-			"customer workflow is closed; enroll them again to start fresh",
-		}
-	default:
-		return rewards.ReactivateResult{}, mapUpdateError(err)
-	}
-}
-
-// deactivate soft-leaves the customer via Update. The workflow stays Running
-// with Deactivated set so re-enrollment can restore the prior balance.
+// deactivate ends the customer's membership via Update. One-way: the workflow
+// records the leave and then completes; there is no reactivation.
 //
-// Idempotent: repeating DELETE against an already-deactivated customer completes
-// with Changed=false (no extra audit row). A closed-run NotFound takes one
-// Describe to resolve: a customer who never enrolled is the Describe's own 404,
-// and a force-closed execution is already as gone as deactivation gets, so
-// DELETE has nothing left to do.
+// Idempotent: repeating DELETE against a departed customer finds their run
+// already closed, and closed is exactly what deactivation leaves behind. That
+// closed-run NotFound takes one Describe to resolve: a customer who never
+// enrolled is the Describe's own 404, and anything else closed -- the
+// deactivation that already landed, or an ops-level terminate -- leaves DELETE
+// nothing to do.
 func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -621,7 +560,7 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 				"the customer's workflow rolled over while applying this request; please retry",
 			}
 		default:
-			err = nil // force-closed: already deactivated, DELETE is idempotent
+			err = nil // already closed: as deactivated as it gets, DELETE is idempotent
 		}
 	}
 	if err != nil {

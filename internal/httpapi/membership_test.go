@@ -18,10 +18,10 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// Soft deactivation moves the answer to "is this customer still enrolled?" from
-// the execution status to workflow state, which touches every read in the API
-// and the one write that has to tell a restore from a duplicate. Handler-level
-// tests for that; the mappers are covered in classify_test.go.
+// Deactivation is one-way and completes the workflow, so "is this customer
+// still enrolled?" is answered by RewardsActive for reads and by whether an
+// execution is Running for the enroll conflict path. Handler-level tests for
+// that; the mappers are covered in classify_test.go.
 
 // --- The list ---------------------------------------------------------------
 
@@ -52,8 +52,8 @@ func searchAttrs(t *testing.T, active *bool) *commonpb.SearchAttributes {
 
 func ptr[T any](v T) *T { return &v }
 
-// A soft-deactivated customer is still Running, so if the list falls back to
-// ExecutionStatus every departed customer reads as active.
+// Membership is RewardsActive, not ExecutionStatus: a departed customer's
+// final run is Completed but still listed, and it must read as deactivated.
 func TestListCustomers_StatusComesFromRewardsActive(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -68,8 +68,17 @@ func TestListCustomers_StatusComesFromRewardsActive(t *testing.T) {
 			want:   "active",
 		},
 		{
-			// The whole point: Running, but the customer has left.
-			name:   "running and soft-deactivated",
+			// The departed customer: deactivation completed the run, and the
+			// final run's attributes carry the leave.
+			name:   "completed and deactivated",
+			active: ptr(false),
+			status: enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+			want:   "deactivated",
+		},
+		{
+			// The drain window: the leave has been recorded but the run has not
+			// closed yet. Still a departed customer.
+			name:   "running and deactivated",
 			active: ptr(false),
 			status: enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
 			want:   "deactivated",
@@ -120,11 +129,9 @@ func TestListCustomers_StatusComesFromRewardsActive(t *testing.T) {
 	}
 }
 
-// --- Enroll: start, duplicate, restore --------------------------------------
+// --- Enroll: start, duplicate, departed --------------------------------------
 
-// A free ID starts a workflow. 201, and no Update anywhere near it -- a start
-// that quietly became a reactivate would restore a stranger's balance onto a
-// new customer.
+// A free ID starts a workflow. 201, and no Update anywhere near it.
 func TestEnroll_FreeIDStarts(t *testing.T) {
 	stub := &stubTemporal{}
 	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
@@ -169,8 +176,11 @@ func TestEnroll_WithoutAnIDDerivesOneFromTheName(t *testing.T) {
 // executions for one person.
 func TestEnroll_SecondSignupUnderOneNameIsTheDuplicatePath(t *testing.T) {
 	stub := &stubTemporal{
-		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Active: true},
+		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
+		describeInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonExecution,
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		},
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
 
@@ -182,21 +192,27 @@ func TestEnroll_SecondSignupUnderOneNameIsTheDuplicatePath(t *testing.T) {
 	}
 }
 
-// Same derivation, so a departed customer rejoins by signing up again under the
-// name they left with -- balance intact, no ID to remember.
-func TestEnroll_WithoutAnIDReactivatesTheDeparted(t *testing.T) {
+// Deactivation is one-way: signing up again under a departed customer's name is
+// refused with the code that says so, and nothing reaches the workflow -- there
+// is no workflow left to reach.
+func TestEnroll_DepartedIDIsA409Deactivated(t *testing.T) {
 	stub := &stubTemporal{
-		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada-lovelace", Points: 600, Active: false},
-		reactivate:  &rewards.ReactivateResult{Changed: true},
+		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
+		describeInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonExecution,
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+		},
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"name":"Ada Lovelace"}`)
 
-	if code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", code, body)
+	if code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409: %s", code, body)
 	}
-	if len(stub.updates) != 1 || stub.updates[0] != rewards.UpdateReactivate {
-		t.Errorf("updates = %v, want one %s", stub.updates, rewards.UpdateReactivate)
+	if !strings.Contains(body, CodeDeactivated) {
+		t.Errorf("code should be %q, got %s", CodeDeactivated, body)
+	}
+	if stub.updates != nil {
+		t.Errorf("an enroll against a departed customer sent Updates: %v", stub.updates)
 	}
 }
 
@@ -217,13 +233,15 @@ func TestEnroll_UnslugableNameIsA400(t *testing.T) {
 	}
 }
 
-// The ID is taken and the customer is active. That is a duplicate signup, and it
-// must not reach the reactivate Update -- which would overwrite a live
-// customer's name with the second signup's.
+// The ID is taken and the customer is active. That is a duplicate signup, and
+// it must not reach the workflow -- there is nothing an Update could add.
 func TestEnroll_ActiveDuplicateIs409AndSendsNoUpdate(t *testing.T) {
 	stub := &stubTemporal{
-		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Active: true},
+		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
+		describeInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonExecution,
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
+		},
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Mallory"}`)
 
@@ -238,96 +256,63 @@ func TestEnroll_ActiveDuplicateIs409AndSendsNoUpdate(t *testing.T) {
 	}
 }
 
-// Re-enrolling a soft-deactivated ID reactivates in place. 200 rather than 201,
-// because nothing was created.
-func TestEnroll_DeactivatedIDReactivates(t *testing.T) {
+// Telling an active duplicate from a departed customer takes one Describe, and
+// with no answer there is no answer: the request fails rather than guessing at
+// which 409 to hand back.
+func TestEnroll_DuplicateWithNoDescribeAnswerIsA503(t *testing.T) {
 	stub := &stubTemporal{
 		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Points: 600, Active: false},
-		reactivate:  &rewards.ReactivateResult{Changed: true},
-	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
-
-	if code != http.StatusOK {
-		t.Fatalf("status = %d, want 200: %s", code, body)
-	}
-	if len(stub.updates) != 1 || stub.updates[0] != rewards.UpdateReactivate {
-		t.Errorf("updates = %v, want one %s", stub.updates, rewards.UpdateReactivate)
-	}
-	if !strings.Contains(body, commonExecution.RunId) {
-		t.Errorf("response should carry the current run ID, got %s", body)
-	}
-}
-
-// The customer went active between the status check and the Update. The handler
-// reports Changed=false rather than applying our details over theirs, and that
-// is still a duplicate enrollment -- not a successful restore.
-func TestEnroll_LostRaceToAConcurrentEnrollIs409(t *testing.T) {
-	stub := &stubTemporal{
-		startErr:    &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryStatus: &rewards.CustomerStatus{CustomerID: "ada", Active: false},
-		reactivate:  &rewards.ReactivateResult{Changed: false},
-	}
-	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
-
-	if code != http.StatusConflict {
-		t.Fatalf("status = %d, want 409: %s", code, body)
-	}
-	if !strings.Contains(body, CodeAlreadyExists) {
-		t.Errorf("code should be %q, got %s", CodeAlreadyExists, body)
-	}
-}
-
-// Telling an active duplicate from a soft-deactivated vacancy is the Query's job
-// and no other read's, so with the worker down that question has no answer and
-// the request is a 503.
-//
-// The assertion that matters is the second one. Enroll reactivates on a "not
-// active", so anything that answers this from a laggy read can rewrite a live
-// customer's name; failing cannot. Visibility plainly saying "active"
-// is the strongest case for guessing, which is why it is the one stubbed.
-func TestEnroll_DuplicateNeedsAWorkerAndSendsNoUpdateWithoutOne(t *testing.T) {
-	stub := &stubTemporal{
-		startErr: &serviceerror.WorkflowExecutionAlreadyStarted{},
-		queryErr: serviceerror.NewFailedPrecondition("no poller seen for task queue recently"),
-		describeInfo: &workflowpb.WorkflowExecutionInfo{
-			Execution:        &commonExecution,
-			Status:           enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING,
-			SearchAttributes: searchAttrs(t, ptr(true)),
-		},
+		describeErr: context.DeadlineExceeded,
 	}
 	code, body := postEnroll(t, newTestServer(stub), `{"customerId":"ada","name":"Ada"}`)
 
 	if code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503: %s", code, body)
 	}
+	// Describe reads persistence, so the failure must not blame a worker no
+	// enroll ever speaks to.
+	if strings.Contains(body, "make worker") {
+		t.Errorf("a store read failure blamed the worker: %s", body)
+	}
 	if stub.updates != nil {
-		t.Errorf("reactivated without being able to read the customer: %v", stub.updates)
+		t.Errorf("an unanswerable enroll reached the workflow: %v", stub.updates)
 	}
 }
 
 // --- Deactivate -------------------------------------------------------------
 
-// DELETE is the deactivate Update now, not CancelWorkflow. Repeating it stays a
-// 204: the handler answers Changed=false and the API has nothing to add.
-func TestDeactivate_IsAnUpdateAndRepeatsCleanly(t *testing.T) {
-	stub := &stubTemporal{deactivate: &rewards.DeactivateResult{Changed: false}}
+// DELETE is the deactivate Update now, not CancelWorkflow.
+func TestDeactivate_IsAnUpdate(t *testing.T) {
+	stub := &stubTemporal{deactivate: &rewards.DeactivateResult{Changed: true}}
 	h := newTestServer(stub)
 
-	for i := 0; i < 2; i++ {
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/customers/ada", nil))
-		if rec.Code != http.StatusNoContent {
-			t.Fatalf("call %d: status = %d, want 204: %s", i+1, rec.Code, rec.Body.String())
-		}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/customers/ada", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
-	if len(stub.updates) != 2 {
-		t.Fatalf("updates = %v, want two", stub.updates)
+	if len(stub.updates) != 1 || stub.updates[0] != rewards.UpdateDeactivate {
+		t.Fatalf("updates = %v, want one %s", stub.updates, rewards.UpdateDeactivate)
 	}
-	for _, name := range stub.updates {
-		if name != rewards.UpdateDeactivate {
-			t.Errorf("sent %q, want %q", name, rewards.UpdateDeactivate)
-		}
+}
+
+// Deactivation completes the workflow, so a repeat DELETE finds the run closed:
+// the Update comes back NotFound, the Describe says nothing is running, and
+// that is exactly what deactivation leaves behind -- still a 204.
+func TestDeactivate_RepeatAgainstTheClosedRunIsStillA204(t *testing.T) {
+	stub := &stubTemporal{
+		updateErr: serviceerror.NewNotFound("workflow execution already completed"),
+		describeInfo: &workflowpb.WorkflowExecutionInfo{
+			Execution: &commonExecution,
+			Status:    enumspb.WORKFLOW_EXECUTION_STATUS_COMPLETED,
+		},
+	}
+	h := newTestServer(stub)
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodDelete, "/api/customers/ada", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204: %s", rec.Code, rec.Body.String())
 	}
 }
 

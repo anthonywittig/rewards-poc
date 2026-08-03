@@ -28,8 +28,8 @@ import (
 //
 //	run-enrollment.json    the first run: enrollment + 3 adds, then the roll
 //	run-continued.json     a middle run: rolled into, 3 adds, rolled out of
-//	run-deactivated.json   the last run: rolled into, 1 add, then a soft
-//	                       deactivate -- an Update pair, the run stays open
+//	run-deactivated.json   the last run: rolled into, 1 add, then a
+//	                       deactivate -- an Update pair
 //	run-rejection.json     a run containing a handler rejection at the cap
 //
 // Recaptured with:
@@ -61,11 +61,11 @@ func loadEvents(t *testing.T, name string) []*historypb.HistoryEvent {
 }
 
 // membershipUpdate builds the Accepted/Completed pair Temporal writes for a
-// deactivate or reactivate Update.
+// deactivate Update.
 //
-// Built rather than captured, unlike every fixture above, because the cases that
-// matter are the *combinations* -- leave, rejoin, repeat leave, no-op rejoin.
-// It mirrors the real captured pair at the end of run-deactivated.json.
+// Built rather than captured, unlike every fixture above, because the cases
+// that matter are the variations -- a raced duplicate, a failed leave. It
+// mirrors the real captured pair at the end of run-deactivated.json.
 func membershipUpdate(
 	t *testing.T, firstEventID int64, name, updateID string, result any,
 ) []*historypb.HistoryEvent {
@@ -209,7 +209,7 @@ func TestAuditRun_ContinuedRun(t *testing.T) {
 	}
 }
 
-// Soft-deactivate is an Update, so it appears as Accepted/Completed rather than
+// Deactivate is an Update, so it appears as Accepted/Completed rather than
 // a CancelRequested event.
 func TestAuditRun_DeactivatedRun(t *testing.T) {
 	run := auditRun("run-2", loadEvents(t, "run-deactivated.json"))
@@ -224,52 +224,27 @@ func TestAuditRun_DeactivatedRun(t *testing.T) {
 	}
 }
 
-// Without a rejoin row, a customer who left and came back reads as permanently
-// departed with unexplained point-adds after the departure.
-func TestAuditRun_ReactivationDrawsARow(t *testing.T) {
-	events := append(loadEvents(t, "run-deactivated.json"),
-		membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
-			rewards.ReactivateResult{Changed: true})...)
-
-	run := auditRun("run-2", events)
-
-	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
-	if got := run.entries[3].RequestID; got != "rejoin-1" {
-		t.Errorf("requestId = %q, want the update ID that asked for it", got)
-	}
-	// Rejoining is not earning. Counting it would inflate "showing N of M".
-	if run.earnEvents != 1 {
-		t.Errorf("earnEvents = %d, want 1 -- a rejoin is not a point event", run.earnEvents)
-	}
-}
-
-// Both membership Updates are idempotent, so both write history for calls that
-// changed nothing: a repeat DELETE, a re-enroll of someone already active. Those
-// completions are real events, but rendering them would show a customer leaving
-// twice or rejoining a program they never left.
-func TestAuditRun_IdempotentMembershipCallsDrawNoRow(t *testing.T) {
+// A deactivate that changed nothing -- a duplicate that raced the real leave
+// into the same run -- still completes and still writes history. Rendering it
+// would show the customer leaving twice.
+func TestAuditRun_NoOpDeactivateDrawsNoRow(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
 	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
 		rewards.DeactivateResult{Changed: false})...)
-	events = append(events, membershipUpdate(t, 300, rewards.UpdateReactivate, "rejoin-1",
-		rewards.ReactivateResult{Changed: true})...)
-	events = append(events, membershipUpdate(t, 400, rewards.UpdateReactivate, "duplicate-enroll",
-		rewards.ReactivateResult{Changed: false})...)
 
 	run := auditRun("run-2", events)
 
 	requireKinds(t, run.entries,
-		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated, AuditReactivated)
+		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
 }
 
-// The failure path. Both handlers stage their change and commit only once the
-// search attribute upsert is issued, so a failed membership Update applied
-// nothing -- and unlike a failed addPoints, there is no half-state to disclose.
+// The failure path. The handler stages its change and commits only once the
+// search attribute upsert is issued, so a failed deactivate applied nothing --
+// and unlike a failed addPoints, there is no half-state to disclose.
 func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
-	pair := membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-failed",
-		rewards.ReactivateResult{Changed: true})
+	pair := membershipUpdate(t, 200, rewards.UpdateDeactivate, "leave-failed",
+		rewards.DeactivateResult{Changed: true})
 	pair[1].GetWorkflowExecutionUpdateCompletedEventAttributes().Outcome = &updatepb.Outcome{
 		Value: &updatepb.Outcome_Failure{
 			Failure: &failurepb.Failure{Message: "upsert search attributes: boom"},
@@ -282,14 +257,14 @@ func TestAuditRun_FailedMembershipUpdateDrawsNoRow(t *testing.T) {
 		AuditGenerationRolled, AuditPointsAdded, AuditDeactivated)
 }
 
-// Neither membership Update may render as a point-add. They share the Update
+// The deactivate Update must never render as a point-add. It shares the Update
 // event types with addPoints, and the amount/reason fields decode to zero from
-// their arguments, so a missed name check shows up as a silent "+0 ()" row
-// rather than as a failure.
+// its argument, so a missed name check shows up as a silent "+0 ()" row rather
+// than as a failure.
 func TestAuditRun_MembershipUpdatesAreNeverPointRows(t *testing.T) {
 	events := loadEvents(t, "run-deactivated.json")
-	events = append(events, membershipUpdate(t, 200, rewards.UpdateReactivate, "rejoin-1",
-		rewards.ReactivateResult{Changed: true})...)
+	events = append(events, membershipUpdate(t, 200, rewards.UpdateDeactivate, "repeat-delete",
+		rewards.DeactivateResult{Changed: false})...)
 
 	for _, e := range auditRun("run-2", events).entries {
 		if e.Kind == AuditPointsAdded && e.Amount == 0 {

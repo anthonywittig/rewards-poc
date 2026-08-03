@@ -59,14 +59,13 @@ make enroll ID=c-001 NAME="Ada Lovelace"
 make status ID=c-001
 make add    ID=c-001 AMOUNT=499 REASON=purchase
 make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make deactivate ID=c-001                          # soft leave; the workflow keeps running
-make reactivate ID=c-001                          # rejoin, balance intact
+make deactivate ID=c-001                          # leave for good; the workflow completes
 make audit  ID=c-001                              # the timeline, crawled out of Event History
 ```
 
-Re-enrollment takes no argument: it restores membership and touches nothing else. The name
-cannot change, because the customer ID is derived from it — a signup under a different name
-derives a different ID, which is a different customer.
+Deactivation is one-way: it completes the customer's workflow, freezing the balance for as
+long as the closed run survives retention. There is no reactivate — enrolling the same name
+again is refused, because the ID derived from it still belongs to the departed customer.
 
 ## Commands
 
@@ -91,7 +90,7 @@ derives a different ID, which is a different customer.
 ```sh
 # No customerId: the server derives one from the name (here, ada-lovelace) and
 # returns it. Signing up twice under one name is the same customer, so the
-# second attempt is a 409 -- or a rejoin, if they had left.
+# second attempt is a 409.
 curl -XPOST localhost:8081/api/customers \
   -d '{"name":"Ada Lovelace"}'
 
@@ -128,8 +127,8 @@ Every failure is `{"error":{"code":"...","message":"..."}}` with a stable code:
 |---|---|---|
 | 400 | `invalid_request` | malformed body, a missing `name`, a `name` with no letters or digits to derive an ID from, a `customerId` with whitespace or a slash in it, unknown JSON field |
 | 404 | `not_found` | no such customer, or their history was reaped |
-| 409 | `already_exists` | enrolling a customer who is already active (a deactivated one is reactivated instead, 200) |
-| 409 | `deactivated` | adding points to a customer who has left |
+| 409 | `already_exists` | enrolling a customer who is already active |
+| 409 | `deactivated` | adding points to, or re-enrolling, a customer who has left — deactivation is one-way |
 | 409 | `rollover_race` | the workflow rolled over twice while applying one request |
 | 422 | `rejected` | the workflow refused it |
 | 503 | `worker_unavailable` | nothing is polling the task queue — or, less often, Temporal itself is slow or unreachable (this is the contract's only 503) |
@@ -230,10 +229,10 @@ the only structural guard there is.
 
 - **Points only go up.** No spending, redemption, expiry, or adjustment, and none is planned. So
   tiers never demote either, and the single `Points` field is also the lifetime total.
-- **Leaving is soft.** Deactivation is an Update that sets a flag, not a cancellation — the
-  execution stays Running, so re-enrolling restores the balance, tier and history intact.
-  Membership therefore lives in the `RewardsActive` search attribute rather than in
-  `ExecutionStatus`.
+- **Leaving is one-way.** Deactivation is an Update that sets a flag and then completes the
+  workflow — no reactivation, no restart under the same name. The final run keeps
+  `RewardsActive: false` in visibility, so departed customers stay listable until their
+  closed run is reaped; membership lives in that attribute rather than in `ExecutionStatus`.
 - **Cancellation is not part of the model.** Nothing cancels a customer's workflow and the code
   does not handle it. `temporal workflow cancel` closes the execution without upserting
   `RewardsActive`, leaving a customer the list still calls active and the detail page calls
@@ -294,12 +293,12 @@ internal/rewards/             the domain: types and rules, no Temporal orchestra
   level_test.go               tier derivation, no test environment needed
   tiers_test.go               the tier ladder's ordering invariant
   workflows/                  the workflow layer
-    workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, reactivate, getStatus
+    workflow.go               CustomerRewardsWorkflow, addPoints, deactivate, getStatus
     workflow_test.go          unit tests (no Docker required)
     replay_test.go            deploy rehearsal against a recorded history
     testdata/                 a real recorded history
 internal/httpapi/
-  server.go                   enroll/re-enroll, detail, add points, deactivate, list
+  server.go                   enroll, detail, add points, deactivate, list
   audit.go                    the Event History crawl and truncation detection
   classify.go                 Temporal error classification, measured against a real server
   errors.go                   the stable error codes and their HTTP mapping

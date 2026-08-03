@@ -107,9 +107,7 @@ function renderBody(e: AuditEntry): React.ReactNode {
         </>
       )
     case 'deactivated':
-      return <>Deactivated — points kept</>
-    case 'reactivated':
-      return <>Re-enrolled — prior balance restored</>
+      return <>Deactivated — membership ended</>
     default:
       return <>{e.kind}</>
   }

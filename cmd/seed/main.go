@@ -5,9 +5,9 @@
 //	make seed     # to re-run it on its own
 //	make reset    # the only true clean slate
 //
-// Read-then-create, never modify: deactivation is soft, so re-enrolling an
-// existing customer reactivates them with their points intact rather than
-// resetting them.
+// Read-then-create, never modify: points only go up and deactivation is
+// one-way, so there is nothing an existing customer can be repaired into --
+// mismatches are reported, not fixed.
 package main
 
 import (
@@ -42,7 +42,7 @@ var seedSet = []customer{
 	{
 		id: "departed", name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
-		why: "deactivated: no add-points form, re-enroll restores the balance",
+		why: "deactivated: workflow completed, balance frozen for good",
 	},
 	{id: "katherine", name: "Katherine Johnson", adds: []int{95}, why: "basic"},
 	{id: "alan", name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},
@@ -120,8 +120,8 @@ func main() {
 		created, matched, wrong, len(set), time.Since(start).Round(time.Millisecond))
 
 	if wrong > 0 {
-		fmt.Printf("\nSome customers do not match the intended dataset. Deactivation is soft,\n" +
-			"so there is no way to reset them through the API. For a clean slate:\n" +
+		fmt.Printf("\nSome customers do not match the intended dataset, and there is no way\n" +
+			"to reset them through the API. For a clean slate:\n" +
 			"  make reset && make seed\n")
 		os.Exit(1)
 	}
