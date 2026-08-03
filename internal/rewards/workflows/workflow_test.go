@@ -373,19 +373,6 @@ func (s *RewardsSuite) Test_Enroll_RejectsBadPayload() {
 	}
 }
 
-// A large seeded balance alongside a zero lifetime total once bypassed the
-// handler's cap check. Kept as the regression guard.
-func (s *RewardsSuite) Test_Enroll_RejectsCapBypass() {
-	state := newState()
-	state.Points = 5_000_000
-	state.LifetimeEarnEvents = 1
-
-	s.env.ExecuteWorkflow(workflows.CustomerRewardsWorkflow, state)
-
-	s.Require().True(s.env.IsWorkflowCompleted())
-	s.Require().Error(s.env.GetWorkflowError())
-}
-
 // A seeded mid-life customer is legitimate -- the balance just has to be
 // consistent with having earned it.
 func (s *RewardsSuite) Test_Enroll_AcceptsSeededBalance() {

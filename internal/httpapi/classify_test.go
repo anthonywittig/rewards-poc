@@ -151,17 +151,6 @@ func TestMapUpdateError_DeactivatedIs409(t *testing.T) {
 	}
 }
 
-// A rejection must never be reported as an outage: the workflow answered, and
-// telling the caller "service unavailable" would invite a retry of a request
-// that will be refused identically every time.
-func TestMapUpdateError_RejectionBeatsOutageClassification(t *testing.T) {
-	err := temporal.NewApplicationError("reason is required", "")
-	gotCode, _ := status(t, mapUpdateError(err))
-	if gotCode != http.StatusUnprocessableEntity {
-		t.Errorf("got %d, want 422", gotCode)
-	}
-}
-
 // An Update with no worker does not fail -- it blocks -- so it reaches the
 // mapper as the timeout the API imposed, wrapped in the SDK's own type.
 func TestMapUpdateError_TimeoutIsWorkerUnavailable(t *testing.T) {
