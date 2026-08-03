@@ -48,3 +48,21 @@ func TestNextTierAt(t *testing.T) {
 		}
 	}
 }
+
+func TestPrevTierAt(t *testing.T) {
+	for _, tc := range []struct {
+		points int
+		want   int
+	}{
+		{0, 0},
+		{499, 0},
+		{500, rewards.GoldThreshold},
+		{999, rewards.GoldThreshold},
+		{1000, rewards.PlatinumThreshold},
+		{50000, rewards.PlatinumThreshold},
+	} {
+		if got := rewards.PrevTierAt(tc.points); got != tc.want {
+			t.Errorf("PrevTierAt(%d) = %d, want %d", tc.points, got, tc.want)
+		}
+	}
+}

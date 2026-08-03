@@ -166,9 +166,9 @@ export function CustomerDetailPage() {
               </div>
               <ProgressBar
                 points={customer.points}
+                prevTierAt={customer.prevTierAt}
                 nextTierAt={customer.nextTierAt}
                 level={customer.level}
-                tiers={customer.tiers}
               />
             </div>
 

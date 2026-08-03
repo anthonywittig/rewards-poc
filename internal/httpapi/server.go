@@ -20,15 +20,18 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// Server is the HTTP surface. The Temporal client is the only dependency.
+// Server is the HTTP surface. The Temporal client is the only dependency;
+// ui holds where the Temporal UI lives so responses can carry deep links.
 type Server struct {
 	temporal client.Client
 	log      *slog.Logger
+	ui       temporalUI
 }
 
-// New builds the server.
-func New(c client.Client, log *slog.Logger) *Server {
-	return &Server{temporal: c, log: log}
+// New builds the server. temporalUIURL is the browser-facing base URL of the
+// Temporal UI; namespace must match the one the client dialed.
+func New(c client.Client, log *slog.Logger, temporalUIURL, namespace string) *Server {
+	return &Server{temporal: c, log: log, ui: newTemporalUI(temporalUIURL, namespace)}
 }
 
 // Routes returns the mux.
@@ -214,6 +217,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Total:    total,
 		Complete: total >= 0 && total <= ListLimit,
 		Query:    effectiveQuery,
+		QueryURL: s.ui.queryURL(effectiveQuery),
 	})
 	return nil
 }
@@ -269,8 +273,8 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	out.Name = st.Name
 	out.Points = st.Points
 	out.Level = st.Level
+	out.PrevTierAt = st.PrevTierAt
 	out.NextTierAt = st.NextTierAt
-	out.Tiers = st.Tiers
 	out.EnrolledAt = st.EnrolledAt
 	out.LifetimeEarnEvents = st.LifetimeEarnEvents
 	out.RunNumber = st.RunNumber

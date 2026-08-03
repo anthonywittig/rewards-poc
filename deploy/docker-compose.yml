@@ -135,6 +135,9 @@ services:
       - TEMPORAL_HOSTPORT=temporal:7233
       - TEMPORAL_NAMESPACE=rewards
       - API_PORT=8081
+      # Ends up in response deep links, which the browser follows -- so the
+      # published address, not the in-network one.
+      - TEMPORAL_UI_URL=http://localhost:8080
     ports:
       - "8081:8081"
     healthcheck:
@@ -159,12 +162,10 @@ services:
       # The container binds the published port: Vite's hot-reload socket
       # connects back to the port the browser sees.
       - WEB_PORT=5173
-      # Vite proxies /api from inside the network, so this is a service name;
-      # the Temporal UI link is followed by the browser, so that one is the
-      # published port.
+      # Vite proxies /api from inside the network, so this is a service name.
+      # Temporal UI links come pre-built in API responses, so the web service
+      # needs no Temporal configuration at all.
       - VITE_API_PROXY_TARGET=http://api:8081
-      - VITE_TEMPORAL_UI_URL=http://localhost:8080
-      - VITE_TEMPORAL_NAMESPACE=rewards
     volumes:
       - ../web:/app
       - web-node-modules:/app/node_modules
