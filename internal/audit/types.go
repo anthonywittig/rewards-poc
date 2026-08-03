@@ -3,7 +3,11 @@
 // events Temporal recorded in order to run the workflow at all.
 package audit
 
-import "time"
+import (
+	"time"
+
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
+)
 
 // Kind tags a row of the audit timeline. Stable strings: the UI narrows on these.
 type Kind string
@@ -34,6 +38,17 @@ type Entry struct {
 	Level     string `json:"level,omitempty"`
 	Failure   string `json:"failure,omitempty"`
 	RequestID string `json:"requestId,omitempty"`
+}
+
+// Run is one walked run of the chain: the entries reconstructed from its
+// history plus the state it was started with.
+type Run struct {
+	RunID         string
+	PreviousRunID string
+	// The CustomerState this run was started with.
+	StartState rewards.CustomerState
+	Entries    []Entry
+	EarnEvents int
 }
 
 // Timeline is the assembled audit for a customer. Truncation is part of the

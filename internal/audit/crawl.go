@@ -16,15 +16,6 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-type Run struct {
-	RunID         string
-	PreviousRunID string
-	// The CustomerState this run was started with.
-	StartState rewards.CustomerState
-	Entries    []Entry
-	EarnEvents int
-}
-
 // Build walks the run chain from runID and assembles the customer's Timeline.
 func Build(ctx context.Context, fetch Fetcher, customerID, runID string) (Timeline, error) {
 	runs, truncated, err := Walk(ctx, fetch, runID)
