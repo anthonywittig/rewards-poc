@@ -21,7 +21,7 @@ ORM.
 ## Quick start
 
 Prerequisites: **Docker** with Compose v2, and nothing else — every process
-runs in the stack. **Go** 1.25.4+ is only needed for `make test`, and **Node**
+runs in the stack. **Go** 1.25.4+ is only needed for `go test`, and **Node**
 only if you want to run `npm` against `web/` yourself.
 
 ```sh
@@ -38,25 +38,10 @@ make up
 | Temporal UI | <http://localhost:8080> |
 | Temporal gRPC | `localhost:7233`, namespace `rewards` |
 
-The worker, API and Vite dev server are all Compose services: `make logs
-SVC=worker` (or `api`, or `web`) tails them, `make worker` / `make api`
-rebuild and restart them after a code change, and `web/` is bind-mounted so UI
-edits hot-reload. `make test` needs no Docker. `make down` stops the stack;
-`make destroy` deletes the volumes too; `make help` lists everything.
-
-## Driving it from the CLI
-
-The whole workflow is usable with no API and no UI — these targets go straight
-to the `temporal` CLI inside the server container.
-
-```sh
-make enroll ID=c-001 NAME="Ada Lovelace"
-make status ID=c-001
-make add    ID=c-001 AMOUNT=499 REASON=purchase
-make add    ID=c-001 AMOUNT=1   REASON=purchase   # -> 500, promoted to gold
-make audit  ID=c-001                              # the timeline, crawled out of Event History
-make deactivate ID=c-001                          # one-way: records the leave, completes the workflow
-```
+`make logs SVC=worker` (or `api`, or `web`) tails a service; `make ps` shows
+status; `make up` again rebuilds the worker and API after a Go code change;
+`web/` is bind-mounted so UI edits hot-reload. `make destroy` tears the stack
+down and deletes its volumes; `make help` lists everything.
 
 ## The HTTP API
 
@@ -93,9 +78,12 @@ for anything touching a departed customer.
 and starts a fresh one carrying state forward:
 
 ```sh
-make enroll ID=roll NAME="Rolly Poly"
-for i in 1 2 3 4 5 6 7; do make add ID=roll AMOUNT=100 REASON="add $i"; done
-make status ID=roll     # runNumber 3, points 700
+curl -XPOST localhost:8081/api/customers -d '{"name":"Rolly Poly"}'
+for i in 1 2 3 4 5 6 7; do
+  curl -XPOST localhost:8081/api/customers/rolly-poly/points \
+    -d "{\"amount\":100,\"reason\":\"add $i\"}"
+done
+curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 ```
 
 The balance accumulates across the boundary while `runNumber` ticks up, and
@@ -103,22 +91,24 @@ each run's history stays small. Three is a demo number chosen to be watchable;
 production should ask `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
-history; `make audit ID=c-001` walks back through the run chain and reads the
-events Temporal recorded because it had to in order to run the workflow at
-all. Closed runs are deleted after retention (1 hour here, Temporal's
-minimum), so the response reports truncation — "showing 3 of 21" — rather than
-quietly showing less.
+history; `GET /api/customers/<id>/audit` walks back through the run chain and
+reads the events Temporal recorded because it had to in order to run the
+workflow at all. Closed runs are deleted after retention (1 hour here,
+Temporal's minimum), so the response reports truncation — "showing 3 of 21" —
+rather than quietly showing less.
 
 **The validator/handler split.** Both of these fail identically from the
 caller's side, but only one leaves a trace:
 
 ```sh
-make add ID=c-001 AMOUNT=-50 REASON=oops        # validator: writes no history at all
-make add ID=capped AMOUNT=100 REASON="over cap" # handler: recorded, shows as points_rejected
+# validator: writes no history at all
+curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":-50,"reason":"oops"}'
+# handler: recorded, shows as points_rejected (seeded customer `capped` is at 4960)
+curl -XPOST localhost:8081/api/customers/capped/points -d '{"amount":100,"reason":"over cap"}'
 ```
 
-`capped` comes from `make seed`, parked at 4,960 points so that any add over
-40 breaches the 5,000 cap. A validator rejection writes no events — a client
+`capped` comes from seeding, parked at 4,960 points so that any add over 40
+breaches the 5,000 cap. A validator rejection writes no events — a client
 stuck retrying `amount: -1` cannot grow history — while a rejection that
 depends on the customer's accumulated state is permanently recorded. Facts
 about the *request* belong in the validator, facts about the *customer* in the
@@ -144,12 +134,17 @@ go test ./internal/rewards/workflows/ -run TestReplay
 changes what the workflow emits fails this test before it wedges every open
 run in production. (The production-grade fix for such an edit is
 `workflow.GetVersion`, which this POC omits — executions here can simply be
-reset.)
+wiped with `make destroy && make up`.)
 
 **The determinism check.** The Go SDK has no workflow sandbox: `time.Now()` in
 workflow code compiles and passes tests, then wedges a customer on replay.
-`make workflowcheck` statically flags anything reachable from workflow code
-that is non-deterministic.
+`workflowcheck` statically flags anything reachable from workflow code that is
+non-deterministic:
+
+```sh
+go install go.temporal.io/sdk/contrib/tools/workflowcheck@v0.5.0
+workflowcheck ./...
+```
 
 **No Activities, deliberately.** Nothing in the rewards program touches the
 outside world — the workflow is a pure state machine and Temporal is its
@@ -175,15 +170,14 @@ on promotion, and that is what an Activity is for.
 ## Troubleshooting
 
 **A code change seems ignored?** The worker runs in the stack, so editing Go
-code does nothing until `make worker` rebuilds it. Stale workflows fail loudly
+code does nothing until `make up` rebuilds it. Stale workflows fail loudly
 on replay; stale workers succeed quietly with the old logic.
 
 **503 `worker_unavailable`?** Nothing is polling the task queue — check
-`make ps`, run `make worker`.
+`make ps`, then `make up`.
 
 **Changed workflow code and existing runs misbehave?** Constants like
-`EarnsPerRun` are baked into recorded history. In dev, `make reset` and start
-over.
+`EarnsPerRun` are baked into recorded history. In dev, `make destroy && make up`.
 
 ## Layout
 
@@ -213,6 +207,5 @@ deploy/
   docker-compose.yml          the whole stack, and every setting it has
   Dockerfile                  the worker, api and seed images
   bootstrap.sh                namespace + search attributes (idempotent)
-  reset.sh                    delete every customer workflow (make reset)
 Makefile
 ```

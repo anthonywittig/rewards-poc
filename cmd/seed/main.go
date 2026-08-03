@@ -4,7 +4,7 @@
 //
 // Idempotent: customers that already exist are left alone. Points are reached
 // by repeated adds, because that is the only way points enter the system.
-// `make reset` is the clean slate.
+// `make destroy && make up` is the clean slate.
 package main
 
 import (
@@ -89,7 +89,7 @@ func main() {
 	}
 
 	fmt.Printf("\n  %s/api/customers\n", env("API_PUBLIC_BASE", base))
-	fmt.Printf("  make audit ID=ada\n")
+	fmt.Printf("  %s/api/customers/ada/audit\n", env("API_PUBLIC_BASE", base))
 }
 
 // ensure creates the customer if absent. Reports whether it created one.

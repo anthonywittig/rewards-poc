@@ -69,7 +69,7 @@ const (
 // workflow.GetInfo(ctx).GetContinueAsNewSuggested() instead.
 //
 // Changing this breaks running workflows: replay of a history recorded under a
-// different value produces different commands. In dev, `make reset` first.
+// different value produces different commands. In dev, `make destroy && make up`.
 const EarnsPerRun = 3
 
 // CustomerState is the workflow argument. Everything here survives

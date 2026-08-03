@@ -10,7 +10,7 @@ WORKDIR /src
 
 # Module download is its own layer, and the cache mounts persist between
 # builds, so a rebuild after a code change takes a few seconds -- which is
-# what makes `make worker` / `make api` usable as the edit-restart loop.
+# what makes `make up` usable as the edit-rebuild loop.
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod \
     go mod download

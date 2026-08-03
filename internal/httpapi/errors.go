@@ -98,7 +98,7 @@ func classifyCommon(err error) error {
 	// 503 leads with the fix.
 	if isWorkerUnavailable(err) {
 		return &apiError{http.StatusServiceUnavailable, CodeWorkerUnavailable,
-			"no worker is polling the rewards task queue; is `make worker` running?"}
+			"no worker is polling the rewards task queue; is the stack up? try `make up`"}
 	}
 
 	var unavailable *serviceerror.Unavailable

@@ -85,7 +85,6 @@ services:
     volumes:
       - ./dynamicconfig:/etc/temporal/config/dynamicconfig:ro
       - ./bootstrap.sh:/bootstrap.sh:ro
-      - ./reset.sh:/reset.sh:ro
     healthcheck:
       # The frontend binds the container's own IP, so localhost is refused.
       test: ["CMD-SHELL", "temporal operator cluster health --address $$(hostname -i):7233 >/dev/null 2>&1"]
@@ -187,7 +186,7 @@ services:
     restart: unless-stopped
 
   # A one-shot: the `tools` profile keeps `compose up` from starting it, and
-  # `make seed` runs it with `run --rm`.
+  # `make up` runs it with `run --rm`.
   seed:
     profiles: [tools]
     build:
