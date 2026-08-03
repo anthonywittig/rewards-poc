@@ -9,7 +9,7 @@
 //
 // Entity workflows outlive deploys. In production, any edit that changes the
 // commands a run emits must be gated with workflow.GetVersion; this POC resets
-// executions instead, and the replay test is what catches such an edit.
+// executions instead (make destroy && make up).
 package workflows
 
 import (

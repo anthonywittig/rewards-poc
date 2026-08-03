@@ -133,21 +133,6 @@ until retention reaps them), and the enroll endpoint refuses to reuse the ID —
 `ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
-**The [replay test](internal/rewards/workflows/replay_test.go).** A
-customer's workflow outlives deploys, so today's code
-gets replayed against histories recorded weeks ago and must match event for
-event:
-
-```sh
-go test ./internal/rewards/workflows/ -run TestReplay
-```
-
-[`testdata/run-enrollment.json`](internal/rewards/workflows/testdata/run-enrollment.json)
-is a real recorded history; an edit that
-changes what the workflow emits fails this test before it wedges every open
-run in production. (The production fix for such an edit is
-`workflow.GetVersion`; this POC just wipes with `make destroy && make up`.)
-
 **The determinism check.** The Go SDK has no workflow sandbox: `time.Now()` in
 workflow code compiles and passes tests, then wedges a customer on replay.
 
@@ -178,7 +163,7 @@ on promotion, and that is what an Activity is for.
 ```
 cmd/                worker, api, and seed (demo data) processes
 internal/rewards/   the domain: state, tiers, the Update/Query contract
-  workflows/        CustomerRewardsWorkflow, unit tests, the replay test
+  workflows/        CustomerRewardsWorkflow and its unit test
 internal/httpapi/   HTTP handlers, visibility-query building, the audit crawl
 web/                the React UI
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
