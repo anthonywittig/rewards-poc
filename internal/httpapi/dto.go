@@ -128,8 +128,9 @@ type CustomerListResponse struct {
 	// True when Items is everything that matched, i.e. Total <= Limit. Only
 	// then is client-side sorting sorting the actual set.
 	Complete bool `json:"complete"`
-	// Echoed back so the UI can show what it asked for, and so a rejected query
-	// is debuggable from the response alone.
+	// The effective filter the server built from the structured params plus any
+	// raw ?q= -- pasteable into the Temporal UI as-is. Also what makes a
+	// rejected query debuggable from the response alone.
 	Query string `json:"query,omitempty"`
 }
 

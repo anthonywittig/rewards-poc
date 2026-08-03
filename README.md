@@ -106,14 +106,18 @@ curl localhost:8081/api/customers/c-001/audit
 ```
 
 `GET /api/customers` is a `ListWorkflow` plus a `CountWorkflow` and nothing else — no lookup
-table, no local index. `?q=` is passed to Temporal essentially as typed, so **the same query
-works unchanged in the Temporal UI**:
+table, no local index. The common filters travel as structured params — `?tier=`, `?status=`
+(`active` / `deactivated` / `any`), and `?name=` (word-prefix match, every word must match) —
+and the API builds the visibility query from them, echoing it back as `query` in the response.
+`?q=` is the raw escape hatch, passed to Temporal essentially as typed and ANDed with the
+structured params, so **the same query works unchanged in the Temporal UI**:
 
 ```sh
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsLevel = 'gold'"
+curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
+curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
+curl -sG localhost:8081/api/customers --data-urlencode "name=ada lov"              # Ada Lovelace
 curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsPoints >= 500"
 curl -sG localhost:8081/api/customers --data-urlencode "q=CustomerName = 'Ada'"    # Text, partial
-curl -sG localhost:8081/api/customers --data-urlencode "q=RewardsActive = false"   # deactivated
 ```
 
 A rejected query comes back as a 400 carrying Temporal's own diagnostics. `ORDER BY` is the one

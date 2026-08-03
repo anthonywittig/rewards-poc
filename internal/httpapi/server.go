@@ -164,8 +164,12 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 
 // listCustomers serves the customer list straight out of the visibility store.
 // Capped at ListLimit with no pagination -- see the note on ListLimit.
+//
+// Filtering is structured -- ?tier= ?status= ?name= become clauses here, see
+// buildListFilter -- with ?q= as the raw escape hatch, ANDed in after them.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
-	userQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+	params := r.URL.Query()
+	userQuery := strings.TrimSpace(params.Get("q"))
 
 	// Caught before it reaches the server purely for the error message: wrapping
 	// the caller's filter in parentheses (see scopedQuery) turns Temporal's
@@ -175,7 +179,24 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 			"filter to narrow the result set and sort client-side")
 	}
 
-	query := scopedQuery(userQuery)
+	filter, err := buildListFilter(params.Get("tier"), params.Get("status"), params.Get("name"))
+	if err != nil {
+		return err
+	}
+	if userQuery != "" {
+		// Parenthesised for the same reason scopedQuery parenthesises: an OR in
+		// the raw query must not escape into the structured clauses.
+		if len(filter) > 0 {
+			filter = append(filter, "("+userQuery+")")
+		} else {
+			filter = append(filter, userQuery)
+		}
+	}
+	// The combined filter, echoed in the response so the UI can show the
+	// query it can paste into the Temporal UI without building it itself.
+	effectiveQuery := strings.Join(filter, " AND ")
+
+	query := scopedQuery(effectiveQuery)
 
 	ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
 	defer cancel()
@@ -249,7 +270,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Limit:    ListLimit,
 		Total:    total,
 		Complete: total >= 0 && total <= ListLimit,
-		Query:    userQuery,
+		Query:    effectiveQuery,
 	})
 	return nil
 }
