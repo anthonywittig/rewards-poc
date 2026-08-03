@@ -9,6 +9,18 @@ import (
 // Tier derivation is a pure function, so no test environment is needed --
 // the payoff of keeping the rules out of the workflow package.
 
+// Level and PrevTierAt lean on the bottom rung covering every balance; a
+// ladder that starts above 0 would leave low balances standing on nothing.
+func TestLadderStartsAtBasic(t *testing.T) {
+	ladder := rewards.Ladder()
+	if len(ladder) == 0 {
+		t.Fatal("Ladder() is empty")
+	}
+	if ladder[0].Level != rewards.LevelBasic || ladder[0].MinPoints != 0 {
+		t.Errorf("Ladder() starts with %+v, want {%s 0}", ladder[0], rewards.LevelBasic)
+	}
+}
+
 func TestLevelBoundaries(t *testing.T) {
 	for _, tc := range []struct {
 		points int
