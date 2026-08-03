@@ -92,14 +92,14 @@ func TestBuildListFilterRejectsUnknownValues(t *testing.T) {
 }
 
 // Through the real mux: the structured params become clauses in the query that
-// actually reaches the visibility store, scoped and ANDed with the raw ?q=.
+// actually reaches the visibility store, scoped and parenthesised.
 func TestListFilterParamsReachVisibilityQuery(t *testing.T) {
 	stub := &stubTemporal{}
 	h := newTestServer(stub)
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
-		"/api/customers?tier=gold&status=deactivated&name=Ada+Lov&q=RewardsPoints+%3E%3D+500", nil))
+		"/api/customers?tier=gold&status=deactivated&name=Ada+Lov", nil))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 	}
@@ -113,28 +113,26 @@ func TestListFilterParamsReachVisibilityQuery(t *testing.T) {
 		" AND (RewardsLevel = 'gold'" +
 		" AND RewardsActive = false" +
 		" AND CustomerName STARTS_WITH 'ada'" +
-		" AND CustomerName STARTS_WITH 'lov'" +
-		" AND (RewardsPoints >= 500))"
+		" AND CustomerName STARTS_WITH 'lov')"
 	if got != want {
 		t.Errorf("visibility query:\n got %q\nwant %q", got, want)
 	}
 
 	// The response echoes the effective filter -- what the UI shows as
-	// pasteable into the Temporal UI -- not the raw ?q= alone.
+	// pasteable into the Temporal UI.
 	var res CustomerListResponse
 	if err := json.NewDecoder(rec.Body).Decode(&res); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	wantEcho := "RewardsLevel = 'gold' AND RewardsActive = false" +
-		" AND CustomerName STARTS_WITH 'ada' AND CustomerName STARTS_WITH 'lov'" +
-		" AND (RewardsPoints >= 500)"
+		" AND CustomerName STARTS_WITH 'ada' AND CustomerName STARTS_WITH 'lov'"
 	if res.Query != wantEcho {
 		t.Errorf("echoed query:\n got %q\nwant %q", res.Query, wantEcho)
 	}
 }
 
 // A bad param fails before any visibility call: a 400 that had already fetched
-// rows would be half-done in the same way a bad ?q= used to be.
+// rows would look half-done.
 func TestListRejectsBadFilterParamsBeforeQuerying(t *testing.T) {
 	stub := &stubTemporal{}
 	code, body := doGET(t, newTestServer(stub), "/api/customers?tier=neon")

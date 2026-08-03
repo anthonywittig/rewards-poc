@@ -166,34 +166,18 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 // Capped at ListLimit with no pagination -- see the note on ListLimit.
 //
 // Filtering is structured -- ?tier= ?status= ?name= become clauses here, see
-// buildListFilter -- with ?q= as the raw escape hatch, ANDed in after them.
+// buildListFilter. There is no raw-query param: every query this sends is one
+// the server built from validated values, so a rejection is our bug and
+// surfaces as a logged 500 rather than a 400 blaming the caller.
 func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	params := r.URL.Query()
-	userQuery := strings.TrimSpace(params.Get("q"))
-
-	// Caught before it reaches the server purely for the error message: wrapping
-	// the caller's filter in parentheses (see scopedQuery) turns Temporal's
-	// clear "ORDER BY clause is not supported" into a bare syntax error.
-	if hasOrderBy(userQuery) {
-		return badRequest("ORDER BY is not supported by Temporal's visibility store; " +
-			"filter to narrow the result set and sort client-side")
-	}
 
 	filter, err := buildListFilter(params.Get("tier"), params.Get("status"), params.Get("name"))
 	if err != nil {
 		return err
 	}
-	if userQuery != "" {
-		// Parenthesised for the same reason scopedQuery parenthesises: an OR in
-		// the raw query must not escape into the structured clauses.
-		if len(filter) > 0 {
-			filter = append(filter, "("+userQuery+")")
-		} else {
-			filter = append(filter, userQuery)
-		}
-	}
-	// The combined filter, echoed in the response so the UI can show the
-	// query it can paste into the Temporal UI without building it itself.
+	// The filter, echoed in the response so the UI can show the query it can
+	// paste into the Temporal UI without building it itself.
 	effectiveQuery := strings.Join(filter, " AND ")
 
 	query := scopedQuery(effectiveQuery)
@@ -201,17 +185,12 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	ctx, cancel := context.WithTimeout(r.Context(), listTimeout)
 	defer cancel()
 
-	// Count first: it is the call most likely to reject a malformed user query,
-	// and failing before fetching rows keeps a bad query from looking half-done.
+	// Count failures degrade to "of many" rather than failing a list we can
+	// still serve; a query rejection fails the ListWorkflow below anyway.
 	total := -1
 	if cnt, err := s.temporal.CountWorkflow(ctx, &workflowservice.CountWorkflowExecutionsRequest{
 		Query: query,
 	}); err != nil {
-		if apiErr := mapListError(err, userQuery); apiErr != nil {
-			return apiErr
-		}
-		// Failures that are not the caller's fault degrade to "of many" rather
-		// than failing a list we can still serve.
 		s.log.Warn("count failed; falling back to an unknown total",
 			"query", query, "error", err)
 	} else {
@@ -223,11 +202,9 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		Query:    query,
 	})
 	if err != nil {
-		if apiErr := mapListError(err, userQuery); apiErr != nil {
-			return apiErr
-		}
 		// Not mapQueryError: this read never involves a worker, so a timeout
-		// here must not send anyone to go and restart one.
+		// here must not send anyone to go and restart one. An InvalidArgument
+		// -- the server built a bad query -- falls through to a logged 500.
 		return mapStoreReadError(err)
 	}
 
@@ -275,14 +252,6 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// hasOrderBy reports whether the query contains an ORDER BY clause. A plain
-// substring test, so it would also fire on a quoted literal ("CustomerName =
-// 'order by'") -- accepted: this pre-check exists only to keep the error
-// message friendly, and is not worth a parser.
-func hasOrderBy(q string) bool {
-	return strings.Contains(strings.ToLower(q), "order by")
-}
-
 // scopedQuery constrains the list to our workflow type, and to one execution
 // per customer.
 //
@@ -305,30 +274,6 @@ func scopedQuery(userQuery string) string {
 	// Parenthesised so an OR in the caller's filter cannot escape the scope --
 	// "a OR b" ANDed bare would bind as "(scope AND a) OR b".
 	return scope + " AND (" + userQuery + ")"
-}
-
-// mapListError turns a rejected visibility query into a 400 carrying the
-// server's own diagnostics, and returns nil for anything else.
-//
-// Passing the message through is deliberate: Temporal's errors are better than
-// anything this layer could write for arbitrary `?q=` input.
-//
-//	invalid search attribute: NoSuchAttribute
-//	invalid value for search attribute RewardsPoints of type Int: "not-an-int"
-//	malformed SQL query: syntax error at position 41 near 'a'
-//
-// ORDER BY is the exception, handled before the query is sent -- see hasOrderBy.
-func mapListError(err error, userQuery string) error {
-	var invalid *serviceerror.InvalidArgument
-	if !errors.As(err, &invalid) {
-		return nil
-	}
-	msg := invalid.Error()
-	if userQuery == "" {
-		// Our own scoping clause was rejected, which is our bug, not theirs.
-		return &apiError{http.StatusInternalServerError, CodeInternal, "internal error"}
-	}
-	return &apiError{http.StatusBadRequest, CodeInvalidRequest, msg}
 }
 
 // getCustomer reads current state via Query. Status is active only when the

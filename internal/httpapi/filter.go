@@ -11,13 +11,13 @@ import (
 //
 // The UI used to assemble the visibility query itself, which put the search
 // attribute names, Elasticsearch's tokenization, and the no-escaping rules for
-// query literals into the client. Building the clauses here keeps all of that
-// behind the API; `?q=` remains the raw escape hatch for hand-written queries.
+// query literals into the client. These params are the whole filtering surface
+// now -- there is no raw-query param -- so all of that lives behind the API.
 
 // buildListFilter turns the structured params into visibility query clauses.
 // Every returned clause embeds only validated or sanitized values, so the
 // assembled query cannot be rejected by the server -- if it is, that is our
-// bug, and mapListError's 500 path is the right one.
+// bug, and it surfaces as a logged 500 rather than a 400 blaming the caller.
 func buildListFilter(tier, status, name string) ([]string, error) {
 	var parts []string
 
