@@ -16,7 +16,7 @@ WEB_PORT = 5173
 TEMPORAL_UI_PORT = 8080
 
 .PHONY: help up down destroy bootstrap logs ps psql es tools reap \
-        worker worker-stop api test workflowcheck enroll status add deactivate reactivate \
+        worker worker-stop api test workflowcheck enroll status add deactivate \
         inspect inspect-pg inspect-es write-trace audit web web-check seed reset
 
 # Most host-side targets just need the temporal CLI against the running server.
@@ -221,15 +221,10 @@ add: ## Add points (make add ID=c-001 AMOUNT=100 REASON=purchase)
 	  --name addPoints \
 	  --input '{"amount":$(or $(AMOUNT),100),"reason":"$(or $(REASON),purchase)"}'
 
-deactivate: ## Soft-leave the program (make deactivate ID=c-001)
+deactivate: ## Leave the program for good; one-way, completes the workflow (make deactivate ID=c-001)
 	@$(TCLI) workflow update execute \
 	  --workflow-id customer-$(ID) \
 	  --name deactivate
-
-reactivate: ## Re-enroll and restore points (make reactivate ID=c-001)
-	@$(TCLI) workflow update execute \
-	  --workflow-id customer-$(ID) \
-	  --name reactivate
 
 # The one target that goes through the API rather than the temporal CLI, because
 # the audit log is not a thing the server can be asked for -- it is reconstructed
@@ -246,8 +241,9 @@ audit: ## Show the reconstructed audit timeline (make audit ID=c-001)
 # retries and error mapping included.
 #
 # Read-then-create: it only enrolls customers who are missing, and reports any
-# existing one whose balance disagrees with the dataset. Deactivation is soft,
-# so nothing here can reset a customer -- `make reset` is the clean slate.
+# existing one whose balance disagrees with the dataset. Points only go up and
+# deactivation is one-way, so nothing here can reset a customer -- `make reset`
+# is the clean slate.
 #
 # `make up` runs this, so the target is for re-running it after a `make reset`.
 #

@@ -28,8 +28,9 @@ type AddPointsRequest struct {
 
 // CustomerResponse is the customer detail payload.
 //
-// Status comes from workflow state (Active / Deactivated), not from whether
-// the Temporal execution is Running. Soft-inactive customers stay Running.
+// Status needs both reads to agree: a customer is active only while the
+// execution is Running and workflow state says Active. Deactivation completes
+// the workflow, so a departed customer's run is closed.
 //
 // Assembled from two reads -- Describe for liveness, Query for state -- and a
 // continue-as-new can land between them, leaving RunID naming the predecessor
@@ -143,7 +144,6 @@ const (
 	AuditPointsRejected   AuditEntryKind = "points_rejected"
 	AuditGenerationRolled AuditEntryKind = "generation_rolled"
 	AuditDeactivated      AuditEntryKind = "deactivated"
-	AuditReactivated      AuditEntryKind = "reactivated"
 )
 
 // AuditEntry is one row of the customer's history, reconstructed by crawling

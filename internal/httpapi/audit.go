@@ -236,39 +236,32 @@ func auditRun(runID string, events []*historypb.HistoryEvent) runAudit {
 			p := pending[a.GetAcceptedEventId()]
 			delete(pending, a.GetAcceptedEventId())
 
-			// Membership changes. Both are idempotent, so both write history for
-			// calls that changed nothing -- only a real transition belongs on
-			// the timeline, or a repeat DELETE reads as a second departure.
+			// The departure. Idempotent against a concurrent duplicate, so
+			// history can hold a completion that changed nothing -- only the
+			// real transition belongs on the timeline, or a raced DELETE reads
+			// as a second departure.
 			//
 			// A *failed* one is dropped rather than rendered as a rejection row,
-			// unlike a failed addPoints: both handlers stage their change and
-			// commit only once the upsert is issued, so a failed Update applied
+			// unlike a failed addPoints: the handler stages its change and
+			// commits only once the upsert is issued, so a failed Update applied
 			// nothing and there is no half-state to disclose.
-			if p.name == rewards.UpdateDeactivate || p.name == rewards.UpdateReactivate {
+			if p.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
 				// Undecodable payload defaults to "changed": a row history
 				// clearly contains is shown rather than dropped on a decoding
 				// technicality.
-				kind, changed := AuditDeactivated, true
-				if p.name == rewards.UpdateDeactivate {
-					var res rewards.DeactivateResult
-					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
-						changed = res.Changed
-					}
-				} else {
-					kind = AuditReactivated
-					var res rewards.ReactivateResult
-					if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
-						changed = res.Changed
-					}
+				changed := true
+				var res rewards.DeactivateResult
+				if decodeArg(dc, a.GetOutcome().GetSuccess(), &res) {
+					changed = res.Changed
 				}
 				if !changed {
 					continue
 				}
 				out.entries = append(out.entries, AuditEntry{
-					Kind:       kind,
+					Kind:       AuditDeactivated,
 					At:         p.at,
 					Generation: out.startState.Generation,
 					RunID:      runID,
