@@ -45,11 +45,17 @@ func (s *Server) getAudit(w http.ResponseWriter, r *http.Request) error {
 		return mapStoreReadError(err)
 	}
 
-	res := audit.Assemble(id, runs, truncated)
-	// Links are the handler's concern: assemble stays pure and testable
-	// against recorded histories with no UI configuration in the fixtures.
-	for i := range res.Entries {
-		res.Entries[i].HistoryURL = s.ui.historyURL(res.WorkflowID, res.Entries[i].RunID)
+	crawled := audit.Assemble(id, runs, truncated)
+	// Links stay here: the crawl does not know where the Temporal UI lives.
+	res := AuditResponse{
+		Timeline: crawled,
+		Entries:  make([]AuditEntry, 0, len(crawled.Entries)),
+	}
+	for _, e := range crawled.Entries {
+		res.Entries = append(res.Entries, AuditEntry{
+			Entry:      e,
+			HistoryURL: s.ui.historyURL(crawled.WorkflowID, e.RunID),
+		})
 	}
 	writeJSON(w, s.log, http.StatusOK, res)
 	return nil

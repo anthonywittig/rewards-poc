@@ -3,6 +3,7 @@ package audit
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"time"
 
@@ -15,11 +16,9 @@ import (
 	"go.temporal.io/sdk/converter"
 )
 
-// Fetcher reads one run's events. A function rather than a client so the walk
-// can be driven from a synthetic run chain in tests.
+// Fetcher reads one run's events.
 type Fetcher func(ctx context.Context, runID string) ([]*historypb.HistoryEvent, error)
 
-// Run is one run's contribution to the timeline.
 type Run struct {
 	RunID         string
 	PreviousRunID string
@@ -29,17 +28,14 @@ type Run struct {
 	EarnEvents int
 }
 
-// Walk follows the chain newest-first, reporting whether it ended because
-// history had been deleted rather than because it reached enrollment.
-func Walk(ctx context.Context, fetch Fetcher, runID string) ([]Run, bool, error) {
-	var runs []Run // newest first
+// Walk follows the chain newest-first. truncated is true when a predecessor's
+// history had been reaped (crawl stopped short of enrollment); false when it
+// reached the first run.
+func Walk(ctx context.Context, fetch Fetcher, runID string) (runs []Run, truncated bool, err error) {
 	for runID != "" {
-		events, err := fetch(ctx, runID)
+		var events []*historypb.HistoryEvent
+		events, err = fetch(ctx, runID)
 		if err != nil {
-			// A predecessor whose history is gone: that is reaping, the
-			// expected end of a long-lived customer's crawl. But only past the
-			// first run -- the run Describe just handed us going missing is a
-			// real fault, not truncation.
 			if isHistoryGone(err) && len(runs) > 0 {
 				return runs, true, nil
 			}
@@ -54,28 +50,26 @@ func Walk(ctx context.Context, fetch Fetcher, runID string) ([]Run, bool, error)
 }
 
 // Assemble flattens the walked runs newest-first and fills in the counts.
-func Assemble(customerID string, runs []Run, truncated bool) Response {
-	out := Response{
+func Assemble(customerID string, runs []Run, truncated bool) Timeline {
+	out := Timeline{
 		CustomerID: customerID,
 		WorkflowID: rewards.WorkflowID(customerID),
-		Entries:    []Entry{}, // never null on the wire
+		Entries:    []Entry{},
 		Truncated:  truncated,
 		RunsWalked: len(runs),
 	}
-	// Walk only reports truncation after reading at least one run, so the
-	// index is safe.
-	if truncated {
-		out.OldestRunID = runs[len(runs)-1].RunID
-	}
 
+	// runs are already newest-first; reverse within each run because
+	// FromEvents records entries in history order (oldest first).
 	for _, run := range runs {
-		for i := len(run.Entries) - 1; i >= 0; i-- {
-			out.Entries = append(out.Entries, run.Entries[i])
+		for _, e := range slices.Backward(run.Entries) {
+			out.Entries = append(out.Entries, e)
 		}
 		out.ShownEarnEvents += run.EarnEvents
 	}
 
 	if len(runs) > 0 {
+		out.OldestRunID = runs[len(runs)-1].RunID
 		// LifetimeEarnEvents in a run's start payload is the count as of that
 		// run's start, so the newest run's starting count plus the adds inside
 		// it is the current total -- available even when older history is gone,
@@ -97,8 +91,7 @@ type pendingUpdate struct {
 	eventID  int64
 }
 
-// FromEvents maps one run's events to audit entries. Pure -- no client, no
-// I/O -- so it is testable against recorded histories.
+// FromEvents maps one run's events to audit entries.
 func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 	out := Run{RunID: runID}
 	pending := map[int64]pendingUpdate{}

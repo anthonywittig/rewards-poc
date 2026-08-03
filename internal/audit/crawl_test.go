@@ -332,6 +332,9 @@ func TestAssemble_NewestFirst(t *testing.T) {
 	if got.RunsWalked != 2 {
 		t.Errorf("runsWalked = %d, want 2", got.RunsWalked)
 	}
+	if got.OldestRunID != "a" {
+		t.Errorf("oldestRunId = %q, want the enrollment run", got.OldestRunID)
+	}
 }
 
 // History reaped: the log is short but the lifetime count is still right,

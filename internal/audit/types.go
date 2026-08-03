@@ -27,9 +27,6 @@ type Entry struct {
 	RunID     string    `json:"runId"`
 	// History event ID, unique only within its run.
 	EventID int64 `json:"eventId"`
-	// Deep link to this entry's run in the Temporal UI, filled in by the
-	// HTTP handler -- the crawl itself does not know where the UI lives.
-	HistoryURL string `json:"historyUrl"`
 
 	Amount    int    `json:"amount,omitempty"`
 	Reason    string `json:"reason,omitempty"`
@@ -39,12 +36,11 @@ type Entry struct {
 	RequestID string `json:"requestId,omitempty"`
 }
 
-// Response is the body of GET /api/customers/{id}/audit.
-//
-// Truncation is part of the contract, not an error: closed runs are reaped
-// after retention, so the crawl walks back until history is gone and then says
-// so, quantified -- the UI renders "Showing 7 of 23 point events."
-type Response struct {
+// Timeline is the assembled audit for a customer. Truncation is part of the
+// contract, not an error: closed runs are reaped after retention, so the crawl
+// walks back until history is gone and then says so, quantified -- the UI
+// renders "Showing 7 of 23 point events."
+type Timeline struct {
 	CustomerID string `json:"customerId"`
 	// The execution the entries were crawled from.
 	WorkflowID string  `json:"workflowId"`
@@ -55,7 +51,9 @@ type Response struct {
 	// in workflow state. Equal when Truncated is false.
 	ShownEarnEvents    int `json:"shownEarnEvents"`
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
-	// The oldest run the crawl could read. Empty when it reached enrollment.
+	// The oldest run the crawl actually read (empty only when no runs were walked).
+	// When Truncated is false this is the enrollment run; when true it is how
+	// far back history still survived.
 	OldestRunID string `json:"oldestRunId,omitempty"`
 	// How many runs were walked, for the run dividers.
 	RunsWalked int `json:"runsWalked"`
