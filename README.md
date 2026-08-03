@@ -159,6 +159,10 @@ on promotion, and that is what an Activity is for.
   pushes you to filter. Leaderboards are where a separate read model would
   start earning its keep.
 
+## Diagrams
+
+See [docs/architecture.md](docs/architecture.md).
+
 ## Layout
 
 ```
@@ -168,6 +172,7 @@ internal/rewards/   the domain: state, tiers, the Update/Query contract
 internal/audit/     Event History crawl that rebuilds the audit timeline
 internal/httpapi/   HTTP handlers over Temporal (and the audit crawl)
 web/                the React UI
+docs/               architecture diagrams
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
 Makefile
 ```
