@@ -120,7 +120,7 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_ACCEPTED:
 			a := e.GetWorkflowExecutionUpdateAcceptedEventAttributes()
 			req := a.GetAcceptedRequest()
-			u := acceptedUpdate{
+			acc := acceptedUpdate{
 				name:     req.GetInput().GetName(),
 				updateID: req.GetMeta().GetUpdateId(),
 				at:       e.GetEventTime().AsTime(),
@@ -128,47 +128,42 @@ func FromEvents(runID string, events []*historypb.HistoryEvent) Run {
 			}
 			var args rewards.AddPointsRequest
 			if decodeArg(dc, req.GetInput().GetArgs(), &args) {
-				u.amount, u.reason = args.Amount, args.Reason
+				acc.amount, acc.reason = args.Amount, args.Reason
 			}
-			accepted[e.GetEventId()] = u
+			accepted[e.GetEventId()] = acc
 
 		case enumspb.EVENT_TYPE_WORKFLOW_EXECUTION_UPDATE_COMPLETED:
 			a := e.GetWorkflowExecutionUpdateCompletedEventAttributes()
 			// Always paired: an Update accepted in run N completes in run N.
-			u := accepted[a.GetAcceptedEventId()]
+			acc := accepted[a.GetAcceptedEventId()]
 
 			// The departure. A *failed* leave applied nothing (the handler
 			// stages, then commits), so only a success draws a row.
-			if u.name == rewards.UpdateDeactivate {
+			if acc.name == rewards.UpdateDeactivate {
 				if a.GetOutcome().GetFailure() != nil {
 					continue
 				}
 				out.Entries = append(out.Entries, Entry{
 					Kind:      KindDeactivated,
-					At:        u.at,
+					At:        acc.at,
 					RunNumber: out.StartState.RunNumber,
 					RunID:     runID,
-					EventID:   u.eventID,
-					RequestID: u.updateID,
+					EventID:   acc.eventID,
+					RequestID: acc.updateID,
 				})
-				continue
-			}
-
-			// A future Update handler must not render as a point-add.
-			if u.name != rewards.UpdateAddPoints {
 				continue
 			}
 
 			// Anchored to the accepted event: that is when the customer made
 			// the request.
 			entry := Entry{
-				At:        u.at,
+				At:        acc.at,
 				RunNumber: out.StartState.RunNumber,
 				RunID:     runID,
-				EventID:   u.eventID,
-				Amount:    u.amount,
-				Reason:    u.reason,
-				RequestID: u.updateID,
+				EventID:   acc.eventID,
+				Amount:    acc.amount,
+				Reason:    acc.reason,
+				RequestID: acc.updateID,
 			}
 
 			if f := a.GetOutcome().GetFailure(); f != nil {
