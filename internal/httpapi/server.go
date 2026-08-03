@@ -170,10 +170,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		// completed final run keeps Active=false, which is what puts departed
 		// customers in this list until their history is reaped.
 		status := "deactivated"
-		switch {
-		case v.Active != nil && *v.Active:
-			status = "active"
-		case v.Active == nil && e.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		if v.Active != nil && *v.Active {
 			status = "active"
 		}
 
