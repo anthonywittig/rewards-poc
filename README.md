@@ -8,9 +8,11 @@ There is no application database. A customer's points, tier, enrollment date,
 and history of point-earning events live entirely in one long-lived workflow
 (`customer-<id>`) and its Event History:
 
-- points arrive as Updates (`addPoints`, with a validator),
+- points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
+  a validator),
 - current state is a Query (`getStatus`),
-- the customer list is a visibility query over custom search attributes,
+- the customer list is a visibility query over custom
+  [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by crawling Event History,
 - the workflow continues-as-new to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
@@ -21,13 +23,14 @@ ORM.
 ## Quick start
 
 The only prerequisite is **Docker** with Compose v2 — every process runs in
-the stack. (Go 1.25.4+ is needed only for `go test`.)
+[the stack](deploy/docker-compose.yml). (Go 1.25.4+ is needed only for
+`go test`.)
 
 ```sh
 make up   # the whole stack; a couple of minutes the first time
 ```
 
-| | |
+| Service | URL |
 |---|---|
 | React UI | <http://localhost:5173> |
 | HTTP API | <http://localhost:8081/api/customers> |
@@ -40,8 +43,8 @@ and `make help` lists everything.
 
 ## The HTTP API
 
-Seven routes, and each one is a thin wrapper over a single Temporal
-primitive — which is the point:
+Seven routes — all in [`server.go`](internal/httpapi/server.go) — and each
+one is a thin wrapper over a single Temporal primitive, which is the point:
 
 | Route | Temporal call behind it |
 |---|---|
@@ -65,7 +68,8 @@ curl localhost:8081/api/customers/c-001/audit
 ```
 
 The list is filterable — no lookup table. The server builds the visibility
-query from structured params and echoes it in the response, **pasteable into
+query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
+echoes it in the response, **pasteable into
 the Temporal UI unchanged** — plus a `queryUrl` that opens the Temporal UI
 already filtered by it:
 
@@ -75,8 +79,8 @@ curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
 curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefix match
 ```
 
-Failures are `{"error":{"code":"...","message":"..."}}` with a stable code —
-notably `worker_unavailable` (503) when nothing is polling the task queue,
+Failures are `{"error":{"code":"...","message":"..."}}` with a stable code
+([`errors.go`](internal/httpapi/errors.go)) — notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
 for anything touching a departed customer.
 
@@ -94,17 +98,20 @@ done
 curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 ```
 
-Three is a demo number chosen to be watchable; production should ask
+Three is a demo number chosen to be watchable
+([`EarnsPerRun`](internal/rewards/state.go)); production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
-history; `GET /api/customers/<id>/audit` walks back through the run chain and
-reads the events Temporal recorded anyway. Closed runs are deleted after
+history; `GET /api/customers/<id>/audit` walks back through the run chain
+([`audit.go`](internal/httpapi/audit.go)) and reads the events Temporal
+recorded anyway. Closed runs are deleted after
 retention (1 hour here, Temporal's minimum), so the response reports
 truncation — "showing 3 of 21" — rather than quietly showing less.
 
-**The validator/handler split.** Both of these fail identically from the
-caller's side, but only one leaves a trace:
+**The [validator/handler split](internal/rewards/workflows/workflow.go).**
+Both of these fail identically from the caller's side, but only one leaves a
+trace:
 
 ```sh
 # validator: writes no history at all
@@ -126,7 +133,8 @@ until retention reaps them), and the enroll endpoint refuses to reuse the ID —
 `ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
-**The replay test.** A customer's workflow outlives deploys, so today's code
+**The [replay test](internal/rewards/workflows/replay_test.go).** A
+customer's workflow outlives deploys, so today's code
 gets replayed against histories recorded weeks ago and must match event for
 event:
 
@@ -134,7 +142,8 @@ event:
 go test ./internal/rewards/workflows/ -run TestReplay
 ```
 
-`testdata/run-enrollment.json` is a real recorded history; an edit that
+[`testdata/run-enrollment.json`](internal/rewards/workflows/testdata/run-enrollment.json)
+is a real recorded history; an edit that
 changes what the workflow emits fails this test before it wedges every open
 run in production. (The production fix for such an edit is
 `workflow.GetVersion`; this POC just wipes with `make destroy && make up`.)
