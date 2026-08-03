@@ -186,11 +186,13 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 		// Membership is the RewardsActive attribute, not ExecutionStatus. The
 		// completed final run keeps Active=false, which is what puts departed
 		// customers in this list until their history is reaped.
+		//
+		// No ExecutionStatus fallback for a missing attribute: a fresh
+		// enrollment that hasn't reached its first upsert briefly reads as
+		// deactivated here, but enrollment lands the UI on the detail page,
+		// which asks the workflow directly.
 		status := "deactivated"
-		switch {
-		case v.Active != nil && *v.Active:
-			status = "active"
-		case v.Active == nil && e.GetStatus() == enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING:
+		if v.Active != nil && *v.Active {
 			status = "active"
 		}
 
