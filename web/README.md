@@ -5,8 +5,6 @@ React app over the rewards API.
 ```sh
 # from repo root — `make up` brings up the whole stack, this included
 make logs SVC=web  # what the dev server is saying, on :5173
-make web           # restart it (rarely needed: web/ is bind-mounted, edits hot-reload)
-make web-check     # tsc -b && vite build -- the dev server does not typecheck
 ```
 
 The dev server starts last in `make up` and nothing waits on it, because a first
@@ -17,6 +15,12 @@ The dev server runs in Compose off the `node` image, with this directory
 bind-mounted, so an edit reloads without rebuilding anything. `node_modules`
 lives in a named volume rather than the bind mount, so a host-side `npm install`
 and the container's never overwrite each other.
+
+To typecheck / production-build (the dev server does not):
+
+```sh
+docker compose -f deploy/docker-compose.yml exec -T web npm run build
+```
 
 Browser requests stay same-origin. Vite proxies `/api` to
 `VITE_API_PROXY_TARGET`, which the service sets to `http://api:8081` — the proxy

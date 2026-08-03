@@ -97,7 +97,7 @@ if curl -sf "${ES_URL}/${ES_INDEX}" >/dev/null 2>&1; then
     -d "{\"index\":{\"refresh_interval\":\"${ES_REFRESH_INTERVAL}\"}}" >/dev/null
   log "set on ${ES_INDEX}"
 else
-  log "index ${ES_INDEX} not found yet -- skipping (re-run 'make bootstrap' once it exists)"
+  log "index ${ES_INDEX} not found yet -- skipping (re-run 'make up' once it exists)"
 fi
 
 echo "==> Bootstrap complete"
