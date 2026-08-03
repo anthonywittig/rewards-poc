@@ -8,9 +8,11 @@ There is no application database. A customer's points, tier, enrollment date,
 and history of point-earning events live entirely in one long-lived workflow
 (`customer-<id>`) and its Event History:
 
-- points arrive as Updates (`addPoints`, with a validator),
+- points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
+  a validator),
 - current state is a Query (`getStatus`),
-- the customer list is a visibility query over custom search attributes,
+- the customer list is a visibility query over custom
+  [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by crawling Event History,
 - the workflow continues-as-new to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
@@ -21,13 +23,14 @@ ORM.
 ## Quick start
 
 The only prerequisite is **Docker** with Compose v2 — every process runs in
-the stack. (Go 1.25.4+ is needed only for `go test`.)
+[the stack](deploy/docker-compose.yml). (Go 1.25.4+ is needed only for
+`go test`.)
 
 ```sh
 make up   # the whole stack; a couple of minutes the first time
 ```
 
-| | |
+| Service | URL |
 |---|---|
 | React UI | <http://localhost:5173> |
 | HTTP API | <http://localhost:8081/api/customers> |
@@ -40,8 +43,8 @@ and `make help` lists everything.
 
 ## The HTTP API
 
-Seven routes, and each one is a thin wrapper over a single Temporal
-primitive — which is the point:
+Seven routes — all in [`server.go`](internal/httpapi/server.go) — and each
+one is a thin wrapper over a single Temporal primitive, which is the point:
 
 | Route | Temporal call behind it |
 |---|---|
@@ -58,14 +61,15 @@ primitive — which is the point:
 # The same name derives the same ID, so a second signup is a 409.
 curl -XPOST localhost:8081/api/customers -d '{"name":"Ada Lovelace"}'
 
-curl localhost:8081/api/customers/c-001
-curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":500,"reason":"purchase"}'
-curl -XDELETE localhost:8081/api/customers/c-001
-curl localhost:8081/api/customers/c-001/audit
+curl localhost:8081/api/customers/ada-lovelace
+curl -XPOST localhost:8081/api/customers/ada-lovelace/points -d '{"amount":500,"reason":"purchase"}'
+curl localhost:8081/api/customers/ada-lovelace/audit
+curl -XDELETE localhost:8081/api/customers/ada-lovelace
 ```
 
 The list is filterable — no lookup table. The server builds the visibility
-query from structured params and echoes it in the response, **pasteable into
+query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
+echoes it in the response, **pasteable into
 the Temporal UI unchanged** — plus a `queryUrl` that opens the Temporal UI
 already filtered by it:
 
@@ -75,8 +79,8 @@ curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
 curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefix match
 ```
 
-Failures are `{"error":{"code":"...","message":"..."}}` with a stable code —
-notably `worker_unavailable` (503) when nothing is polling the task queue,
+Failures are `{"error":{"code":"...","message":"..."}}` with a stable code
+([`errors.go`](internal/httpapi/errors.go)) — notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
 for anything touching a departed customer.
 
@@ -94,21 +98,24 @@ done
 curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 ```
 
-Three is a demo number chosen to be watchable; production should ask
+Three is a demo number chosen to be watchable
+([`EarnsPerRun`](internal/rewards/state.go)); production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
-history; `GET /api/customers/<id>/audit` walks back through the run chain and
-reads the events Temporal recorded anyway. Closed runs are deleted after
+history; `GET /api/customers/<id>/audit` walks back through the run chain
+([`audit.go`](internal/httpapi/audit.go)) and reads the events Temporal
+recorded anyway. Closed runs are deleted after
 retention (1 hour here, Temporal's minimum), so the response reports
 truncation — "showing 3 of 21" — rather than quietly showing less.
 
-**The validator/handler split.** Both of these fail identically from the
-caller's side, but only one leaves a trace:
+**The [validator/handler split](internal/rewards/workflows/workflow.go).**
+Both of these fail identically from the caller's side, but only one leaves a
+trace:
 
 ```sh
 # validator: writes no history at all
-curl -XPOST localhost:8081/api/customers/c-001/points -d '{"amount":-50,"reason":"oops"}'
+curl -XPOST localhost:8081/api/customers/ada/points -d '{"amount":-50,"reason":"oops"}'
 # handler: recorded, shows as points_rejected (seeded customer `capped` is at 4960)
 curl -XPOST localhost:8081/api/customers/capped/points -d '{"amount":100,"reason":"over cap"}'
 ```
