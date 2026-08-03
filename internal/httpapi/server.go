@@ -296,7 +296,9 @@ func (s *Server) queryStatus(ctx context.Context, wfID string) (converter.Encode
 	return nil, mapQueryError(lastErr)
 }
 
-// addPoints applies an Update, retrying once if the run rolled over underneath.
+// addPoints applies the addPoints Update once. A closed-run miss means either
+// a departed customer (no successor) or a rare continue-as-new race (still
+// Running); both report and stop rather than re-send.
 func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 	id := r.PathValue("id")
 	if id == "" {
@@ -308,9 +310,33 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	res, err := s.addPointsWithRolloverRetry(r.Context(), rewards.WorkflowID(id), req)
+	wfID := rewards.WorkflowID(id)
+	var res rewards.AddPointsResult
+	err := sendUpdate(r.Context(), s.temporal, client.UpdateWorkflowOptions{
+		WorkflowID: wfID,
+		UpdateName: rewards.UpdateAddPoints,
+		UpdateID:   req.RequestID, // empty means the SDK generates one
+		Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
+	}, &res)
+	if err != nil && isClosedRun(err) {
+		running, describeErr := s.hasRunningExecution(r.Context(), wfID)
+		switch {
+		case describeErr != nil:
+			return mapQueryError(describeErr)
+		case running:
+			return &apiError{
+				http.StatusConflict, CodeRolloverRace,
+				"the customer's workflow rolled over while applying this request; please retry",
+			}
+		default:
+			return &apiError{
+				http.StatusConflict, CodeDeactivated,
+				"customer is deactivated; deactivation is permanent",
+			}
+		}
+	}
 	if err != nil {
-		return err
+		return mapUpdateError(err)
 	}
 
 	writeJSON(w, s.log, http.StatusOK, AddPointsResponse{
@@ -318,59 +344,6 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		Level:   res.Level,
 	})
 	return nil
-}
-
-// addPointsWithRolloverRetry sends the addPoints Update, and sends it again if
-// the run it addressed closed because of continue-as-new. Rollover fires every
-// EarnsPerRun adds, so without this retry the demo looks broken roughly every
-// third click. Retrying is safe because the lost Update never ran.
-//
-// Deactivation completes the workflow, so a closed run with no successor is
-// the ordinary shape of a departed customer, and adding points to one is
-// refused. Only an add that races the deactivate into its final run is
-// rejected inside the Update handler as ErrTypeDeactivated instead.
-func (s *Server) addPointsWithRolloverRetry(
-	ctx context.Context, wfID string, req AddPointsRequest,
-) (rewards.AddPointsResult, error) {
-	var zero rewards.AddPointsResult
-	const attempts = 2
-
-	for attempt := 1; attempt <= attempts; attempt++ {
-		var res rewards.AddPointsResult
-		err := sendUpdate(ctx, s.temporal, client.UpdateWorkflowOptions{
-			WorkflowID: wfID,
-			UpdateName: rewards.UpdateAddPoints,
-			UpdateID:   req.RequestID, // empty means the SDK generates one
-			Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
-		}, &res)
-		if err == nil {
-			return res, nil
-		}
-		if !isClosedRun(err) {
-			return zero, mapUpdateError(err)
-		}
-
-		running, describeErr := s.hasRunningExecution(ctx, wfID)
-		if describeErr != nil {
-			return zero, mapQueryError(describeErr)
-		}
-		if !running {
-			return zero, &apiError{
-				http.StatusConflict, CodeDeactivated,
-				"customer is deactivated; deactivation is permanent",
-			}
-		}
-
-		s.log.Info("update lost its run to continue-as-new, retrying against the successor",
-			"workflowId", wfID, "attempt", attempt)
-	}
-
-	// Two rollovers inside one request: report honestly rather than chase.
-	s.log.Warn("update lost its run twice in a row", "workflowId", wfID)
-	return zero, &apiError{
-		http.StatusConflict, CodeRolloverRace,
-		"the customer's workflow rolled over while applying this request; please retry",
-	}
 }
 
 func (s *Server) hasRunningExecution(ctx context.Context, wfID string) (bool, error) {
