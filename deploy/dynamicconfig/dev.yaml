@@ -4,8 +4,8 @@
 # good production value. Note that an unregistered key is silently ignored
 # (after one startup warning), so re-check these names after a server upgrade.
 #
-# Retention itself is not tunable here: it has a 1h floor, so truncation is
-# demonstrated with `make reap` instead.
+# Retention itself is not tunable here: it has a 1h floor, so demonstrating
+# truncation means waiting for closed runs to age out of it.
 
 # Deletion of a closed execution's data is jittered, landing somewhere in
 # [retention, retention + jitter]. Pinned small so it is easy to reason about.
