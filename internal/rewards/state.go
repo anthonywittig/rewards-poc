@@ -17,13 +17,10 @@ const (
 // EarnsPerRun is how many successful adds a run handles before continuing as
 // new. Artificially low so the rollover is easy to watch; production would ask
 // workflow.GetInfo(ctx).GetContinueAsNewSuggested() instead.
-//
-// Changing this breaks running workflows: replay of a history recorded under a
-// different value produces different commands. In dev, `make destroy && make up`.
 const EarnsPerRun = 3
 
-// CustomerState is the workflow argument. Everything here survives
-// continue-as-new; history is reaped after retention, state is not.
+// CustomerState is the workflow argument. Everything here is carried forward
+// untouched by continue-as-new.
 type CustomerState struct {
 	// Identity
 	CustomerID string `json:"customerId"`
