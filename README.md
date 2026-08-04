@@ -54,8 +54,7 @@ See [docs/architecture.md](docs/architecture.md).
 
 ## The HTTP API
 
-Six API routes (plus a `/healthz`) — all in
-[`server.go`](internal/httpapi/server.go) — and each
+Six routes — all in [`server.go`](internal/httpapi/server.go) — and each
 one is a thin wrapper over a single Temporal primitive:
 
 | Route | Temporal call behind it |
