@@ -11,10 +11,10 @@ History:
 
 - points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
   a validator),
-- current state is a Query (`getStatus`),
+- current state is a Query ([`getStatus`](internal/rewards/contract.go)),
 - the customer list is a visibility query over custom
   [search attributes](internal/rewards/searchattr.go),
-- the audit log is reconstructed by crawling Event History,
+- the audit log is reconstructed by [crawling Event History](internal/audit/),
 - the workflow continues-as-new to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
 
@@ -29,12 +29,12 @@ The only prerequisite is **Docker** with Compose v2 — every process runs in
 something about the pattern.
 
 ```sh
-make up   # the whole stack; a couple of minutes the first time
+make up   # the whole stack; takes a couple of minutes the first time
 ```
 
 | Service | URL |
 |---|---|
-| React UI | <http://localhost:5173> |
+| Web App | <http://localhost:5173> |
 | HTTP API | <http://localhost:8081/api/customers> |
 | Temporal UI | <http://localhost:8080> |
 
@@ -72,8 +72,9 @@ curl -XDELETE localhost:8081/api/customers/ada-lovelace
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
 echoes it in the response, **pasteable into
-the Temporal UI unchanged** — plus a `queryUrl` that opens the Temporal UI
-already filtered by it:
+the Temporal UI unchanged** — plus a `queryUrl`
+([`links.go`](internal/httpapi/links.go)) that opens the Temporal UI already
+filtered by it:
 
 ```sh
 curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
@@ -135,14 +136,6 @@ until retention reaps them), and the enroll endpoint refuses to reuse the ID —
 `ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
-**The determinism check.** The Go SDK has no workflow sandbox: `time.Now()` in
-workflow code compiles and passes tests, then wedges a customer on replay.
-
-```sh
-go install go.temporal.io/sdk/contrib/tools/workflowcheck@v0.5.0
-workflowcheck ./...
-```
-
 **No Activities, deliberately.** Nothing in the rewards program touches the
 outside world — the workflow is a pure state machine and Temporal is its
 store, which is the argument of the POC. A real system would notify customers
@@ -155,10 +148,6 @@ on promotion, and that is what an Activity is for.
 - **Visibility is asynchronous.** A new or updated workflow appears in the
   list after ~200–300 ms, never instantly. Read-after-write goes through
   Query or Describe instead.
-- **You cannot sort a workflow list.** Temporal rejects `ORDER BY`, so the
-  list endpoint returns at most five rows, reports how many matched, and
-  pushes you to filter. Leaderboards are where a separate read model would
-  start earning its keep.
 
 ## Diagrams
 
@@ -172,7 +161,7 @@ internal/rewards/   the domain: state, tiers, the Update/Query contract
   workflows/        CustomerRewardsWorkflow
 internal/audit/     Event History crawl that rebuilds the audit timeline
 internal/httpapi/   HTTP handlers over Temporal (and the audit crawl)
-web/                the React UI
+web/                the web app (React)
 docs/               architecture diagrams
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
 Makefile
