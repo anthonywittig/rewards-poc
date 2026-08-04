@@ -29,7 +29,7 @@ The only prerequisite is **Docker** with Compose v2 — every process runs in
 something about the pattern.
 
 ```sh
-make up   # the whole stack; a couple of minutes the first time
+make up   # the whole stack; takes a couple of minutes the first time
 ```
 
 | Service | URL |

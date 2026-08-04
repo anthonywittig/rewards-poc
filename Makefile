@@ -3,10 +3,8 @@
 
 COMPOSE := docker compose -f deploy/docker-compose.yml
 
-# Host-side ports, repeated from docker-compose.yml for the banner.
-API_PORT = 8081
+# Host-side port, repeated from docker-compose.yml for the banner.
 WEB_PORT = 5173
-TEMPORAL_UI_PORT = 8080
 
 .PHONY: help up destroy logs ps
 
@@ -29,9 +27,7 @@ up: ## Start the whole stack: bootstrap, worker, API, UI, demo customers
 # progress.
 	$(COMPOSE) up -d web
 	@echo
-	@echo "React UI:     http://localhost:$(WEB_PORT) (starting -- make logs SVC=web)"
-	@echo "Temporal UI:  http://localhost:$(TEMPORAL_UI_PORT)"
-	@echo "HTTP API:     http://localhost:$(API_PORT)/api/customers"
+	@echo "Web App:  http://localhost:$(WEB_PORT) (starting -- make logs SVC=web)"
 
 destroy: ## Stop the stack and delete its volumes
 	$(COMPOSE) down -v
