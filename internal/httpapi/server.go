@@ -99,6 +99,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
+		Active:     true,
 		RunNumber:  1,
 	})
 	if err == nil {
@@ -185,8 +186,8 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 			Points:     v.Points,
 			Level:      v.Level,
 			EnrolledAt: v.EnrolledAt,
-			RunNumber:  v.RunNumber,
 			Status:     status,
+			RunNumber:  v.RunNumber,
 			RunID:      e.GetExecution().GetRunId(),
 		})
 	}
@@ -256,11 +257,11 @@ func (s *Server) getCustomer(w http.ResponseWriter, r *http.Request) error {
 	out.PrevTierAt = st.PrevTierAt
 	out.NextTierAt = st.NextTierAt
 	out.EnrolledAt = st.EnrolledAt
-	out.LifetimeEarnEvents = st.LifetimeEarnEvents
-	out.RunNumber = st.RunNumber
 	if running && st.Active {
 		out.Status = "active"
 	}
+	out.LifetimeEarnEvents = st.LifetimeEarnEvents
+	out.RunNumber = st.RunNumber
 
 	writeJSON(w, s.log, http.StatusOK, out)
 	return nil
@@ -388,13 +389,17 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 
 // searchAttrValues is a customer's search attributes, decoded.
 type searchAttrValues struct {
+	// Identity
 	CustomerID string
 	Name       string
-	Points     int
-	Level      string
+	// Balance
+	Points int
+	Level  string
+	// Membership
 	EnrolledAt time.Time
-	RunNumber  int
 	Active     *bool // nil when the attribute was never upserted
+	// Execution
+	RunNumber int
 }
 
 // decodeSearchAttributes is best-effort: a missing or undecodable attribute
@@ -423,10 +428,8 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 
 	decodeStr(rewards.KeyCustomerID.GetName(), &out.CustomerID)
 	decodeStr(rewards.KeyCustomerName.GetName(), &out.Name)
-	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
 	decodeInt(rewards.KeyRewardsPoints.GetName(), &out.Points)
-	decodeInt(rewards.KeyRunNumber.GetName(), &out.RunNumber)
-
+	decodeStr(rewards.KeyRewardsLevel.GetName(), &out.Level)
 	if p, ok := fields[rewards.KeyEnrolledAt.GetName()]; ok {
 		_ = dc.FromPayload(p, &out.EnrolledAt)
 	}
@@ -436,6 +439,7 @@ func decodeSearchAttributes(sa *commonpb.SearchAttributes) searchAttrValues {
 			out.Active = &active
 		}
 	}
+	decodeInt(rewards.KeyRunNumber.GetName(), &out.RunNumber)
 	return out
 }
 

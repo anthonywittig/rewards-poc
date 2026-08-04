@@ -24,8 +24,8 @@ export interface CustomerListItem {
   points: number
   level: string
   enrolledAt: string
-  runNumber: number
   status: CustomerStatus
+  runNumber: number
   runId: string
 }
 
@@ -52,9 +52,9 @@ export interface CustomerResponse {
   prevTierAt: number
   nextTierAt: number
   enrolledAt: string
+  status: CustomerStatus
   lifetimeEarnEvents: number
   runNumber: number
-  status: CustomerStatus
   runId: string
 }
 
