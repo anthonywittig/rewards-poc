@@ -1,6 +1,6 @@
 # rewards-poc
 
-A POC of the [**Entity Workflow** pattern](https://temporal.io/blog/very-long-running-workflows): **Temporal as the system of record**
+A POC of the **Entity Workflow** pattern: **Temporal as the system of record**
 for a customer rewards program. Written for developers who already know
 Temporal basics and want to see what using it as the *data store* looks like.
 
@@ -15,7 +15,7 @@ History:
 - the customer list is a visibility query over custom
   [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by [crawling Event History](internal/audit/),
-- the workflow [continues-as-new](https://docs.temporal.io/workflow-execution/continue-as-new) to keep history bounded (after every 3
+- the workflow continues-as-new to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
 
 The API holds a Temporal client and nothing else — no database, no cache, no
@@ -133,8 +133,7 @@ the validator, facts about the *customer* in the handler.
 balance frozen in its final state. The detail page, list, and audit log keep
 answering for a departed customer (Query and Describe work on closed runs
 until retention reaps them), and the enroll endpoint refuses to reuse the ID —
-[`ALLOW_DUPLICATE_FAILED_ONLY`](https://docs.temporal.io/workflow-execution/workflowid-runid#workflow-id-reuse-policy)
-retires a completed execution's ID while still
+`ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
 **No Activities, deliberately.** Nothing in the rewards program touches the
