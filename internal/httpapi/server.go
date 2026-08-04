@@ -176,7 +176,7 @@ func (s *Server) listCustomers(w http.ResponseWriter, r *http.Request) error {
 
 		id := v.CustomerID
 		if id == "" {
-			id = strings.TrimPrefix(e.GetExecution().GetWorkflowId(), rewards.WorkflowIDPrefix)
+			id = e.GetExecution().GetWorkflowId()
 		}
 
 		items = append(items, CustomerListItem{
