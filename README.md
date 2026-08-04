@@ -11,7 +11,7 @@ History:
 
 - points arrive as [Updates](https://docs.temporal.io/develop/go/message-passing) ([`addPoints`](internal/rewards/contract.go), with
   a validator),
-- current state is a Query (`getStatus`),
+- current state is a Query ([`getStatus`](internal/rewards/contract.go)),
 - the customer list is a visibility query over custom
   [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by crawling Event History,
