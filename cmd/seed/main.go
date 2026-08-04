@@ -29,10 +29,6 @@ type customer struct {
 
 // Six customers per tier (basic < 500, gold < 1000, platinum >= 1000), which
 // fills the tier filter and pushes the unfiltered list past the list cap.
-//
-// The server derives each customer ID from the name ("Ada Lovelace" ->
-// "ada-lovelace"); the seed derives the same ID locally for its
-// exists-then-create check and the per-customer URLs.
 var seedSet = []customer{
 	// --- basic ----------------------------------------------------------------
 	{
