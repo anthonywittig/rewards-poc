@@ -48,6 +48,10 @@ flow. The UI is disposable scaffolding — the interesting parts are under
 [`internal/httpapi`](internal/httpapi/) and
 [`internal/rewards`](internal/rewards/).
 
+## Diagrams
+
+See [docs/architecture.md](docs/architecture.md).
+
 ## The HTTP API
 
 Six API routes (plus a `/healthz`) — all in
@@ -167,10 +171,6 @@ on promotion via an Activity.
 - **Visibility is asynchronous.** A new or updated workflow appears in the
   list after ~200–300 ms, never instantly. Read-after-write goes through
   Query or Describe instead.
-
-## Diagrams
-
-See [docs/architecture.md](docs/architecture.md).
 
 ## Layout
 
