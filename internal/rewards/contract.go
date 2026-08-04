@@ -23,7 +23,6 @@ const (
 const (
 	ErrTypePointsCapExceeded = "PointsCapExceeded"
 	ErrTypeInvalidEnrollment = "InvalidEnrollment"
-	ErrTypeDeactivated       = "Deactivated"
 )
 
 // AddPointsRequest is the addPoints Update argument.

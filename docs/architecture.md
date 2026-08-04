@@ -99,7 +99,7 @@ sequenceDiagram
         A-->>C: 422 rejected (invisible in the audit log, by design)
     else validator passes
         Note over T: UpdateAccepted written to Event History
-        W->>W: handler — facts about the customer:<br/>not deactivated, cap of 5000 not breached
+        W->>W: handler — facts about the customer:<br/>cap of 5000 not breached
 
         alt handler rejects
             W-->>T: non-retryable ApplicationError (recorded)
