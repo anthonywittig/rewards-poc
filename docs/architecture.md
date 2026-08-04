@@ -129,7 +129,7 @@ reaping because state rolls forward even though history does not.
 
 ```mermaid
 flowchart LR
-    subgraph chain["workflow customer-ada-lovelace (one continue-as-new chain)"]
+    subgraph chain["workflow ada-lovelace (one continue-as-new chain)"]
         r1["run 1 — enrollment\nclosed, history reaped ✕"]
         r2["run 2\nclosed, history retained"]
         r3["run 3\nopen"]

@@ -6,7 +6,8 @@ Temporal basics and want to see what using it as the *data store* looks like.
 
 There is no application database. A customer's points, tier, enrollment date,
 and history of point-earning events live entirely in one long-lived workflow
-(`customer-<id>`) and its Event History:
+(whose ID is the customer's dashed name, e.g. `ada-lovelace`) and its Event
+History:
 
 - points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
   a validator),

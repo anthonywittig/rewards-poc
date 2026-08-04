@@ -16,15 +16,10 @@ import (
 // Every error is non-retryable: a payload that fails once will fail on every
 // attempt.
 func validateEnrollment(workflowID string, state *rewards.CustomerState) error {
-	if !strings.HasPrefix(workflowID, rewards.WorkflowIDPrefix) {
+	if state.CustomerID != workflowID {
 		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("workflow ID %q does not start with %q", workflowID, rewards.WorkflowIDPrefix),
-			rewards.ErrTypeInvalidEnrollment, nil)
-	}
-	if want := strings.TrimPrefix(workflowID, rewards.WorkflowIDPrefix); state.CustomerID != want {
-		return temporal.NewNonRetryableApplicationError(
-			fmt.Sprintf("customerId %q does not match workflow ID %q (expected customerId %q)",
-				state.CustomerID, workflowID, want),
+			fmt.Sprintf("customerId %q does not match workflow ID %q",
+				state.CustomerID, workflowID),
 			rewards.ErrTypeInvalidEnrollment, nil)
 	}
 	if strings.TrimSpace(state.Name) == "" {
