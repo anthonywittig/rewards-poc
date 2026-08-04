@@ -57,17 +57,6 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// accumulated state (the cap) belong in the handler.
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
-			// Only reachable in the window between the deactivate committing
-			// and this run completing -- afterwards the Update finds no open
-			// run at all and fails as not found.
-			if state.Deactivated {
-				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
-					"customer is deactivated; deactivation is permanent",
-					rewards.ErrTypeDeactivated,
-					nil,
-				)
-			}
-
 			if state.Points+req.Amount > rewards.PointsCap {
 				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					fmt.Sprintf("add of %d would exceed the cap of %d (balance is %d)",

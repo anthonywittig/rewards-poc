@@ -83,7 +83,7 @@ curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefi
 Failures are `{"error":{"code":"...","message":"..."}}` with a stable code
 ([`errors.go`](internal/httpapi/errors.go)) — notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
-when a signup reuses a departed customer's ID.
+when re-enrolling a retired customer ID.
 
 ## Things worth seeing
 

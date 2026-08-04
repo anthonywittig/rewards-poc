@@ -6,8 +6,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/anthonywittig/rewards-poc/internal/rewards"
-
 	"go.temporal.io/api/serviceerror"
 )
 
@@ -62,13 +60,9 @@ func mapQueryError(err error) error {
 }
 
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status. Business
-// rejections become 422, except Deactivated, which gets a 409 with its own
-// code so clients can say the membership has ended for good.
+// rejections become 422; everything else shares the common classification.
 func mapUpdateError(err error) error {
 	if appErr, ok := isBusinessRejection(err); ok {
-		if appErr.Type() == rewards.ErrTypeDeactivated {
-			return &apiError{http.StatusConflict, CodeDeactivated, appErr.Message()}
-		}
 		return &apiError{http.StatusUnprocessableEntity, CodeRejected, appErr.Message()}
 	}
 	return classifyCommon(err)
