@@ -6,8 +6,7 @@ Temporal basics and want to see what using it as the *data store* looks like.
 
 There is no application database. A customer's points, tier, enrollment date,
 and history of point-earning events live entirely in one long-lived workflow
-(whose ID is the customer's dashed name, e.g. `ada-lovelace`) and its Event
-History:
+and its Event History:
 
 - points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
   a validator),
@@ -50,8 +49,8 @@ flow. The UI is disposable scaffolding — the interesting parts are under
 
 ## The HTTP API
 
-Seven routes — all in [`server.go`](internal/httpapi/server.go) — and each
-one is a thin wrapper over a single Temporal primitive, which is the point:
+Six routes — all in [`server.go`](internal/httpapi/server.go) — and each
+one is a thin wrapper over a single Temporal primitive:
 
 | Route | Temporal call behind it |
 |---|---|
@@ -61,7 +60,6 @@ one is a thin wrapper over a single Temporal primitive, which is the point:
 | `POST /api/customers/{id}/points` | the `addPoints` Update |
 | `DELETE /api/customers/{id}` | the `deactivate` Update |
 | `GET /api/customers/{id}/audit` | an Event History crawl across the run chain |
-| `GET /healthz` | nothing — liveness only |
 
 ```sh
 # Enroll answers with the customer ID (here, ada-lovelace), which the
@@ -78,8 +76,7 @@ The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
 echoes it in the response, **pasteable into
 the Temporal UI unchanged** — plus a `queryUrl`
-([`links.go`](internal/httpapi/links.go)) that opens the Temporal UI already
-filtered by it:
+that opens the Temporal UI already filtered by it:
 
 ```sh
 curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
@@ -144,7 +141,7 @@ letting a *failed* enrollment be retried.
 **No Activities, deliberately.** Nothing in the rewards program touches the
 outside world — the workflow is a pure state machine and Temporal is its
 store, which is the argument of the POC. A real system would notify customers
-on promotion, and that is what an Activity is for.
+on promotion via an Activity.
 
 ## Behaviour to expect
 

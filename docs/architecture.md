@@ -142,5 +142,5 @@ flowchart LR
     crawl -.->|"3: history gone → stop,\ntruncated: true"| r1
 
     timeline["Timeline: enrolled · points_added ·\npoints_rejected · run_rolled · deactivated\n+ 'showing 3 of 21'"]
-    crawl --> timeline
+    crawl -->|4: produces| timeline
 ```
