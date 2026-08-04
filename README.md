@@ -80,8 +80,8 @@ curl -XDELETE localhost:8081/api/customers/ada-lovelace
 The points body also takes an optional `requestId` — the caller's idempotency
 key, which becomes the Temporal Update ID. Dedup is scoped to a single run, so
 a retry that straddles a continue-as-new can still double-apply — tolerable
-for a POC awarding points; a system moving money would carry recent request
-IDs forward in workflow state to de-dupe across the roll.
+for a POC; a production system would carry recent request IDs forward in
+workflow state to de-dupe across the roll.
 
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
