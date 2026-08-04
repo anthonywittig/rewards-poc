@@ -43,7 +43,10 @@ stack keeps running the old code. `make logs SVC=worker` (or `api`, or `web`)
 tails a service, `make destroy` tears the stack down and deletes its volumes,
 and `make help` lists everything.
 
-The [Web App](http://localhost:5173/) is the best starting point for exploring the project's functionality.
+Start with the [Web App](http://localhost:5173/) in the browser to exercise the
+flow. The UI is disposable scaffolding — the interesting parts are under
+[`internal/httpapi`](internal/httpapi/) and
+[`internal/rewards`](internal/rewards/).
 
 ## The HTTP API
 
