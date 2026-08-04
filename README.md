@@ -1,6 +1,6 @@
 # rewards-poc
 
-A POC of the **Entity Workflow** pattern: **Temporal as the system of record**
+A POC of the [**Entity Workflow** pattern](https://temporal.io/blog/very-long-running-workflows): **Temporal as the system of record**
 for a customer rewards program. Written for developers who already know
 Temporal basics and want to see what using it as the *data store* looks like.
 
@@ -9,13 +9,13 @@ and history of point-earning events live entirely in one long-lived workflow
 (whose ID is the customer's dashed name, e.g. `ada-lovelace`) and its Event
 History:
 
-- points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
+- points arrive as [Updates](https://docs.temporal.io/develop/go/message-passing) ([`addPoints`](internal/rewards/contract.go), with
   a validator),
 - current state is a Query (`getStatus`),
 - the customer list is a visibility query over custom
   [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by crawling Event History,
-- the workflow continues-as-new to keep history bounded (after every 3
+- the workflow [continues-as-new](https://docs.temporal.io/workflow-execution/continue-as-new) to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
 
 The API holds a Temporal client and nothing else — no database, no cache, no
@@ -34,7 +34,7 @@ make up   # the whole stack; a couple of minutes the first time
 
 | Service | URL |
 |---|---|
-| React UI | <http://localhost:5173> |
+| [React UI](web/) | <http://localhost:5173> |
 | HTTP API | <http://localhost:8081/api/customers> |
 | Temporal UI | <http://localhost:8080> |
 
@@ -72,8 +72,9 @@ curl -XDELETE localhost:8081/api/customers/ada-lovelace
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
 echoes it in the response, **pasteable into
-the Temporal UI unchanged** — plus a `queryUrl` that opens the Temporal UI
-already filtered by it:
+the Temporal UI unchanged** — plus a `queryUrl`
+([`links.go`](internal/httpapi/links.go)) that opens the Temporal UI already
+filtered by it:
 
 ```sh
 curl -sG localhost:8081/api/customers --data-urlencode "tier=gold"
@@ -132,11 +133,14 @@ the validator, facts about the *customer* in the handler.
 balance frozen in its final state. The detail page, list, and audit log keep
 answering for a departed customer (Query and Describe work on closed runs
 until retention reaps them), and the enroll endpoint refuses to reuse the ID —
-`ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
+[`ALLOW_DUPLICATE_FAILED_ONLY`](https://docs.temporal.io/workflow-execution/workflowid-runid#workflow-id-reuse-policy)
+retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
 **The determinism check.** The Go SDK has no workflow sandbox: `time.Now()` in
 workflow code compiles and passes tests, then wedges a customer on replay.
+[`workflowcheck`](https://pkg.go.dev/go.temporal.io/sdk/contrib/tools/workflowcheck)
+catches it statically:
 
 ```sh
 go install go.temporal.io/sdk/contrib/tools/workflowcheck@v0.5.0
