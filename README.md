@@ -9,7 +9,7 @@ and history of point-earning events live entirely in one long-lived workflow
 (whose ID is the customer's dashed name, e.g. `ada-lovelace`) and its Event
 History:
 
-- points arrive as [Updates](https://docs.temporal.io/develop/go/message-passing) ([`addPoints`](internal/rewards/contract.go), with
+- points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
   a validator),
 - current state is a Query ([`getStatus`](internal/rewards/contract.go)),
 - the customer list is a visibility query over custom
