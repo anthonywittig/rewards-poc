@@ -59,8 +59,8 @@ one is a thin wrapper over a single Temporal primitive, which is the point:
 | `GET /healthz` | nothing — liveness only |
 
 ```sh
-# The server derives the customer ID from the name (here, ada-lovelace).
-# The same name derives the same ID, so a second signup is a 409.
+# Enroll answers with the customer ID (here, ada-lovelace), which the
+# per-customer routes below take in the path. A repeat signup is a 409.
 curl -XPOST localhost:8081/api/customers -d '{"name":"Ada Lovelace"}'
 
 curl localhost:8081/api/customers/ada-lovelace

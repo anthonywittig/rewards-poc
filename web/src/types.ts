@@ -59,7 +59,6 @@ export interface CustomerResponse {
 }
 
 export interface EnrollRequest {
-  /** The server derives the customer ID from the name and returns it. */
   name: string
 }
 

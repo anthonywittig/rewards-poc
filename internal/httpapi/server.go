@@ -79,8 +79,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}
 	customerID := rewards.CustomerIDForName(req.Name)
 	if customerID == "" {
-		return badRequest("name must contain letters or digits; " +
-			"the customer ID is derived from it")
+		return badRequest("name must contain letters or digits")
 	}
 
 	wfID := rewards.WorkflowID(customerID)
