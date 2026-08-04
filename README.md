@@ -137,16 +137,6 @@ until retention reaps them), and the enroll endpoint refuses to reuse the ID —
 retires a completed execution's ID while still
 letting a *failed* enrollment be retried.
 
-**The determinism check.** The Go SDK has no workflow sandbox: `time.Now()` in
-workflow code compiles and passes tests, then wedges a customer on replay.
-[`workflowcheck`](https://pkg.go.dev/go.temporal.io/sdk/contrib/tools/workflowcheck)
-catches it statically:
-
-```sh
-go install go.temporal.io/sdk/contrib/tools/workflowcheck@v0.5.0
-workflowcheck ./...
-```
-
 **No Activities, deliberately.** Nothing in the rewards program touches the
 outside world — the workflow is a pure state machine and Temporal is its
 store, which is the argument of the POC. A real system would notify customers
