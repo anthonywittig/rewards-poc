@@ -94,14 +94,6 @@ curl -sG localhost:8081/api/customers --data-urlencode "status=deactivated"
 curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefix match
 ```
 
-Two footnotes on the list. The server runs the echoed filter inside a scope
-(this workflow type, `ExecutionStatus != 'ContinuedAsNew'`), so pasting it
-into the UI also shows each chain's earlier runs until retention deletes
-them. And the response is capped at 5 rows — `total` and `complete` report
-what the cap hid — with deliberately no pagination: Temporal rejects
-`ORDER BY`, so "page 2" of an unordered set could overlap or skip rows.
-Filter instead.
-
 Failures are `{"error":{"code":"...","message":"..."}}` with a stable code
 ([`errors.go`](internal/httpapi/errors.go)) — notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
