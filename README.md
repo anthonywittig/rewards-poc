@@ -14,7 +14,7 @@ History:
 - current state is a Query ([`getStatus`](internal/rewards/contract.go)),
 - the customer list is a visibility query over custom
   [search attributes](internal/rewards/searchattr.go),
-- the audit log is reconstructed by crawling Event History,
+- the audit log is reconstructed by [crawling Event History](internal/audit/),
 - the workflow [continues-as-new](https://docs.temporal.io/workflow-execution/continue-as-new) to keep history bounded (after every 3
   updates here — unrealistically often, so the rollover is easy to watch).
 
