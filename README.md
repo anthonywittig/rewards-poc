@@ -34,7 +34,7 @@ make up   # the whole stack; a couple of minutes the first time
 
 | Service | URL |
 |---|---|
-| React UI | <http://localhost:5173> |
+| Web App | <http://localhost:5173> |
 | HTTP API | <http://localhost:8081/api/customers> |
 | Temporal UI | <http://localhost:8080> |
 
