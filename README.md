@@ -9,14 +9,14 @@ and history of point-earning events live entirely in one long-lived workflow
 (whose ID is the customer's dashed name, e.g. `ada-lovelace`) and its Event
 History:
 
-- points arrive as Updates (`[addPoints](internal/rewards/contract.go)`, with
-a validator),
-- current state is a Query (`[getStatus](internal/rewards/contract.go)`),
+- points arrive as Updates ([`addPoints`](internal/rewards/contract.go), with
+  a validator),
+- current state is a Query ([`getStatus`](internal/rewards/contract.go)),
 - the customer list is a visibility query over custom
-[search attributes](internal/rewards/searchattr.go),
+  [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by [crawling Event History](internal/audit/),
 - the workflow continues-as-new to keep history bounded (after every 3
-updates here — unrealistically often, so the rollover is easy to watch).
+  updates here — unrealistically often, so the rollover is easy to watch).
 
 The API holds a Temporal client and nothing else — no database, no cache, no
 ORM.
@@ -32,13 +32,11 @@ something about the pattern.
 make up   # the whole stack; takes a couple of minutes the first time
 ```
 
-
-| Service     | URL                                                                        |
-| ----------- | -------------------------------------------------------------------------- |
-| Web App     | [http://localhost:5173](http://localhost:5173)                             |
-| HTTP API    | [http://localhost:8081/api/customers](http://localhost:8081/api/customers) |
-| Temporal UI | [http://localhost:8080](http://localhost:8080)                             |
-
+| Service | URL |
+|---|---|
+| Web App | <http://localhost:5173> |
+| HTTP API | <http://localhost:8081/api/customers> |
+| Temporal UI | <http://localhost:8080> |
 
 `make up` again rebuilds the worker and API after a Go change — until then the
 stack keeps running the old code. `make logs SVC=worker` (or `api`, or `web`)
@@ -49,20 +47,18 @@ The [Web App](http://localhost:5173/) is the best starting point for exploring t
 
 ## The HTTP API
 
-Seven routes — all in `[server.go](internal/httpapi/server.go)` — and each
+Seven routes — all in [`server.go`](internal/httpapi/server.go) — and each
 one is a thin wrapper over a single Temporal primitive, which is the point:
 
-
-| Route                             | Temporal call behind it                                 |
-| --------------------------------- | ------------------------------------------------------- |
-| `POST /api/customers`             | start the customer's workflow                           |
-| `GET /api/customers`              | `ListWorkflow` + `CountWorkflow` over search attributes |
-| `GET /api/customers/{id}`         | the `getStatus` Query (plus a Describe for run status)  |
-| `POST /api/customers/{id}/points` | the `addPoints` Update                                  |
-| `DELETE /api/customers/{id}`      | the `deactivate` Update                                 |
-| `GET /api/customers/{id}/audit`   | an Event History crawl across the run chain             |
-| `GET /healthz`                    | nothing — liveness only                                 |
-
+| Route | Temporal call behind it |
+|---|---|
+| `POST /api/customers` | start the customer's workflow |
+| `GET /api/customers` | `ListWorkflow` + `CountWorkflow` over search attributes |
+| `GET /api/customers/{id}` | the `getStatus` Query (plus a Describe for run status) |
+| `POST /api/customers/{id}/points` | the `addPoints` Update |
+| `DELETE /api/customers/{id}` | the `deactivate` Update |
+| `GET /api/customers/{id}/audit` | an Event History crawl across the run chain |
+| `GET /healthz` | nothing — liveness only |
 
 ```sh
 # No customerId: the server derives one from the name (here, ada-lovelace).
@@ -76,10 +72,10 @@ curl -XDELETE localhost:8081/api/customers/ada-lovelace
 ```
 
 The list is filterable — no lookup table. The server builds the visibility
-query from structured params (`[filter.go](internal/httpapi/filter.go)`) and
+query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
 echoes it in the response, **pasteable into
 the Temporal UI unchanged** — plus a `queryUrl`
-(`[links.go](internal/httpapi/links.go)`) that opens the Temporal UI already
+([`links.go`](internal/httpapi/links.go)) that opens the Temporal UI already
 filtered by it:
 
 ```sh
@@ -89,7 +85,7 @@ curl -sG localhost:8081/api/customers --data-urlencode "name=ada"   # word-prefi
 ```
 
 Failures are `{"error":{"code":"...","message":"..."}}` with a stable code
-(`[errors.go](internal/httpapi/errors.go)`) — notably `worker_unavailable` (503) when nothing is polling the task queue,
+([`errors.go`](internal/httpapi/errors.go)) — notably `worker_unavailable` (503) when nothing is polling the task queue,
 `rejected` (422) when the workflow refused a request, and `deactivated` (409)
 when re-enrolling a retired customer ID.
 
@@ -108,12 +104,12 @@ curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 ```
 
 Three is a demo number chosen to be watchable
-(`[EarnsPerRun](internal/rewards/state.go)`); production should ask
+([`EarnsPerRun`](internal/rewards/state.go)); production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
 history; `GET /api/customers/<id>/audit` walks back through the run chain
-(`[audit](internal/audit/)`) and reads the events Temporal
+([`audit`](internal/audit/)) and reads the events Temporal
 recorded anyway. Closed runs are deleted after
 retention (1 hour here, Temporal's minimum), so the response reports
 truncation — "showing 3 of 21" — rather than quietly showing less.
@@ -150,12 +146,10 @@ on promotion, and that is what an Activity is for.
 ## Behaviour to expect
 
 - **Points only go up.** No spending or expiry, so tiers never demote and
-`Points` is also the lifetime total.
+  `Points` is also the lifetime total.
 - **Visibility is asynchronous.** A new or updated workflow appears in the
-list after ~200–300 ms, never instantly. Read-after-write goes through
-Query or Describe instead.
-
-
+  list after ~200–300 ms, never instantly. Read-after-write goes through
+  Query or Describe instead.
 
 ## Diagrams
 
@@ -174,4 +168,3 @@ docs/               architecture diagrams
 deploy/             docker-compose.yml (every setting, literally), Dockerfile
 Makefile
 ```
-
