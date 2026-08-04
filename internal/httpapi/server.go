@@ -73,23 +73,17 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		return err
 	}
 
-	req.CustomerID = strings.TrimSpace(req.CustomerID)
-	if strings.ContainsAny(req.CustomerID, " \t\n/") {
-		return badRequest("customerId must not contain whitespace or slashes")
-	}
 	req.Name = strings.TrimSpace(req.Name)
 	if req.Name == "" {
 		return badRequest("name is required")
 	}
-	if req.CustomerID == "" {
-		req.CustomerID = rewards.CustomerIDForName(req.Name)
-		if req.CustomerID == "" {
-			return badRequest("name must contain letters or digits; " +
-				"the customer ID is derived from it")
-		}
+	customerID := rewards.CustomerIDForName(req.Name)
+	if customerID == "" {
+		return badRequest("name must contain letters or digits; " +
+			"the customer ID is derived from it")
 	}
 
-	wfID := rewards.WorkflowID(req.CustomerID)
+	wfID := rewards.WorkflowID(customerID)
 	run, err := s.temporal.ExecuteWorkflow(r.Context(), client.StartWorkflowOptions{
 		ID:                                       wfID,
 		TaskQueue:                                rewards.TaskQueue,
@@ -97,14 +91,14 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 		WorkflowIDConflictPolicy:                 enumspb.WORKFLOW_ID_CONFLICT_POLICY_FAIL,
 		WorkflowExecutionErrorWhenAlreadyStarted: true,
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
-		CustomerID: req.CustomerID,
+		CustomerID: customerID,
 		Name:       req.Name,
 		Active:     true,
 		RunNumber:  1,
 	})
 	if err == nil {
 		writeJSON(w, s.log, http.StatusCreated, EnrollResponse{
-			CustomerID: req.CustomerID,
+			CustomerID: customerID,
 			WorkflowID: run.GetID(),
 			RunID:      run.GetRunID(),
 		})

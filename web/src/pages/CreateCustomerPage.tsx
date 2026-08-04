@@ -14,7 +14,7 @@ export function CreateCustomerPage() {
     setBusy(true)
     setError(null)
     try {
-      // No customerId: the server derives one from the name and answers with it.
+      // The server derives the customer ID from the name and answers with it.
       const enrolled = await enrollCustomer({
         name: name.trim(),
       })

@@ -59,11 +59,7 @@ export interface CustomerResponse {
 }
 
 export interface EnrollRequest {
-  /**
-   * Omitted by a signup from the UI — the server derives the ID from the name
-   * and returns it. Callers that manage their own IDs (the seed) may send one.
-   */
-  customerId?: string
+  /** The server derives the customer ID from the name and returns it. */
   name: string
 }
 
