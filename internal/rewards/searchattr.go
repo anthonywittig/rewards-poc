@@ -10,11 +10,15 @@ import "go.temporal.io/sdk/temporal"
 // SDK's constructor for Text is NewSearchAttributeKeyString. IDs use Keyword
 // (exact match).
 var (
-	KeyCustomerID    = temporal.NewSearchAttributeKeyKeyword("CustomerId")
-	KeyCustomerName  = temporal.NewSearchAttributeKeyString("CustomerName")
+	// Identity
+	KeyCustomerID   = temporal.NewSearchAttributeKeyKeyword("CustomerId")
+	KeyCustomerName = temporal.NewSearchAttributeKeyString("CustomerName")
+	// Balance
 	KeyRewardsLevel  = temporal.NewSearchAttributeKeyKeyword("RewardsLevel")
 	KeyRewardsPoints = temporal.NewSearchAttributeKeyInt64("RewardsPoints")
-	KeyEnrolledAt    = temporal.NewSearchAttributeKeyTime("RewardsEnrolledAt")
-	KeyRunNumber     = temporal.NewSearchAttributeKeyInt64("RewardsRunNumber")
-	KeyActive        = temporal.NewSearchAttributeKeyBool("RewardsActive")
+	// Membership
+	KeyEnrolledAt = temporal.NewSearchAttributeKeyTime("RewardsEnrolledAt")
+	KeyActive     = temporal.NewSearchAttributeKeyBool("RewardsActive")
+	// Execution
+	KeyRunNumber = temporal.NewSearchAttributeKeyInt64("RewardsRunNumber")
 )

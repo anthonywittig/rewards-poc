@@ -180,7 +180,7 @@ func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) 
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),
 		rewards.KeyEnrolledAt.ValueSet(state.EnrolledAt),
-		rewards.KeyRunNumber.ValueSet(int64(state.RunNumber)),
 		rewards.KeyActive.ValueSet(!state.Deactivated),
+		rewards.KeyRunNumber.ValueSet(int64(state.RunNumber)),
 	)
 }

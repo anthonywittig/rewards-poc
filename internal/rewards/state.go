@@ -25,25 +25,27 @@ const EarnsPerRun = 3
 // CustomerState is the workflow argument. Everything here survives
 // continue-as-new; history is reaped after retention, state is not.
 type CustomerState struct {
+	// Identity
 	CustomerID string `json:"customerId"`
 	Name       string `json:"name"`
 
-	// Points only ever increase (no spending or expiry), so this is also the
-	// lifetime total.
+	// Balance — only ever increases (no spending or expiry).
 	Points int `json:"points"`
 
+	// Membership lifecycle
 	// Set on the first run, carried forward untouched.
 	EnrolledAt time.Time `json:"enrolledAt"`
+	// Set when the customer leaves, and never cleared: deactivation is
+	// one-way, and the run completes once the flag is set. Not an Active bool:
+	// the zero value must mean active so older continue-as-new payloads keep
+	// decoding correctly.
+	Deactivated bool `json:"deactivated,omitempty"`
+
+	// Execution bookkeeping
 	// Count of successful adds, ever. Not derivable from history once it is
 	// reaped; used to quantify audit-log truncation.
 	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
 	// 1-based position of the current run in the continue-as-new chain: the
 	// enrollment run is 1, and the counter increments exactly once per roll.
 	RunNumber int `json:"runNumber"`
-
-	// Set when the customer leaves, and never cleared: deactivation is
-	// one-way, and the run completes once the flag is set. Not an Active bool:
-	// the zero value must mean active so older continue-as-new payloads keep
-	// decoding correctly.
-	Deactivated bool `json:"deactivated,omitempty"`
 }
