@@ -15,14 +15,14 @@ flowchart LR
     browser["Browser"]
 
     subgraph compose["docker compose (name: rewards-poc)"]
-        web["web\nVite dev server :5173\nproxies /api"]
-        api["api :8081\nTemporal client only —\nno DB, no cache, no ORM"]
-        worker["worker\npolls task queue 'rewards',\nruns CustomerRewardsWorkflow"]
+        web["web<br/>Vite dev server :5173<br/>proxies /api"]
+        api["api :8081<br/>Temporal client only —<br/>no DB, no cache, no ORM"]
+        worker["worker<br/>polls task queue 'rewards',<br/>runs CustomerRewardsWorkflow"]
         temporal["temporal :7233"]
         temporalui["temporal-ui :8080"]
-        postgres[("Postgres\npersistence:\nEvent History")]
-        es[("Elasticsearch\nvisibility:\nsearch attributes")]
-        seed["seed (one-shot,\ndemo data via the API)"]
+        postgres[("Postgres<br/>persistence:<br/>Event History")]
+        es[("Elasticsearch<br/>visibility:<br/>search attributes")]
+        seed["seed (one-shot,<br/>demo data via the API)"]
     end
 
     browser --> web
@@ -56,8 +56,8 @@ stateDiagram-v2
     Validating --> Failed : payload refused — non-retryable error
     Failed --> [*] : run Failed (the ID may be retried)
 
-    Validating --> Accepting : handlers registered, search attributes upserted
-    Accepting : each accepted addPoints increments earnsThisRun
+    Validating --> Accepting : search attributes upserted, handlers registered
+    Accepting : each successful addPoints increments earnsThisRun
     Accepting --> Draining : earnsThisRun reaches 3, or deactivate committed
     Draining : awaits AllHandlersFinished
 
@@ -130,17 +130,17 @@ reaping because state rolls forward even though history does not.
 ```mermaid
 flowchart LR
     subgraph chain["workflow ada-lovelace (one continue-as-new chain)"]
-        r1["run 1 — enrollment\nclosed, history reaped ✕"]
-        r2["run 2\nclosed, history retained"]
-        r3["run 3\nopen"]
+        r1["run 1 — enrollment<br/>closed, history reaped ✕"]
+        r2["run 2<br/>closed, history retained"]
+        r3["run 3<br/>open"]
         r1 -->|continue-as-new| r2 -->|continue-as-new| r3
     end
 
-    crawl["audit crawl\nGET /api/customers/ada-lovelace/audit"]
+    crawl["audit crawl<br/>GET /api/customers/ada-lovelace/audit"]
     crawl -.->|"1: fetch history of current run"| r3
     crawl -.->|"2: follow previousRunId"| r2
-    crawl -.->|"3: history gone → stop,\ntruncated: true"| r1
+    crawl -.->|"3: history gone → stop,<br/>truncated: true"| r1
 
-    timeline["Timeline: enrolled · points_added ·\npoints_rejected · run_rolled · deactivated\n+ 'showing 3 of 21'"]
+    timeline["Timeline: enrolled · points_added ·<br/>points_rejected · run_rolled · deactivated<br/>+ 'showing 3 of 21'"]
     crawl -->|4: produces| timeline
 ```
