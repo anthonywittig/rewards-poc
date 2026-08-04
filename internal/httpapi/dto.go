@@ -8,11 +8,9 @@ import (
 	"github.com/anthonywittig/rewards-poc/internal/audit"
 )
 
-// EnrollRequest is the body of POST /api/customers. CustomerID is optional;
-// without it the server derives one from the name.
+// EnrollRequest is the body of POST /api/customers.
 type EnrollRequest struct {
-	CustomerID string `json:"customerId"`
-	Name       string `json:"name"`
+	Name string `json:"name"`
 }
 
 // AddPointsRequest is the body of POST /api/customers/{id}/points.

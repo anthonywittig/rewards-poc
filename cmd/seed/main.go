@@ -16,10 +16,12 @@ import (
 	"log"
 	"net/http"
 	"os"
+
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
 )
 
 type customer struct {
-	id, name   string
+	name       string
 	adds       []int
 	deactivate bool
 	why        string
@@ -30,43 +32,43 @@ type customer struct {
 var seedSet = []customer{
 	// --- basic ----------------------------------------------------------------
 	{
-		id: "newbie", name: "Newly Enrolled",
-		why: "enrolled, never earned -- the empty-timeline case",
+		name: "Newly Enrolled",
+		why:  "enrolled, never earned -- the empty-timeline case",
 	},
 	{
-		id: "departed", name: "Gone Away",
+		name: "Gone Away",
 		adds: []int{100, 100, 100, 10}, deactivate: true,
 		why: "deactivated: workflow completed, balance frozen for good",
 	},
-	{id: "katherine", name: "Katherine Johnson", adds: []int{95}, why: "basic"},
-	{id: "alan", name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},
-	{id: "margaret", name: "Margaret Hamilton", adds: []int{200, 150}, why: "basic"},
-	{id: "donald", name: "Donald Knuth", adds: []int{400, 50}, why: "basic"},
+	{name: "Katherine Johnson", adds: []int{95}, why: "basic"},
+	{name: "Alan Turing", adds: []int{300, 180}, why: "basic, near gold"},
+	{name: "Margaret Hamilton", adds: []int{200, 150}, why: "basic"},
+	{name: "Donald Knuth", adds: []int{400, 50}, why: "basic"},
 
 	// --- gold -----------------------------------------------------------------
 	{
-		id: "ada", name: "Ada Lovelace",
+		name: "Ada Lovelace",
 		adds: []int{120, 200, 180, 60, 40, 20, 20},
 		why:  "gold, a few runs in -- shows continue-as-new",
 	},
-	{id: "barbara", name: "Barbara Liskov", adds: []int{400, 320}, why: "gold"},
-	{id: "dennis", name: "Dennis Ritchie", adds: []int{500}, why: "gold"},
-	{id: "ken", name: "Ken Thompson", adds: []int{300, 300}, why: "gold"},
-	{id: "bjarne", name: "Bjarne Stroustrup", adds: []int{700}, why: "gold"},
-	{id: "guido", name: "Guido van Rossum", adds: []int{500, 400}, why: "gold"},
+	{name: "Barbara Liskov", adds: []int{400, 320}, why: "gold"},
+	{name: "Dennis Ritchie", adds: []int{500}, why: "gold"},
+	{name: "Ken Thompson", adds: []int{300, 300}, why: "gold"},
+	{name: "Bjarne Stroustrup", adds: []int{700}, why: "gold"},
+	{name: "Guido van Rossum", adds: []int{500, 400}, why: "gold"},
 
 	// --- platinum -------------------------------------------------------------
 	{
-		id: "grace", name: "Grace Hopper",
+		name: "Grace Hopper",
 		adds: []int{500, 500, 250, 250},
 		why:  "platinum: top tier, nextTierAt is 0",
 	},
-	{id: "edsger", name: "Edsger Dijkstra", adds: []int{600, 600}, why: "platinum"},
-	{id: "john", name: "John von Neumann", adds: []int{1000}, why: "platinum"},
-	{id: "claude", name: "Claude Shannon", adds: []int{800, 800}, why: "platinum"},
-	{id: "linus", name: "Linus Torvalds", adds: []int{1000, 500}, why: "platinum"},
+	{name: "Edsger Dijkstra", adds: []int{600, 600}, why: "platinum"},
+	{name: "John von Neumann", adds: []int{1000}, why: "platinum"},
+	{name: "Claude Shannon", adds: []int{800, 800}, why: "platinum"},
+	{name: "Linus Torvalds", adds: []int{1000, 500}, why: "platinum"},
 	{
-		id: "capped", name: "Max Capacity",
+		name: "Max Capacity",
 		adds: []int{1000, 1000, 1000, 1000, 960},
 		why:  "at 4960 of the 5000 cap, so any add over 40 is a handler rejection",
 	},
@@ -83,16 +85,17 @@ func main() {
 
 	created, existing, failed := 0, 0, 0
 	for _, c := range seedSet {
-		switch madeNew, err := ensure(base, c); {
+		id := rewards.CustomerIDForName(c.name)
+		switch madeNew, err := ensure(base, id, c); {
 		case err != nil:
 			failed++
-			log.Printf("  %-10s FAILED: %v", c.id, err)
+			log.Printf("  %-18s FAILED: %v", id, err)
 		case madeNew:
 			created++
-			fmt.Printf("  %-10s created   %s\n", c.id, c.why)
+			fmt.Printf("  %-18s created   %s\n", id, c.why)
 		default:
 			existing++
-			fmt.Printf("  %-10s already exists\n", c.id)
+			fmt.Printf("  %-18s already exists\n", id)
 		}
 	}
 
@@ -102,18 +105,18 @@ func main() {
 	}
 
 	fmt.Printf("\n  %s/api/customers\n", env("API_PUBLIC_BASE", base))
-	fmt.Printf("  %s/api/customers/ada/audit\n", env("API_PUBLIC_BASE", base))
+	fmt.Printf("  %s/api/customers/ada-lovelace/audit\n", env("API_PUBLIC_BASE", base))
 }
 
 // ensure creates the customer if absent. Reports whether it created one.
-func ensure(base string, c customer) (bool, error) {
-	if err := exists(base, c.id); err == nil {
+func ensure(base, id string, c customer) (bool, error) {
+	if err := exists(base, id); err == nil {
 		return false, nil
 	} else if !isNotFound(err) {
 		return false, err
 	}
 
-	if err := create(base, c); err != nil {
+	if err := create(base, id, c); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -130,9 +133,9 @@ func isNotFound(err error) bool {
 	return errors.As(err, &he) && he.status == http.StatusNotFound
 }
 
-func create(base string, c customer) error {
+func create(base, id string, c customer) error {
 	err := do(http.MethodPost, base+"/api/customers", map[string]string{
-		"customerId": c.id, "name": c.name,
+		"name": c.name,
 	}, nil)
 	if err != nil {
 		return err
@@ -143,15 +146,15 @@ func create(base string, c customer) error {
 			"amount": amount,
 			"reason": fmt.Sprintf("seed purchase %d", i+1),
 			// Idempotency key, deterministic so a re-run is traceable.
-			"requestId": fmt.Sprintf("seed-%s-%03d", c.id, i+1),
+			"requestId": fmt.Sprintf("seed-%s-%03d", id, i+1),
 		}
-		if err := do(http.MethodPost, base+"/api/customers/"+c.id+"/points", body, nil); err != nil {
+		if err := do(http.MethodPost, base+"/api/customers/"+id+"/points", body, nil); err != nil {
 			return fmt.Errorf("add %d: %w", i+1, err)
 		}
 	}
 
 	if c.deactivate {
-		return do(http.MethodDelete, base+"/api/customers/"+c.id, nil, nil)
+		return do(http.MethodDelete, base+"/api/customers/"+id, nil, nil)
 	}
 	return nil
 }
