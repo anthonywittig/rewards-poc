@@ -15,7 +15,8 @@ and its Event History:
   [search attributes](internal/rewards/searchattr.go),
 - the audit log is reconstructed by [crawling Event History](internal/audit/),
 - the workflow continues-as-new to keep history bounded (after every 3
-  updates here — unrealistically often, so the rollover is easy to watch).
+  successful point-adds here — unrealistically often, so the rollover is easy
+  to watch).
 
 The API holds a Temporal client and nothing else — no database, no cache, no
 ORM.
@@ -75,6 +76,12 @@ curl -XPOST localhost:8081/api/customers/ada-lovelace/points -d '{"amount":500,"
 curl localhost:8081/api/customers/ada-lovelace/audit
 curl -XDELETE localhost:8081/api/customers/ada-lovelace
 ```
+
+The points body also takes an optional `requestId` — the caller's idempotency
+key, which becomes the Temporal Update ID. Dedup is scoped to a single run, so
+a retry that straddles a continue-as-new can still double-apply — tolerable
+for a POC; a production system would carry recent request IDs forward in
+workflow state to de-dupe across the roll.
 
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
@@ -140,7 +147,9 @@ balance frozen in its final state. The detail page, list, and audit log keep
 answering for a departed customer (Query and Describe work on closed runs
 until retention reaps them), and the enroll endpoint refuses to reuse the ID —
 `ALLOW_DUPLICATE_FAILED_ONLY` retires a completed execution's ID while still
-letting a *failed* enrollment be retried.
+letting a *failed* enrollment be retried. The retirement lasts as long as the
+completed run's history does: once retention reaps it, the ID is enrollable
+again — an artifact of the 1-hour demo retention.
 
 **No Activities, deliberately.** Nothing in the rewards program touches the
 outside world — the workflow is a pure state machine and Temporal is its
