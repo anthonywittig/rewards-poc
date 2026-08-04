@@ -35,7 +35,9 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		return err
 	}
 
-	earnsThisRun := 0
+	// Handled addPoints Updates this run, cap rejections included — both write
+	// history, and the roll below is what keeps history bounded.
+	addsThisRun := 0
 
 	if state.EnrolledAt.IsZero() {
 		state.EnrolledAt = workflow.Now(ctx)
@@ -58,6 +60,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
 			if state.Points+req.Amount > rewards.PointsCap {
+				addsThisRun++
 				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					fmt.Sprintf("add of %d would exceed the cap of %d (balance is %d)",
 						req.Amount, rewards.PointsCap, state.Points),
@@ -68,7 +71,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
-			earnsThisRun++
+			addsThisRun++
 
 			if err := upsertSearchAttributes(ctx, &state); err != nil {
 				logger.Error("search attribute upsert failed after point add",
@@ -136,10 +139,15 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		"points", state.Points,
 		"active", state.Active)
 
-	// Continue-as-new after a fixed number of adds, so history per run stays
-	// bounded. Production should roll on GetContinueAsNewSuggested() instead.
+	// Continue-as-new after a fixed number of handled adds — a demo threshold,
+	// low enough to watch — or as soon as the server says history is getting
+	// large, which is the trigger production would rely on alone. Without the
+	// suggestion check, anything that wrote events outside the counter could
+	// walk a run into the 50K-event/50MB history limit and get it terminated.
 	if err := workflow.Await(ctx, func() bool {
-		return earnsThisRun >= rewards.EarnsPerRun || !state.Active
+		return addsThisRun >= rewards.AddsPerRun ||
+			workflow.GetInfo(ctx).GetContinueAsNewSuggested() ||
+			!state.Active
 	}); err != nil {
 		return err
 	}
@@ -167,7 +175,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	logger.Info("continuing as new",
 		"customerId", state.CustomerID,
 		"runNumber", state.RunNumber,
-		"earnsThisRun", earnsThisRun,
+		"addsThisRun", addsThisRun,
 		"points", state.Points)
 
 	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)

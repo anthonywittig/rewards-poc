@@ -131,7 +131,7 @@ func TestFromEvents_EnrollmentRun(t *testing.T) {
 	requireKinds(t, run.Entries,
 		audit.KindEnrolled, audit.KindPointsAdded, audit.KindPointsAdded, audit.KindPointsAdded)
 	if run.EarnEvents != 3 {
-		t.Errorf("EarnEvents = %d, want 3 (EarnsPerRun)", run.EarnEvents)
+		t.Errorf("EarnEvents = %d, want 3 (AddsPerRun, all successful here)", run.EarnEvents)
 	}
 
 	// The request half of the row comes from the accepted event, the outcome

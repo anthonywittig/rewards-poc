@@ -101,8 +101,13 @@ curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 ```
 
 Three is a demo number chosen to be watchable
-([`EarnsPerRun`](internal/rewards/state.go)); production should ask
-`workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
+([`AddsPerRun`](internal/rewards/state.go)), and it counts *handled* adds:
+a cap rejection writes Update events to history just like a successful add,
+so it advances the roll too — otherwise a customer parked at the cap could
+grow one run's history until the server's 50K-event/50MB limit terminated
+the workflow. The run also rolls whenever
+`workflow.GetInfo(ctx).GetContinueAsNewSuggested()` fires, which is the
+trigger production would rely on alone.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
 history; `GET /api/customers/<id>/audit` walks back through the run chain

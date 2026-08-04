@@ -57,8 +57,8 @@ stateDiagram-v2
     Failed --> [*] : run Failed (the ID may be retried)
 
     Validating --> Accepting : handlers registered, search attributes upserted
-    Accepting : each accepted addPoints increments earnsThisRun
-    Accepting --> Draining : earnsThisRun reaches 3, or deactivate committed
+    Accepting : each handled addPoints (added or cap-rejected) increments addsThisRun
+    Accepting --> Draining : addsThisRun reaches 3, continue-as-new suggested, or deactivate committed
     Draining : awaits AllHandlersFinished
 
     Draining --> Completed : Active cleared (checked after the drain)
@@ -68,8 +68,11 @@ stateDiagram-v2
     Rolling --> [*] : continue-as-new — runNumber+1, state carried forward
 ```
 
-Three earns per run is [`EarnsPerRun`](../internal/rewards/state.go), a demo
-number; production would await `GetContinueAsNewSuggested()`.
+Three adds per run is [`AddsPerRun`](../internal/rewards/state.go), a demo
+number, and cap rejections count toward it — they write history too, and a
+capped customer must still roll. The run also rolls when the server's
+`GetContinueAsNewSuggested()` fires, which is what production would rely on
+alone.
 
 ## The addPoints Update
 

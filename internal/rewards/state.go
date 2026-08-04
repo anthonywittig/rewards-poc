@@ -14,13 +14,17 @@ const (
 	PointsCap       = 5000
 )
 
-// EarnsPerRun is how many successful adds a run handles before continuing as
-// new. Artificially low so the rollover is easy to watch; production would ask
-// workflow.GetInfo(ctx).GetContinueAsNewSuggested() instead.
+// AddsPerRun is how many handled addPoints Updates a run takes before
+// continuing as new. Handled, not successful: a cap rejection runs the handler
+// and writes Update events to history just like an add that lands, so both
+// count — otherwise a customer parked at the cap would grow one run's history
+// forever without ever rolling it. Artificially low so the rollover is easy to
+// watch; the workflow also rolls whenever the server suggests it
+// (GetContinueAsNewSuggested), the signal production would rely on alone.
 //
 // Changing this breaks running workflows: replay of a history recorded under a
 // different value produces different commands. In dev, `make destroy && make up`.
-const EarnsPerRun = 3
+const AddsPerRun = 3
 
 // CustomerState is the workflow argument. Everything here survives
 // continue-as-new; history is reaped after retention, state is not.

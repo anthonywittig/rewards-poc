@@ -32,8 +32,8 @@ func main() {
 	w := worker.New(c, rewards.TaskQueue, worker.Options{})
 	w.RegisterWorkflow(workflows.CustomerRewardsWorkflow)
 
-	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new every %d adds",
-		rewards.TaskQueue, address, namespace, rewards.EarnsPerRun)
+	log.Printf("worker polling task queue %q on %s (namespace %q), continue-as-new after %d handled adds or when suggested",
+		rewards.TaskQueue, address, namespace, rewards.AddsPerRun)
 
 	if err := w.Run(worker.InterruptCh()); err != nil {
 		log.Fatalf("worker stopped: %v", err)
