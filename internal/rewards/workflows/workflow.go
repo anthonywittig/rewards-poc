@@ -115,7 +115,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			// a failed Update really did change nothing -- and completion is
 			// not reversible.
 			next := state
-			next.Deactivated = true
+			next.Active = false
 			if err := upsertSearchAttributes(ctx, &next); err != nil {
 				return fmt.Errorf("upsert search attributes: %w", err)
 			}
@@ -134,12 +134,12 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		"customerId", state.CustomerID,
 		"runNumber", state.RunNumber,
 		"points", state.Points,
-		"deactivated", state.Deactivated)
+		"active", state.Active)
 
 	// Continue-as-new after a fixed number of adds, so history per run stays
 	// bounded. Production should roll on GetContinueAsNewSuggested() instead.
 	if err := workflow.Await(ctx, func() bool {
-		return earnsThisRun >= rewards.EarnsPerRun || state.Deactivated
+		return earnsThisRun >= rewards.EarnsPerRun || !state.Active
 	}); err != nil {
 		return err
 	}
@@ -154,7 +154,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// Checked after the drain, so a deactivate that lands while a due roll
 	// waits for handlers still ends the workflow rather than rolling it into a
 	// run nothing can ever wake.
-	if state.Deactivated {
+	if !state.Active {
 		logger.Info("customer deactivated; completing the workflow",
 			"customerId", state.CustomerID,
 			"runNumber", state.RunNumber,
@@ -180,7 +180,7 @@ func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) 
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
 		rewards.KeyRewardsPoints.ValueSet(int64(state.Points)),
 		rewards.KeyEnrolledAt.ValueSet(state.EnrolledAt),
-		rewards.KeyActive.ValueSet(!state.Deactivated),
+		rewards.KeyActive.ValueSet(state.Active),
 		rewards.KeyRunNumber.ValueSet(int64(state.RunNumber)),
 	)
 }

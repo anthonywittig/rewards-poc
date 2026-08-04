@@ -45,10 +45,10 @@ browser talks to both.
 long-lived Entity Workflow per customer, in which each *run* is one link of a
 continue-as-new chain. Two details worth reading off the picture: enrollment
 validation failing *fails the run* (which is what lets
-`ALLOW_DUPLICATE_FAILED_ONLY` allow a retry), and the deactivated flag is
-checked *after* the handler drain, so a deactivate landing while a due roll
-waits for handlers still completes the workflow instead of rolling into a run
-nothing can ever wake.
+`ALLOW_DUPLICATE_FAILED_ONLY` allow a retry), and `Active` is checked *after*
+the handler drain, so a deactivate landing while a due roll waits for handlers
+still completes the workflow instead of rolling into a run nothing can ever
+wake.
 
 ```mermaid
 stateDiagram-v2
@@ -61,10 +61,10 @@ stateDiagram-v2
     Accepting --> Draining : earnsThisRun reaches 3, or deactivate committed
     Draining : awaits AllHandlersFinished
 
-    Draining --> Completed : deactivated (checked after the drain)
+    Draining --> Completed : Active cleared (checked after the drain)
     Completed --> [*] : run Completed — permanent, balance frozen
 
-    Draining --> Rolling : not deactivated
+    Draining --> Rolling : still Active
     Rolling --> [*] : continue-as-new — runNumber+1, state carried forward
 ```
 

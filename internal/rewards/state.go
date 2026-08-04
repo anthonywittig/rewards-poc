@@ -35,11 +35,10 @@ type CustomerState struct {
 	// Membership lifecycle
 	// Set on the first run, carried forward untouched.
 	EnrolledAt time.Time `json:"enrolledAt"`
-	// Set when the customer leaves, and never cleared: deactivation is
-	// one-way, and the run completes once the flag is set. Not an Active bool:
-	// the zero value must mean active so older continue-as-new payloads keep
-	// decoding correctly.
-	Deactivated bool `json:"deactivated,omitempty"`
+	// True while the customer is enrolled. Cleared once by deactivate; the
+	// run then completes instead of continuing as new. Deactivation is
+	// one-way — Active is never set back to true.
+	Active bool `json:"active"`
 
 	// Execution bookkeeping
 	// Count of successful adds, ever. Not derivable from history once it is

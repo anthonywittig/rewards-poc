@@ -99,6 +99,7 @@ func (s *Server) enroll(w http.ResponseWriter, r *http.Request) error {
 	}, workflows.CustomerRewardsWorkflow, rewards.CustomerState{
 		CustomerID: req.CustomerID,
 		Name:       req.Name,
+		Active:     true,
 		RunNumber:  1,
 	})
 	if err == nil {
@@ -386,8 +387,7 @@ func (s *Server) deactivate(w http.ResponseWriter, r *http.Request) error {
 	return nil
 }
 
-// searchAttrValues is a customer's search attributes, decoded. Grouped like
-// CustomerListItem (Active stands in for status).
+// searchAttrValues is a customer's search attributes, decoded.
 type searchAttrValues struct {
 	// Identity
 	CustomerID string

@@ -69,7 +69,7 @@ func StatusOf(state *CustomerState) CustomerStatus {
 		PrevTierAt:         PrevTierAt(state.Points),
 		NextTierAt:         nextAt,
 		EnrolledAt:         state.EnrolledAt,
-		Active:             !state.Deactivated,
+		Active:             state.Active,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
 		RunNumber:          state.RunNumber,
 	}
