@@ -148,10 +148,6 @@ on promotion, and that is what an Activity is for.
 - **Visibility is asynchronous.** A new or updated workflow appears in the
   list after ~200–300 ms, never instantly. Read-after-write goes through
   Query or Describe instead.
-- **You cannot sort a workflow list.** Temporal rejects `ORDER BY`, so the
-  list endpoint returns at most five rows, reports how many matched, and
-  pushes you to filter. Leaderboards are where a separate read model would
-  start earning its keep.
 
 ## Diagrams
 
