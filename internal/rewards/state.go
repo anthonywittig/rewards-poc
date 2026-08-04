@@ -22,6 +22,19 @@ const (
 // different value produces different commands. In dev, `make destroy && make up`.
 const EarnsPerRun = 3
 
+// RecentRequestsCap bounds the dedup ledger carried across continue-as-new:
+// two runs' worth of adds, enough to cover a retry that straddles one roll.
+const RecentRequestsCap = 2 * EarnsPerRun
+
+// AppliedRequest is one entry in the dedup ledger: an applied add and the
+// result it returned, so a duplicate can be answered with the original
+// result instead of applied again.
+type AppliedRequest struct {
+	RequestID string `json:"requestId"`
+	Balance   int    `json:"balance"`
+	Level     string `json:"level"`
+}
+
 // CustomerState is the workflow argument. Everything here survives
 // continue-as-new; history is reaped after retention, state is not.
 type CustomerState struct {
@@ -47,4 +60,34 @@ type CustomerState struct {
 	// 1-based position of the current run in the continue-as-new chain: the
 	// enrollment run is 1, and the counter increments exactly once per roll.
 	RunNumber int `json:"runNumber"`
+
+	// Dedup ledger
+	// The most recent applied adds, oldest first, capped at RecentRequestsCap.
+	// The server already dedups Update IDs within a run; carrying these across
+	// continue-as-new closes the gap where a retry straddles a roll.
+	RecentRequests []AppliedRequest `json:"recentRequests,omitempty"`
+}
+
+// PriorResult looks up an already-applied add by its Update ID, returning the
+// result the original delivery got.
+func (s *CustomerState) PriorResult(requestID string) (AddPointsResult, bool) {
+	for _, r := range s.RecentRequests {
+		if r.RequestID == requestID {
+			return AddPointsResult{Balance: r.Balance, Level: r.Level}, true
+		}
+	}
+	return AddPointsResult{}, false
+}
+
+// RecordApplied appends an applied add to the dedup ledger, evicting the
+// oldest entries beyond RecentRequestsCap.
+func (s *CustomerState) RecordApplied(requestID string, res AddPointsResult) {
+	s.RecentRequests = append(s.RecentRequests, AppliedRequest{
+		RequestID: requestID,
+		Balance:   res.Balance,
+		Level:     res.Level,
+	})
+	if n := len(s.RecentRequests) - RecentRequestsCap; n > 0 {
+		s.RecentRequests = s.RecentRequests[n:]
+	}
 }

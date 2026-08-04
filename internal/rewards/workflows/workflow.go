@@ -57,6 +57,16 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// accumulated state (the cap) belong in the handler.
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
+			// The server dedups Update IDs within a run; the ledger catches a
+			// retry that lands after a continue-as-new erased that record.
+			updateID := workflow.GetCurrentUpdateInfo(ctx).ID
+			if prior, ok := state.PriorResult(updateID); ok {
+				logger.Info("duplicate addPoints request; returning prior result",
+					"customerId", state.CustomerID,
+					"requestId", updateID)
+				return prior, nil
+			}
+
 			if state.Points+req.Amount > rewards.PointsCap {
 				return rewards.AddPointsResult{}, temporal.NewNonRetryableApplicationError(
 					fmt.Sprintf("add of %d would exceed the cap of %d (balance is %d)",
@@ -82,10 +92,12 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 				"balance", state.Points,
 				"level", rewards.Level(state.Points))
 
-			return rewards.AddPointsResult{
+			result := rewards.AddPointsResult{
 				Balance: state.Points,
 				Level:   rewards.Level(state.Points),
-			}, nil
+			}
+			state.RecordApplied(updateID, result)
+			return result, nil
 		},
 		workflow.UpdateHandlerOptions{
 			Validator: func(ctx workflow.Context, req rewards.AddPointsRequest) error {

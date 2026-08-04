@@ -18,8 +18,10 @@ type EnrollRequest struct {
 // AddPointsRequest is the body of POST /api/customers/{id}/points.
 //
 // RequestID is the caller's idempotency key and becomes the Temporal Update
-// ID. Dedup is scoped to a single run, so a retry straddling a
-// continue-as-new can still double-apply -- adequate for points, not money.
+// ID. The server dedups it within a run, and the workflow carries the last
+// rewards.RecentRequestsCap applied requests across continue-as-new, so a
+// retry straddling a roll returns the original result instead of
+// double-applying. Older duplicates than that window can still double-apply.
 type AddPointsRequest struct {
 	Amount    int    `json:"amount"`
 	Reason    string `json:"reason"`
