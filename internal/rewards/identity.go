@@ -12,12 +12,9 @@ import "strings"
 // one place.
 func WorkflowID(customerID string) string { return customerID }
 
-// idSlugLimit keeps the readable half from dominating the workflow ID.
-const idSlugLimit = 32
-
 // CustomerIDForName derives a customer ID from a name: lowercase letters and
 // digits, runs of anything else collapsed to a single hyphen, truncated to
-// idSlugLimit. "Ada Lovelace" becomes "ada-lovelace", which is also the
+// 32 runes. "Ada Lovelace" becomes "ada-lovelace", which is also the
 // workflow ID -- readable in the Temporal UI.
 //
 // Returns "" when the name has nothing to build an ID from.
@@ -34,7 +31,7 @@ func CustomerIDForName(name string) string {
 			pendingHyphen = false
 		}
 		b.WriteRune(r)
-		if b.Len() >= idSlugLimit {
+		if b.Len() >= 32 {
 			break
 		}
 	}

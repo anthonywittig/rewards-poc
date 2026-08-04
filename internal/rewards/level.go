@@ -2,20 +2,6 @@ package rewards
 
 import "slices"
 
-// Tier thresholds. Tiers are derived from points, never stored.
-const (
-	BasicThreshold    = 0
-	GoldThreshold     = 500
-	PlatinumThreshold = 1000
-)
-
-// Tier names, as they appear in search attributes and JSON.
-const (
-	LevelBasic    = "basic"
-	LevelGold     = "gold"
-	LevelPlatinum = "platinum"
-)
-
 // Tier is one rung of the ladder. It travels to the client in the detail
 // response so the UI can draw a progress bar without its own copy of the
 // thresholds.
@@ -24,12 +10,13 @@ type Tier struct {
 	MinPoints int    `json:"minPoints"`
 }
 
-// tiers is the ladder, ordered by MinPoints ascending. LevelBasic is the
-// bottom rung: its MinPoints of 0 means every balance stands on some rung.
+// tiers is the ladder, ordered by MinPoints ascending. The bottom rung starts
+// at 0 so every balance stands on some rung. Names land in search attributes
+// and JSON as written here.
 var tiers = []Tier{
-	{Level: LevelBasic, MinPoints: BasicThreshold},
-	{Level: LevelGold, MinPoints: GoldThreshold},
-	{Level: LevelPlatinum, MinPoints: PlatinumThreshold},
+	{Level: "basic", MinPoints: 0},
+	{Level: "gold", MinPoints: 500},
+	{Level: "platinum", MinPoints: 1000},
 }
 
 // Ladder returns a copy of the rungs, ordered by MinPoints ascending.
