@@ -17,7 +17,9 @@ type EnrollRequest struct {
 //
 // RequestID is the caller's idempotency key and becomes the Temporal Update
 // ID. Dedup is scoped to a single run, so a retry straddling a
-// continue-as-new can still double-apply -- adequate for points, not money.
+// continue-as-new can still double-apply -- tolerable for a POC awarding
+// points; a system moving money would carry recent request IDs forward in
+// workflow state to de-dupe across the roll.
 type AddPointsRequest struct {
 	Amount    int    `json:"amount"`
 	Reason    string `json:"reason"`
