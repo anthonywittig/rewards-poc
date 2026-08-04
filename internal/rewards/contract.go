@@ -38,23 +38,24 @@ type AddPointsResult struct {
 }
 
 // CustomerStatus is the getStatus Query result.
-//
-// PrevTierAt and NextTierAt bracket the current segment of the tier climb --
-// the rung the customer is standing on (0 for basic) and the one they are
-// climbing to (0 at the top). Derived here from the same ladder as Level, so
-// the UI can draw progress without holding a copy of the thresholds.
 type CustomerStatus struct {
-	CustomerID string    `json:"customerId"`
-	Name       string    `json:"name"`
-	Points     int       `json:"points"`
-	Level      string    `json:"level"`
-	PrevTierAt int       `json:"prevTierAt"`
-	NextTierAt int       `json:"nextTierAt"`
-	EnrolledAt time.Time `json:"enrolledAt"`
+	// Identity
+	CustomerID string `json:"customerId"`
+	Name       string `json:"name"`
 
-	LifetimeEarnEvents int  `json:"lifetimeEarnEvents"`
-	RunNumber          int  `json:"runNumber"`
-	Active             bool `json:"active"`
+	// Balance and tier
+	Points     int    `json:"points"`
+	Level      string `json:"level"`
+	PrevTierAt int    `json:"prevTierAt"`
+	NextTierAt int    `json:"nextTierAt"`
+
+	// Membership lifecycle
+	EnrolledAt time.Time `json:"enrolledAt"`
+	Active     bool      `json:"active"`
+
+	// Execution bookkeeping
+	LifetimeEarnEvents int `json:"lifetimeEarnEvents"`
+	RunNumber          int `json:"runNumber"`
 }
 
 // StatusOf projects state into the Query result.
@@ -68,8 +69,8 @@ func StatusOf(state *CustomerState) CustomerStatus {
 		PrevTierAt:         PrevTierAt(state.Points),
 		NextTierAt:         nextAt,
 		EnrolledAt:         state.EnrolledAt,
+		Active:             state.Active,
 		LifetimeEarnEvents: state.LifetimeEarnEvents,
 		RunNumber:          state.RunNumber,
-		Active:             !state.Deactivated,
 	}
 }

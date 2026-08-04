@@ -21,13 +21,17 @@ log() { printf '  %s\n' "$*"; }
 # Search attributes for the customer list page and the Temporal UI.
 # Keep in sync with internal/rewards/searchattr.go.
 declare -A SEARCH_ATTRS=(
+  # Identity
   [CustomerId]=Keyword
   [CustomerName]=Text
+  # Balance
   [RewardsLevel]=Keyword
   [RewardsPoints]=Int
+  # Membership
   [RewardsEnrolledAt]=Datetime
-  [RewardsRunNumber]=Int
   [RewardsActive]=Bool
+  # Execution
+  [RewardsRunNumber]=Int
 )
 
 echo "==> Namespace '${NAMESPACE}' (retention ${RETENTION})"
