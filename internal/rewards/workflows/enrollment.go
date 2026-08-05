@@ -48,6 +48,13 @@ func validateEnrollment(workflowID string, state *rewards.CustomerState) error {
 			rewards.ErrTypeInvalidEnrollment, nil)
 	}
 
+	if len(state.RecentRequestIDs) > rewards.RecentRequestIDCap {
+		return temporal.NewNonRetryableApplicationError(
+			fmt.Sprintf("recentRequestIds has %d entries, more than the cap of %d",
+				len(state.RecentRequestIDs), rewards.RecentRequestIDCap),
+			rewards.ErrTypeInvalidEnrollment, nil)
+	}
+
 	if state.LifetimeEarnEvents == 0 && state.Points > 0 {
 		return temporal.NewNonRetryableApplicationError(
 			fmt.Sprintf("points is %d but lifetimeEarnEvents is 0", state.Points),

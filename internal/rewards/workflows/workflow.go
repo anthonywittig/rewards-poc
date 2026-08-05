@@ -54,7 +54,9 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// The validator/handler split: a validator rejection writes nothing to
 	// Event History, a handler rejection is recorded. Facts about the request
 	// (amount, reason) belong in the validator; facts about the customer's
-	// accumulated state (the cap) belong in the handler.
+	// accumulated state (the cap) belong in the handler. The duplicate check
+	// is the deliberate exception — it reads state in the validator precisely
+	// so that a replayed request leaves no trace in the new run's history.
 	err := workflow.SetUpdateHandlerWithOptions(ctx, rewards.UpdateAddPoints,
 		func(ctx workflow.Context, req rewards.AddPointsRequest) (rewards.AddPointsResult, error) {
 			if state.Points+req.Amount > rewards.PointsCap {
@@ -69,6 +71,9 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			state.Points += req.Amount
 			state.LifetimeEarnEvents++
 			earnsThisRun++
+			// Recorded only on success: a failed add (say, over the cap)
+			// stays retryable under the same key.
+			state.RecordRequestID(req.RequestID)
 
 			if err := upsertSearchAttributes(ctx, &state); err != nil {
 				logger.Error("search attribute upsert failed after point add",
@@ -89,6 +94,18 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		},
 		workflow.UpdateHandlerOptions{
 			Validator: func(ctx workflow.Context, req rewards.AddPointsRequest) error {
+				// A retry of an already-applied request. Within a run the
+				// server's Update-ID dedup answers it before we ever see it;
+				// this catches the retry that straddled a continue-as-new.
+				// Typed so the API can answer it as "already applied" rather
+				// than as a business rejection.
+				if state.SeenRequestID(req.RequestID) {
+					return temporal.NewNonRetryableApplicationError(
+						fmt.Sprintf("request %q was already applied", req.RequestID),
+						rewards.ErrTypeDuplicateRequest,
+						nil,
+					)
+				}
 				if req.Amount <= 0 {
 					return fmt.Errorf("amount must be positive, got %d", req.Amount)
 				}

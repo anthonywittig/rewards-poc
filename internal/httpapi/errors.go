@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/anthonywittig/rewards-poc/internal/rewards"
+
 	"go.temporal.io/api/serviceerror"
 )
 
@@ -57,6 +59,14 @@ func writeJSON(w http.ResponseWriter, log *slog.Logger, status int, body any) {
 // mapQueryError turns a failed QueryWorkflow or Describe into an HTTP status.
 func mapQueryError(err error) error {
 	return classifyCommon(err)
+}
+
+// isDuplicateRequest reports whether the workflow's validator refused the
+// Update as a replay of an already-applied request ID — the one rejection
+// addPoints answers as a success rather than an error.
+func isDuplicateRequest(err error) bool {
+	appErr, ok := isBusinessRejection(err)
+	return ok && appErr.Type() == rewards.ErrTypeDuplicateRequest
 }
 
 // mapUpdateError turns a failed UpdateWorkflow into an HTTP status. Business
