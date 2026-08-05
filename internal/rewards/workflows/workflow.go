@@ -41,9 +41,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 		state.EnrolledAt = workflow.Now(ctx)
 	}
 
-	if err := upsertSearchAttributes(ctx, &state); err != nil {
-		return fmt.Errorf("upsert search attributes: %w", err)
-	}
+	upsertSearchAttributes(ctx, &state)
 
 	if err := workflow.SetQueryHandler(ctx, rewards.QueryGetStatus, func() (rewards.CustomerStatus, error) {
 		return rewards.StatusOf(&state), nil
@@ -75,10 +73,7 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 			// stays retryable under the same key.
 			state.RecordRequestID(req.RequestID)
 
-			if err := upsertSearchAttributes(ctx, &state); err != nil {
-				logger.Error("search attribute upsert failed after point add",
-					"customerId", state.CustomerID, "error", err)
-			}
+			upsertSearchAttributes(ctx, &state)
 
 			logger.Info("points added",
 				"customerId", state.CustomerID,
@@ -128,15 +123,8 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	// also awaiting it, and completes the run once every handler has drained.
 	if err := workflow.SetUpdateHandler(ctx, rewards.UpdateDeactivate,
 		func(ctx workflow.Context) error {
-			// Staged on a copy and committed only once the upsert is issued, so
-			// a failed Update really did change nothing -- and completion is
-			// not reversible.
-			next := state
-			next.Active = false
-			if err := upsertSearchAttributes(ctx, &next); err != nil {
-				return fmt.Errorf("upsert search attributes: %w", err)
-			}
-			state = next
+			state.Active = false
+			upsertSearchAttributes(ctx, &state)
 
 			logger.Info("customer deactivated",
 				"customerId", state.CustomerID,
@@ -190,8 +178,14 @@ func CustomerRewardsWorkflow(ctx workflow.Context, state rewards.CustomerState) 
 	return workflow.NewContinueAsNewError(ctx, CustomerRewardsWorkflow, state)
 }
 
-func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) error {
-	return workflow.UpsertTypedSearchAttributes(ctx,
+// upsertSearchAttributes stages the upsert command that ships with the current
+// workflow task. The only reachable errors are local programming bugs (an
+// unserializable value or a reserved key); server-side rejection surfaces
+// later as a workflow task failure, never here. So a bug panics -- failing the
+// workflow task, which blocks the run until a fixed worker deploys -- rather
+// than failing the entity workflow and ending the customer's record for good.
+func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) {
+	err := workflow.UpsertTypedSearchAttributes(ctx,
 		rewards.KeyCustomerID.ValueSet(state.CustomerID),
 		rewards.KeyCustomerName.ValueSet(state.Name),
 		rewards.KeyRewardsLevel.ValueSet(rewards.Level(state.Points)),
@@ -200,4 +194,7 @@ func upsertSearchAttributes(ctx workflow.Context, state *rewards.CustomerState) 
 		rewards.KeyActive.ValueSet(state.Active),
 		rewards.KeyRunNumber.ValueSet(int64(state.RunNumber)),
 	)
+	if err != nil {
+		panic(fmt.Errorf("upsert search attributes: %w", err))
+	}
 }
