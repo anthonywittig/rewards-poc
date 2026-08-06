@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -308,15 +309,43 @@ func (s *Server) addPoints(w http.ResponseWriter, r *http.Request) error {
 		WorkflowID: wfID,
 		UpdateName: rewards.UpdateAddPoints,
 		UpdateID:   req.RequestID,
-		Args:       []any{rewards.AddPointsRequest{Amount: req.Amount, Reason: req.Reason}},
+		Args: []any{rewards.AddPointsRequest{
+			Amount:    req.Amount,
+			Reason:    req.Reason,
+			RequestID: req.RequestID,
+		}},
 	}, &res)
 	if err != nil {
+		if isDuplicateRequest(err) {
+			return s.respondAlreadyApplied(r.Context(), w, wfID)
+		}
 		return mapUpdateError(err)
 	}
 
 	writeJSON(w, s.log, http.StatusOK, AddPointsResponse{
 		Balance: res.Balance,
 		Level:   res.Level,
+	})
+	return nil
+}
+
+// respondAlreadyApplied answers a deduped retry — one that straddled a
+// continue-as-new — the same way the server's own per-run dedup answers one
+// that did not: as a success. The original result is gone (only its ID rode
+// the roll), so the current balance is the closest honest answer; a system
+// needing exact replay would carry (id, result) pairs instead of bare IDs.
+func (s *Server) respondAlreadyApplied(ctx context.Context, w http.ResponseWriter, wfID string) error {
+	enc, err := s.queryStatus(ctx, wfID)
+	if err != nil {
+		return err
+	}
+	var status rewards.CustomerStatus
+	if err := enc.Get(&status); err != nil {
+		return fmt.Errorf("decode %s result: %w", rewards.QueryGetStatus, err)
+	}
+	writeJSON(w, s.log, http.StatusOK, AddPointsResponse{
+		Balance: status.Points,
+		Level:   status.Level,
 	})
 	return nil
 }

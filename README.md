@@ -78,10 +78,13 @@ curl -XDELETE localhost:8081/api/customers/ada-lovelace
 ```
 
 The points body also takes an optional `requestId` — the caller's idempotency
-key, which becomes the Temporal Update ID. Dedup is scoped to a single run, so
-a retry that straddles a continue-as-new can still double-apply — tolerable
-for a POC; a production system would carry recent request IDs forward in
-workflow state to de-dupe across the roll.
+key. It becomes the Temporal Update ID, which the server dedups within a run,
+and it rides in the Update argument so the workflow can dedupe *across* runs
+too: each successful add records its ID in a bounded ring in
+[`CustomerState`](internal/rewards/state.go), carried forward by
+continue-as-new, and the next run's validator rejects a replay before it
+writes any history. Either way a retry answers 200 with the current balance
+instead of double-applying (see "Idempotency across the roll" below).
 
 The list is filterable — no lookup table. The server builds the visibility
 query from structured params ([`filter.go`](internal/httpapi/filter.go)) and
@@ -117,6 +120,34 @@ curl localhost:8081/api/customers/rolly-poly   # runNumber 3, points 700
 Three is a demo number chosen to be watchable
 ([`EarnsPerRun`](internal/rewards/state.go)); production should ask
 `workflow.GetInfo(ctx).GetContinueAsNewSuggested()`.
+
+**Idempotency across the roll.** Temporal dedups Update IDs within a single
+run, but an Entity Workflow rolls over — a retry that lands after the
+continue-as-new reaches a fresh run where the server has never seen the ID.
+The workflow closes that hole itself: successful adds record their
+`requestId` in a bounded ring carried in state, and the next run's
+*validator* rejects a replay — so the retry writes nothing to the new run's
+history. Watch it straddle a roll:
+
+```sh
+curl -XPOST localhost:8081/api/customers -d '{"name":"Dee Dupe"}'
+for i in 1 2; do
+  curl -XPOST localhost:8081/api/customers/dee-dupe/points \
+    -d "{\"amount\":100,\"reason\":\"add $i\",\"requestId\":\"key-$i\"}"
+done
+# The 3rd add rolls the run; the "retry" of key-3 arrives at run 2.
+curl -XPOST localhost:8081/api/customers/dee-dupe/points \
+  -d '{"amount":100,"reason":"add 3","requestId":"key-3"}'
+curl -XPOST localhost:8081/api/customers/dee-dupe/points \
+  -d '{"amount":100,"reason":"add 3","requestId":"key-3"}'
+curl localhost:8081/api/customers/dee-dupe   # points 300, not 400
+```
+
+Both sends answer 200 with `balance: 300`, and run 2's history shows one
+enrollment and nothing else. Only the IDs ride the roll, so the deduped
+retry is answered with the *current* balance rather than a replay of the
+original result; a system needing exact replay would carry (id, result)
+pairs instead.
 
 **The audit log is the Event History.** Nothing stores a customer's point-add
 history; `GET /api/customers/<id>/audit` walks back through the run chain

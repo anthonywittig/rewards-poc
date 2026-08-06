@@ -23,12 +23,19 @@ const (
 const (
 	ErrTypePointsCapExceeded = "PointsCapExceeded"
 	ErrTypeInvalidEnrollment = "InvalidEnrollment"
+	ErrTypeDuplicateRequest  = "DuplicateRequest"
 )
 
 // AddPointsRequest is the addPoints Update argument.
 type AddPointsRequest struct {
 	Amount int    `json:"amount"`
 	Reason string `json:"reason"`
+	// RequestID is the caller's idempotency key, or empty to opt out. On
+	// success it is recorded in CustomerState and carried across
+	// continue-as-new, so a retry that straddles the roll — past the reach
+	// of the server's per-run Update-ID dedup — is rejected by the next
+	// run's validator instead of double-applying.
+	RequestID string `json:"requestId,omitempty"`
 }
 
 // AddPointsResult is what a successful add returns to the caller.
